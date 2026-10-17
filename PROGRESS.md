@@ -171,7 +171,7 @@ Same loaded machine (Ryzen 7 5700G iGPU, other agents' builds and tests running,
 binaries of master b4d6553 run alternately with after; numbers are not CT_STRICT_TIMING acceptance runs.
 - [x] F1 Decode: one GPU copy per frame (decoder surface -> cache slot, no decoder pool), single-pass paused window,
   scrub aborts keep the decoder position (`media_cache_one_copy_per_frame_single_pass_window`,
-  `media_cache_scrub_aborts_and_resumes_forward`) — 4K60 `player_demo pattern_4k60_3s.mp4 --seconds 4`, 4 alternating
+  `media_cache_scrub_aborts_and_resumes_forward`) â€” 4K60 `player_demo pattern_4k60_3s.mp4 --seconds 4`, 4 alternating
   runs: frames shown 110/79/70/69 before -> 141/97/93/91 after (+25-35 %, 0 late both; still not real time under this
   load); seek-bench 1080p 50 seeks p95 223 -> 216 ms, 4K 30 seeks p95 481 -> 545 ms (noise): the exact-seek p95 is bound
   by the DXVA decoder (2.1 ms per ReadSample measured, 119 frames to the end of a 2 s GOP), not by copies; window fill

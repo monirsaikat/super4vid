@@ -1570,7 +1570,7 @@ Impact: remaining >= 20 ms events are images the duplication handed out more tha
 when a late image for its window arrives) or a longer acquire timeout (longer device-lock hold); not done. The vsync /
 tick phase itself (+-8.3 ms) is inherent to CFR ticks not locked to the display.
 
-## 2026-10-17 · Perf follow-up (P06) · One copy per decoded frame; single-pass window; scrub aborts keep the position
+## 2026-10-17 Â· Perf follow-up (P06) Â· One copy per decoded frame; single-pass window; scrub aborts keep the position
 Spec said: P06 6.2 `ReadFrame` copies decoder output into a pool texture; 6.4 each cache entry owns a texture "copied
 from the decoder pool". DECISIONS 6.7 suggested the cache take the decoder pool texture instead of copying it.
 Done instead:
