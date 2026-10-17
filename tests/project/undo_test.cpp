@@ -11,6 +11,7 @@
 #include <ct/project/undo.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -121,6 +122,27 @@ CT_TEST(undo_caps_entries_and_bytes) {
     small.Clear();
     CT_CHECK_EQ(small.Entries(), size_t(0));
     CT_CHECK_EQ(small.Bytes(), size_t(0));
+}
+
+// Review fix: Undo() adds the redo snapshot's bytes; the byte cap must hold even when only redo entries are left.
+CT_TEST(undo_redo_bytes_respect_cap) {
+    Project p = MakeSampleProject();
+    const size_t one = ToJson(p).size();
+    UndoStack undo(200, one + one / 2);
+    undo.Push(p, "grow");                 // small snapshot
+    p.name = std::string(one, 'n');       // the current document is now ~2x larger
+    CT_REQUIRE(undo.Undo(p));             // redo entry = the large document, alone over the cap
+    CT_CHECK(undo.Bytes() <= one + one / 2);
+    CT_CHECK_EQ(undo.Entries(), size_t(0));
+    CT_CHECK(!undo.CanRedo());
+    // Within the cap the redo entry is kept.
+    UndoStack roomy(200, one * 4);
+    Project q = MakeSampleProject();
+    roomy.Push(q, "grow");
+    q.name = std::string(one, 'n');
+    CT_REQUIRE(roomy.Undo(q));
+    CT_CHECK(roomy.CanRedo());
+    CT_CHECK(roomy.Bytes() <= one * 4);
 }
 
 CT_TEST(undo_dirty_flag_tracks_save_point) {
@@ -253,6 +275,48 @@ CT_TEST(autosave_async_writes_land) {
         std::printf("  saves=%llu exists=%d size=%zu want=%zu path=%s\n", (unsigned long long)a.Saves(),
                     (int)fs::Exists(a.AutosavePath()), text.size(), want.size(), a.AutosavePath().c_str());
     CT_CHECK(text == want);
+    a.Clear();
+    fs::DeleteTree(dir);
+}
+
+// Review fix: a slow background write (the hook stalls the writer 300 ms inside the IO section) must not block the
+// UI thread's Tick(), neither the "not due" path nor one that queues the next snapshot.
+CT_TEST(autosave_slow_write_does_not_block_tick) {
+    const std::string dir = MakeAutosaveDir();
+    Project p = MakeSampleProject();
+    Autosave a;
+    a.Init(p.id, 1);
+    struct Ctx {
+        Event started{true, false};
+    } ctx;
+    a.SetTestWriteHook(
+        [](void* c) {
+            static_cast<Ctx*>(c)->started.Set();
+            Event pause;
+            pause.Wait(300);
+        },
+        &ctx);
+    a.NotifyChanged();
+    a.Tick(p, Clock::NowUs() + 2 * kUsPerSecond);
+    CT_REQUIRE(ctx.started.Wait(5000));
+    double worst_ms = 0.0;
+    const int64_t t_due = Clock::NowUs() + 10 * kUsPerSecond;
+    for (int i = 0; i < 20; ++i) {
+        if (i == 10) a.NotifyChanged();   // this Tick queues another write while the first is still in flight
+        const int64_t t0 = Clock::NowUs();
+        a.Tick(p, i < 10 ? t_due - 9 * kUsPerSecond : t_due);
+        worst_ms = std::max(worst_ms, double(Clock::NowUs() - t0) / 1000.0);
+    }
+    std::printf("    worst Tick during a 300 ms write: %.3f ms\n", worst_ms);
+    CT_CHECK(worst_ms < 20.0);   // ~0.1 ms normally; blocked it was ~300 ms
+    a.SetTestWriteHook(nullptr, nullptr);
+    for (int spin = 0; spin < 300 && a.Saves() < 2; ++spin) {
+        Event e;
+        e.Wait(10);
+    }
+    CT_CHECK_EQ(a.Saves(), uint64_t(2));
+    std::string text;
+    CT_CHECK(fs::ReadAll(a.AutosavePath(), text) && text == ToJson(p));
     a.Clear();
     fs::DeleteTree(dir);
 }

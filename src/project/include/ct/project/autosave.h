@@ -5,7 +5,7 @@
 // process for as long as the Autosave lives and records the PID and the project's original path. On startup a lock
 // that can be opened for writing belongs to a dead process: its autosave is offered for recovery.
 // Thread model: Init/NotifyChanged/Tick/Clear on the UI thread. Tick serializes on the caller (fast) and writes the
-// file on the ct::Async pool (older pending writes are skipped). FindRecoverable/Discard do blocking IO.
+// file on the ct::Async pool (older pending writes are skipped); it never waits for that IO. FindRecoverable/Discard do blocking IO.
 // Lifetime: the destructor closes the lock but keeps the files (the editor calls Clear() on a clean close/save).
 
 #include <ct/project/project.h>
@@ -40,6 +40,9 @@ public:
     bool SaveNow(const Project& p);             // synchronous write; also takes the lock
     void Clear();                               // on explicit save / close: deletes autosave + lock, not dirty
     void SetSynchronous(bool sync) { m_sync = sync; }   // tests: write on the calling thread
+    // Tests: called on the writer (pool) thread right before each background write, outside the state lock.
+    using TestWriteHook = void (*)(void* ctx);
+    void SetTestWriteHook(TestWriteHook hook, void* ctx);
 
     bool Dirty() const { return m_edits > 0; }
     uint64_t Saves() const;    // completed writes

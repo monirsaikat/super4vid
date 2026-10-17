@@ -306,13 +306,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     ct::platform::CrashHandler::Install();
     ct::platform::Paths::Init();
     ct::platform::CrashHandler::SetDumpDir(ct::platform::Paths::CrashDir().c_str());
-    ct::Log::Init(ct::platform::Paths::LogsDir().c_str());
-    CT_LOG_INFO("Camtesia %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
-
+    // Single-instance first: a forwarding second launch must not prune logs or open a file of its own (lines logged
+    // before Log::Init stay in the ring and are written once the file exists).
     if (!ct::platform::SingleInstance::Acquire(L"Local\\Camtesia.Instance", GetCommandLineW())) {
         ct::Log::Shutdown();
         return 0;   // forwarded to the running instance via WM_COPYDATA
     }
+    ct::Log::Init(ct::platform::Paths::LogsDir().c_str());
+    CT_LOG_INFO("Camtesia %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
 
     const Options opt = ParseArgs();
     if (opt.stats || opt.time_to_window) OpenConsole();

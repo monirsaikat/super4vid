@@ -21,10 +21,16 @@ float Clamp01(float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0
 
 class KeyList {
 public:
-    // Keys must be strictly increasing; a key at the same time as the previous one is only accepted when it shows the
-    // same view (zoom-out end meeting the next zoom-in start), and then dropped.
+    // Keys must be strictly increasing. A key at the same time as the previous one is only expected when it shows the
+    // same view (zoom-out end meeting the next zoom-in start, segments exactly 2 * ease apart): the two merge into one
+    // key with the later key's ease, which describes the segment that follows (the earlier Hold would jump).
     void Push(TimeUs t, float zoom, float cx, float cy, Ease ease) {
-        if (!keys.empty() && t <= keys.back().t_us) return;
+        if (!keys.empty() && t == keys.back().t_us) {
+            CameraKey& last = keys.back();
+            if (last.zoom == zoom && last.cx == cx && last.cy == cy) last.ease = ease;
+            return;
+        }
+        if (!keys.empty() && t < keys.back().t_us) return;
         keys.push_back(CameraKey{t, zoom, cx, cy, ease, true});
     }
     std::vector<CameraKey> keys;

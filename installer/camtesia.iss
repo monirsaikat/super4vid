@@ -66,6 +66,8 @@ Root: HKA; Subkey: "Software\Classes\Camtesia.Project"; ValueType: string; Value
 Root: HKA; Subkey: "Software\Classes\Camtesia.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\Camtesia.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --editor ""%1"""
 Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Camtesia"; ValueData: """{app}\{#MyAppExeName}"" --tray"; Tasks: startup; Flags: uninsdeletevalue
+; Reinstall/upgrade with "startup" unchecked: remove the Run value an earlier install wrote.
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Camtesia"; Flags: deletevalue; Check: not WizardIsTaskSelected('startup')
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

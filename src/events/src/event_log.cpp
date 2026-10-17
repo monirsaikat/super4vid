@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace ct::events {
 
@@ -74,6 +75,17 @@ void AppendUtf8(std::string& out, uint32_t cp) {
         out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
         out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
     }
+}
+
+// Timestamps come from files and may be garbage (INT64_MIN/MAX): differences and offsets saturate instead of
+// overflowing (signed overflow is UB).
+constexpr TimeUs kMinT = std::numeric_limits<TimeUs>::min();
+constexpr TimeUs kMaxT = std::numeric_limits<TimeUs>::max();
+
+TimeUs SatSub(TimeUs a, TimeUs b) {
+    if (b > 0 && a < kMinT + b) return kMinT;
+    if (b < 0 && a > kMaxT + b) return kMaxT;
+    return a - b;
 }
 
 // Elements with t0 <= t_us < t1 of an array sorted by t_us.
@@ -271,7 +283,7 @@ void EventLog::Finish() {
     } else {
         for (const KeyEvent& k : m_keys) {
             if (!k.down || IsModifierVk(k.vk)) continue;
-            if (!m_typing.empty() && k.t_us - m_typing.back().end_us < kTypingGapUs)
+            if (!m_typing.empty() && SatSub(k.t_us, m_typing.back().end_us) < kTypingGapUs)
                 m_typing.back().end_us = k.t_us;
             else
                 m_typing.push_back({k.t_us, k.t_us});
@@ -294,7 +306,8 @@ CursorState EventLog::CursorAt(TimeUs t_us) const {
     if (static_cast<size_t>(i) + 1 < m_cursor.size()) {
         const CursorSample& b = m_cursor[static_cast<size_t>(i) + 1];
         if (b.t_us > a.t_us && a.visible == b.visible) {
-            const double u = double(t_us - a.t_us) / double(b.t_us - a.t_us);
+            // In double: b - a can exceed the int64 range; 0 <= t - a <= b - a, so u stays in [0, 1].
+            const double u = std::clamp((double(t_us) - double(a.t_us)) / (double(b.t_us) - double(a.t_us)), 0.0, 1.0);
             s.x = static_cast<float>(a.x + (b.x - a.x) * u);
             s.y = static_cast<float>(a.y + (b.y - a.y) * u);
         }
@@ -324,7 +337,7 @@ std::span<const ButtonEvent> EventLog::ButtonsBetween(TimeUs t0_us, TimeUs t1_us
 const ButtonEvent* EventLog::LastMouseDown(TimeUs t_us, TimeUs max_age_us) const {
     for (ptrdiff_t i = LastAtOrBefore(m_buttons, t_us); i >= 0; --i) {
         const ButtonEvent& b = m_buttons[static_cast<size_t>(i)];
-        if (t_us - b.t_us > max_age_us) return nullptr;
+        if (SatSub(t_us, b.t_us) > max_age_us) return nullptr;
         if (b.down) return &b;
     }
     return nullptr;
@@ -346,7 +359,13 @@ std::span<const KeyStroke> EventLog::StrokesBetween(TimeUs t0_us, TimeUs t1_us) 
 }
 
 std::span<const KeyStroke> EventLog::StrokesVisibleAt(TimeUs t_us, TimeUs hold_us) const {
-    return Range(m_strokes, t_us - hold_us + 1, t_us + 1);
+    // Strokes with t_us - hold_us < t <= t_us, without forming t_us + 1 or t_us - hold_us out of range.
+    if (hold_us <= 0) return {};
+    auto later = [](TimeUs t, const KeyStroke& k) { return t < k.t_us; };
+    auto hi = std::upper_bound(m_strokes.begin(), m_strokes.end(), t_us, later);
+    auto lo = t_us < kMinT + hold_us ? m_strokes.begin()   // t_us - hold_us is below every representable time
+                                     : std::upper_bound(m_strokes.begin(), hi, t_us - hold_us, later);
+    return std::span<const KeyStroke>(m_strokes.data() + (lo - m_strokes.begin()), static_cast<size_t>(hi - lo));
 }
 
 bool EventLog::IsKeyDown(uint16_t vk, TimeUs t_us) const {

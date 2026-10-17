@@ -180,6 +180,7 @@ std::wstring Stamp() {
 }
 
 // Keeps the newest (kKeepFiles - 1) logs, by creation time, so the file about to be created makes kKeepFiles.
+// A log still open by a running instance (opened without FILE_SHARE_DELETE) fails DeleteFileW and is skipped.
 void PruneLogs(const std::wstring& dir) {
     struct Item {
         std::wstring name;
@@ -202,12 +203,9 @@ void PruneLogs(const std::wstring& dir) {
     for (size_t i = 0; i + keep < items.size(); ++i) DeleteFileW((dir + L"\\" + items[i].name).c_str());
 }
 
-// Closes the current file (if any), prunes old logs and opens a fresh one. Caller holds io_lock.
+// Prunes old logs and opens a fresh file; the current file (if any) is closed only once that succeeded, so a failed
+// rotation keeps logging into the old file and the next drain retries. Caller holds io_lock.
 bool OpenNewFileLocked() {
-    if (g_log.file) {
-        CloseHandle(g_log.file);
-        g_log.file = nullptr;
-    }
     const std::wstring dir = g_log.dir;
     if (dir.empty()) return false;
     PruneLogs(dir);
@@ -217,10 +215,12 @@ bool OpenNewFileLocked() {
     // Same second (rotation, or a second instance about to exit): add -2, -3, ...
     for (int n = 1; n <= 20 && file == INVALID_HANDLE_VALUE; ++n) {
         if (n > 1) path = base + L"-" + std::to_wstring(n) + L".log";
-        file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        // No FILE_SHARE_DELETE: another instance's PruneLogs must not be able to delete the live log.
+        file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
     }
     if (file == INVALID_HANDLE_VALUE) return false;
+    if (g_log.file) CloseHandle(g_log.file);
     g_log.file = file;
     g_log.file_bytes = 0;
     WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, g_log.path_utf8, sizeof(g_log.path_utf8), nullptr, nullptr);
