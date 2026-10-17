@@ -410,7 +410,8 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     if (bench.runs > 0) settings.hotkeys.toggle = Hotkey{MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F22};
 
     platform::Window::Desc desc;
-    desc.class_name = L"CamtesiaMain";   // single-instance forwarding finds this window
+    const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
+    desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
     desc.title = L"Camtesia";
     desc.w_dip = 560;
     desc.h_dip = 64;

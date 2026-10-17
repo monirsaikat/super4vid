@@ -324,7 +324,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     // --record / --selftest are console modes: they run next to a running instance instead of forwarding to it.
     const bool headless = ct::recorder::IsHeadlessCommandLine(GetCommandLineW());
     const bool separate = headless || ct::ui::RunsAsSeparateInstance(GetCommandLineW());
-    if (!separate && !ct::platform::SingleInstance::Acquire(L"Local\\Camtesia.Instance", GetCommandLineW())) {
+    const std::wstring instance_mutex = ct::platform::SingleInstance::MutexName();   // + CT_INSTANCE_SUFFIX (dev/test)
+    if (!separate && !ct::platform::SingleInstance::Acquire(instance_mutex.c_str(), GetCommandLineW())) {
         ct::Log::Shutdown();
         return 0;   // forwarded to the running instance via WM_COPYDATA
     }
@@ -392,7 +393,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
     } else {
         Window::Desc desc;
-        desc.class_name = L"CamtesiaMain";
+        const std::wstring window_class = ct::platform::SingleInstance::MainWindowClass();
+        desc.class_name = window_class.c_str();
         desc.title = L"Camtesia";
         desc.w_dip = opt.editor_demo ? 1600 : opt.settings_demo ? 840 : 1280;
         desc.h_dip = opt.editor_demo ? 900 : opt.settings_demo ? 580 : 800;

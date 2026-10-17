@@ -495,7 +495,8 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
     }
     app.devices_ok = SUCCEEDED(app.devices.Init());
     Window::Desc desc;
-    desc.class_name = L"CamtesiaMain";   // SingleInstance forwards to this class
+    const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
+    desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
     desc.title = L"Camtesia";
     desc.w_dip = launch.width_dip;
     desc.h_dip = launch.height_dip;
