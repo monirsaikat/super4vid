@@ -312,6 +312,9 @@ CT_TEST_DEVICE(webcam_scripted_frames_dxgi_and_cpu) {
         s.has_dts = i != 1;   // frame 1 uses the fallback clock
         s.dts_back_us = 5'000;
         r->Push(s);
+        // Wait for delivery before the next push: frame 1 (no device timestamp) is stamped when it is read, so on a
+        // loaded machine a late read would put it after frame 2's device time and frame 2 would be dropped as late.
+        CT_CHECK(WaitFor([&] { return sink.Count() == static_cast<size_t>(i + 1); }, 2000));
         Sleep(15);
     }
     CT_CHECK(WaitFor([&] { return sink.Count() == 5; }, 2000));

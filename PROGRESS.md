@@ -56,6 +56,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
   - [x] Debug + D3D11 debug layer (`--debug-layer`, 5 s animated and a 30 fps region on monitor 1 with `--cursor`): no debug-layer messages, exit report lists only the device; `--dump-frame 100` PNG checked visually (correct colours)
   - [x] budget was missed with the spec's design (20-27 % GPU); fixed with zero-copy conversion, a compute converter and texture re-send for repeats (DECISIONS.md 2.7)
   - [ ] not measurable here: 4K (CPU < 5 %, GPU < 15 %) — the reference machine has only 1080p monitors
+  - [x] a restarted ScreenCapturer re-creates the duplication (a reused one gave a static screen no frame); test `screen_capturer_restart_static_desktop` (DECISIONS "A/V sync")
   - [ ] HUMAN: lock (Win+L) and unlock during `capture_bench --monitor 0 --fps 60 --seconds 30`: summary shows `access_lost >= 1`, `reinits >= 1`, ticks keep counting, new frames resume within 1 s of unlocking, no crash
 
 ## P03 Audio capture
@@ -80,6 +81,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
   - [x] VBR (PeakConstrainedVBR) on a mostly static desktop undershoots: 40 % of the mean bitrate in a 10 s run (the encoder spends bits only when needed); CBR 100.0-100.8 % in 20 s and 120 s runs
   - [x] Debug + debug layer (`--debug-layer`, 5 s encode): no debug-layer messages, exit report lists only the device (same as without encode); file 300/300 frames
   - [~] clap test, measured headlessly with `avsync_source --analyze` against the source's logged emission times (46 paired events): video stamp - display time +14..17 ms (capture tick quantization + duplication latency; +31 ms on 8 events with one extra frame of delay), audio stamp - emission +0.4..1.3 ms until ~68 s, then +10.4..11.4 ms after a loopback discontinuity where the P03 aligner inserted 585 frames (12 ms); resulting A/V offset +15.9 ms (first 68 s), +3.8..4.2 ms afterwards, 7 events +20.5..20.8 ms and one +37.5 ms (late frame under load): the < 20 ms budget is met by 38 of 46 events, not all (DECISIONS 4.6)
+  - [~] clap test after the A/V fixes (DECISIONS "A/V sync"): images stamped with the tick nearest their present time (display_latency_us -4000), narrowband beep detection; 4 x 2 min, 60 events each, load 6-91 %: A/V mean -1.8 / +4.2 / -3.7 / -1.9 ms (before: +13.8 / +17.1 / +12.7), max 3.2 / 21.9 / 24.3 / 13.9 ms, events >= 20 ms 0 / 2 / 3 / 0 (before 27 / 14 / 3), drift -2.4 / -0.6 / +7.0 / +0.2 ms; audio +0.2..1.4 ms, no loopback discontinuity shift. Open: the remaining >= 20 ms events are images acquired one tick late (~2 % of images)
   - [ ] HUMAN: play `capture_bench --seconds 600 --encode out.mp4 --mic --system --rc cbr` output in Movies & TV and VLC: plays to the end, seeking works, audio in sync at start and end; repeat the clap test with a real USB mic
 
 ## P05 Recorder app
