@@ -11,7 +11,8 @@ ct_add_module(ui
     src/settings_window.cpp src/settings_window_logic.cpp
     src/error_ux.cpp
     src/first_run.cpp
+    src/recorder_bar.cpp src/recorder_app.cpp
   DEPS ct_core ct_project ct_platform imgui
-    ct_audio ct_capture ct_media ct_export ct_render ct_playback ct_events)
+    ct_audio ct_capture ct_media ct_export ct_render ct_playback ct_events ct_recorder)
 # The editor app uses the ImGui Win32/DX11 backends (compiled into the imgui target) and the shell dialogs.
 target_link_libraries(ct_ui PRIVATE shell32 ole32 comdlg32)

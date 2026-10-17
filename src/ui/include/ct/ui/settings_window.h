@@ -161,6 +161,10 @@ public:
     void SetGpuName(std::string name) { m_gpu_name = std::move(name); }   // D3DDevice::AdapterName()
     // Embedded mode for --settings-demo: the window fills the whole viewport and has no backdrop.
     void SetFillViewport(bool fill) { m_fill_viewport = fill; }
+    // Addition (P05 recorder bar): with SetFillViewport(true), fill this screen rect instead of the main viewport.
+    // The recorder bar uses it to give the window its own decorated platform window (multi-viewport).
+    void SetHostRect(ImVec2 pos, ImVec2 size) { m_has_host = true; m_host_pos = pos; m_host_size = size; }
+    static const char* WindowName();   // the ImGui window name (to find its viewport)
     SettingsSaver& Saver() { return *m_saver; }
 
     // Called on the UI thread after every applied change (the recorder bar / editor update their copy).
@@ -216,6 +220,8 @@ private:
     SettingsSection m_section = SettingsSection::Recording;
     bool m_open = false;
     bool m_fill_viewport = false;
+    bool m_has_host = false;
+    ImVec2 m_host_pos{}, m_host_size{};
     bool m_focus_next = false;
     std::string m_gpu_name;
 

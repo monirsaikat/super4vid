@@ -1394,3 +1394,84 @@ Done / interpreted:
   SnapIgnore); trims clamp analytically (no Project copies); marker label typing is one undo entry.
 Impact: P10's export dialog plugs into `EditorShell::on_export` (currently a toast); P05b's recorder can open the
 editor in-process later by calling `RunEditorApp`-equivalent pieces or by launching `--editor folder.ctrec`.
+
+
+## 2026-10-17 · P05 tasks 5.1/5.2 · Session control thread, start order, fps clamp, meta details, headless modes
+Spec said: `RecordingSession::Prepare` runs on the IO pool; `StartNow` order audio -> `Mp4Writer::Start` -> capturer ->
+webcam -> events; `Stats()` returns `const LiveStats&`; `CrashHandler::RegisterEmergency` set in Prepare, cleared in Stop;
+`--record --out "D:\x.ctrec"`; meta.json per docs/04 section 1.
+Done instead:
+- Every component is created, started, paused and stopped on the session's own **"ct-session" thread (COM MTA)** fed by a
+  command queue (WASAPI/MF want one MTA owner thread; the UI thread is an STA). `StartNow/TogglePause/AddMarker/Stop/
+  Cancel/PrepareAsync` return at once; `Prepare` posts and waits (IO pool / console thread). A StartNow queued behind a
+  running prepare simply runs after it, so the countdown overlaps the prepare. TogglePause takes one QPC on the caller's
+  thread and passes it to the clock and both audio streams.
+- Additions: `PrepareAsync`, `IsPrepared`, `IsActive`, `StartNow(trigger_qpc)` (trigger -> first frame latency, logged and
+  kept in `Stats::T("session.hotkey_to_frame")`, `LastStartLatencyMs()`), `WaitIdle(ms)` (headless/tests), `Stats()` returns
+  a copy (it changes on ct-session), `SessionListener::OnWarning` (low disk, camera/audio device lost, no mic) and
+  `OnPrepared(hr)` with empty defaults; `SessionConfig::{system_device, webcam_synthetic, events}`; `LiveStats::{state,
+  frames, fps, has_mic, has_system, has_camera}`. `dropped_frames` also counts the capturer's skipped late ticks.
+- Start order: `Mp4Writer::Start` (screen, then cam) **before** the producers, because the writer rejects input until
+  Start (`m_accepting`); then mic, system, capturer (epoch), webcam, events. The writer start only spawns ct-encode, so
+  audio still starts within microseconds of the epoch.
+- fps clamp (P04 left it to P05): requested rate, then 120/60/30 below it; each attempt re-creates capturer + writer;
+  HEVC falls back to H.264 when no rate works; file errors (path/access/disk full) fail at once. Audio streams whose
+  `Init` fails (or no endpoint) are left out of screen.mp4 instead of becoming empty tracks; the user gets a warning.
+- Webcam time base: a private `ClockTimeSource : capture::MediaTimeSource` adapter over the SessionClock (the
+  integration change makes SessionClock implement the interface; the adapter keeps working).
+- Errors: a component error (capture OnError, writer listener, disk < 200 MB) -> Error -> finalize -> Idle, `OnError`,
+  and `OnFinished` too when frames were written (the partial recording is kept with a normal meta.json). Camera/cam
+  writer and audio device errors only warn.
+- Emergency: `RegisterEmergency` has no unregister and allows 8 entries, so the session registers one thunk per process;
+  it acts on the session armed between StartNow and Finish (atomic pointer). The `incomplete` meta.json is built at
+  StartNow (duration 0) and the filter only writes its bytes; the writers are Aborted and never destroyed afterwards.
+- meta.json: `created_utc` without milliseconds (docs/04 example); `duration_us` = last video frame time + one frame
+  (the capturer's last tick); `stream_index` = `Mp4Writer::AudioStreamIndex`; `incomplete: true` only on the crash path;
+  `scale` is written as the JSON number 1.
+- Headless: `--out` names the folder that receives `<stamp>.ctrec` (as the recorder does; P05 tests say `--out <tmp>`);
+  extras `--region x,y,w,h --codec --quality --keys --camera --synthetic-camera --pause-at S --pause-for S --verify`;
+  `--record`/`--selftest` skip the single-instance check (they run next to a running bar or another agent's instance).
+  `--selftest` adds a synthetic camera so cam.mp4 is exercised without hardware. `VerifyBundle` checks constant frame rate
+  from the sample spacing: the MP4 source's `MF_MT_FRAME_RATE` includes the first frame's offset from 0 (29.4 fps for a
+  30 fps file whose first frame is at 33 ms).
+Why: COM apartment rules, the writer's accept gate, parallel instances on the test machine, and robustness.
+Impact: the bar (5.6) uses PrepareAsync + StartCountdown + StartNow(trigger) and the listener additions.
+
+## 2026-10-17 · P05 task 5.6 · Recorder bar windows, hotkeys, previews and diagnostics
+Decision:
+- ImGui multi-viewport with `ConfigViewportsNoAutoMerge`: popovers and toasts get their own platform windows, so they
+  can extend past the 560x64 / 260x44 dip bar. `Platform_CreateWindow` is wrapped to apply WDA_EXCLUDEFROMCAPTURE,
+  topmost, DWM round corners, border colour and dark mode to every viewport. The settings window is the exception: an
+  `ImGuiWindowClass` (ParentViewportId 0, clear NoDecoration/NoTaskBarIcon) gives it a normal decorated, non-topmost
+  top-level window "Camtesia Settings". Secondary viewports fill with bg2 to hide the black clear.
+- `ui::SettingsWindow` got one additive method, `SetHostRect(pos, size)` (+ `WindowName()`), so its fill-viewport mode
+  fills that window instead of the main viewport.
+- Hotkeys (`RegisterHotKey`) and the tray icon belong to the bar window itself; no separate message window. While
+  the countdown runs, Esc is registered as a temporary hotkey (the bar does not have focus).
+- Monitor popover draws a schematic layout of the displays (proportional rectangles + list), not live thumbnails
+  (no capture before REC, no camera/mic LEDs, no cost).
+- Idle meters: an `AudioMonitor` null-sink capture runs only while the mic or system popover is open; during
+  recording the meters read the session's `LiveLevels()` atomics (updated at 30 Hz on ct-session). The camera preview
+  opens the device only while the camera popover/hover preview shows, and the session's webcam while recording.
+  `--synthetic-camera` substitutes the synthetic reader (no camera on the reference machine).
+- Toasts are drawn by the bar in their own viewport ("Saved" with Open in editor / Show in folder / Delete), not by
+  `ToastStack`, which draws into the main viewport (the bar is too small).
+- Default "Open in editor" launches `Camtesia.exe --editor <bundle>` with CAMTESIA_SEPARATE_INSTANCE=1.
+- Redraw policy: `RedrawIntervalMs` 16 while animating, 33 while recording/meters/preview, 250 while toasts show,
+  0 (wait for messages) otherwise.
+- Hotkey latency = start trigger (WM_HOTKEY, or the end of the countdown) -> first captured frame QPC. With countdown 0
+  it includes the session prepare (~150-600 ms in Release) because prepare starts at the hotkey; with a countdown the
+  prepare runs during the countdown.
+- Diagnostic modes (`--screenshot`, `--time-to-window`, `--bench-hotkey`) skip the single-instance check, never write
+  the user's settings, and record into a temp folder deleted at exit.
+Why: the bar is tiny and topmost and must stay out of recordings; device LEDs must stay off when idle; diagnostics must
+not touch user data.
+Impact: P09b/P11 may replace the Open-in-editor launch with in-process editor opening.
+
+## 2026-10-17 · P05 task 5.6 · App mode dispatch next to the P09 editor mode
+Decision: `ui::IsRecorderBarCommandLine` picks the recorder bar unless the command line has `--editor`,
+`--editor-demo`, `--settings-demo` or a `.ctproj`/`.ctrec` file argument (then P09's `ParseEditorLaunch` runs).
+`ParseEditorLaunch` alone cannot decide it, because it treats any bare value (`--countdown 1`, `--bar-open mic`) as a file.
+Why: double-clicking a project must open the editor; recorder flags take values. Impact: a double-clicked file while the
+bar runs still forwards to the bar instance through SingleInstance (the bar ignores it) — integration should open the
+editor for a forwarded file argument or exempt editor launches from the single-instance check.
