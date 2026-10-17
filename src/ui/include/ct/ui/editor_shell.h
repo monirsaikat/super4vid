@@ -7,8 +7,10 @@
 // file dialogs, TimelinePlayer, Compositor and autosave.
 // Thread model: UI thread. Lifetime: create after ImGui::CreateContext, destroy before DestroyContext.
 
+#include <ct/ui/editor_banners.h>
 #include <ct/ui/editor_state.h>
 #include <ct/ui/panels/media_panel.h>
+#include <ct/ui/panels/preview_panel.h>
 #include <ct/ui/panels/properties_panel.h>
 #include <ct/ui/panels/status_bar.h>
 #include <ct/ui/panels/timeline_widget.h>
@@ -18,6 +20,7 @@
 #include <imgui.h>
 
 #include <functional>
+#include <vector>
 #include <memory>
 #include <string>
 
@@ -45,23 +48,34 @@ public:
     TimelineWidget& Timeline() { return m_timeline; }
     PropertiesPanel& Properties() { return m_props; }
     MediaPanel& Media() { return m_media; }
+    PreviewPanel& Preview() { return m_preview; }
     ToastStack& Toasts() { return m_toasts; }
+    BannerStack& Banners() { return m_banners; }
     void SetMediaProvider(TimelineMediaProvider* p);
     void SetHostWindow(void* hwnd) { m_hwnd = hwnd; }   // window title "<name>* - Camtesia"
+    void Run(Action a);                                  // shortcut / menu / transport dispatcher
+    void ResetLayout() { m_reset_layout = true; }
 
-    // Second-half hooks.
-    std::function<void(ImVec2 min, ImVec2 max)> draw_preview;   // draws the canvas image into [min, max]
+    // Second-half hooks (the editor window sets them; null = the menu item is disabled).
     std::function<bool(Action)> on_action;                       // file/export/recorder actions; true = handled
+    std::function<void()> on_import_recording;                   // File > Import recording... (folder picker)
+    std::function<void(const std::string&)> on_open_recent;      // File > Open recent > path
+    std::function<void()> on_close_project;                      // File > Close project
+    std::function<void()> on_preferences;                        // Edit > Preferences (P11)
+    std::function<void()> on_open_logs;                          // Help > Open logs folder / status bar warnings
+    std::function<void()> on_about;                              // Help > About
+    std::vector<std::string> recent_files;                       // File > Open recent, newest first
     StatusInfo status;                                           // filled by the owner each frame
+    // Layout persistence: when true the docking layout comes from the ImGui ini (io.IniFilename) and is built only
+    // when the ini has none (or after View > Reset layout). False (demo/tests): built on the first frame.
+    bool persist_layout = false;
+    // Extra per-frame statistics for the F11 overlay (owner-provided lines, e.g. GPU passes, cache, queues).
+    std::function<void()> draw_stats_extra;
 
 private:
     void DispatchShortcuts();
-    void Run(Action a);
     void DrawMenuBar();
     void BuildLayout(unsigned int dockspace_id);
-    void DrawPreview();
-    void DrawPreviewPlaceholder(ImVec2 min, ImVec2 max);
-    void DrawTransport();
     void DrawStats();
     void UpdateTitle();
 
@@ -69,15 +83,15 @@ private:
     TimelineWidget m_timeline;
     PropertiesPanel m_props;
     MediaPanel m_media;
+    PreviewPanel m_preview;
     ToastStack m_toasts;
+    BannerStack m_banners;
     std::unique_ptr<TimelineMediaProvider> m_demo_media;
     bool m_layout_built = false;
     bool m_reset_layout = false;
     bool m_cheat_sheet = false;
     bool m_stats = false;
     bool m_show_panels[4] = {true, true, true, true};
-    int m_fit_mode = 0;   // 0 fit, 1 50 %, 2 100 %, 3 200 %
-    bool m_safe_areas = false;
     void* m_hwnd = nullptr;
     std::string m_title;
     double m_last_frame_s = 0;

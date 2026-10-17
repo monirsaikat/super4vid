@@ -32,7 +32,7 @@ void AudioDecoder::Shutdown() {
 HRESULT AudioDecoder::Init(const Config& cfg) {
     Shutdown();
     audio::dsp::Init();
-    CT_RETURN_IF_FAILED(detail::EnsureMfStarted());
+    CT_RETURN_IF_FAILED(platform::MfRuntime::EnsureForProcess());
     const std::wstring wpath = Utf8ToWide(cfg.path);
     HRESULT hr = MFCreateSourceReaderFromURL(wpath.c_str(), nullptr, m_reader.GetAddressOf());
     if (FAILED(hr)) {

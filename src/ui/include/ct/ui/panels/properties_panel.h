@@ -19,8 +19,11 @@ public:
     std::function<bool(EditorState&)> on_regenerate;
 
     void Draw(EditorState& state);
+    // A debounced Auto-Zoom regeneration (300 ms after the last parameter change) is pending.
+    bool WantsRedraw() const { return m_regen_due >= 0; }
 
 private:
+    double m_regen_due = -1;
     void DrawClipSections(EditorState& state);
     void DrawProjectSections(EditorState& state);
     void DrawCameraSection(EditorState& state);

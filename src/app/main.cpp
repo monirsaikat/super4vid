@@ -10,7 +10,9 @@
 #include <ct/platform/single_instance.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
+#include <ct/ui/editor_app.h>
 #include <ct/ui/editor_shell.h>
+#include <ct/ui/settings_window.h>
 #include <ct/ui/theme.h>
 #include <ct/version.h>
 
@@ -48,6 +50,8 @@ struct Options {
     bool tray = false;   // --tray: start hidden ("start with Windows" installer task); the tray icon itself is P05
     bool editor_demo = false;     // --editor-demo [--project p.ctproj]: P09 editor shell on a sample project
     std::string project;
+    bool settings_demo = false;   // --settings-demo [--section audio]: P11 settings window filling the window
+    std::string section;
     std::string screenshot;       // --screenshot out.png --frames N: save the window after N frames and exit
     int frames = 5;
 };
@@ -67,6 +71,7 @@ struct App {
     UINT last_message = 0;
     bool quit = false;
     ct::ui::EditorShell* editor = nullptr;
+    ct::ui::SettingsWindow* settings = nullptr;
 };
 
 int64_t QpcNow() {
@@ -96,6 +101,8 @@ Options ParseArgs() {
         else if (wcscmp(argv[i], L"--stats") == 0) opt.stats = true;
         else if (wcscmp(argv[i], L"--tray") == 0) opt.tray = true;
         else if (wcscmp(argv[i], L"--editor-demo") == 0) opt.editor_demo = true;
+        else if (wcscmp(argv[i], L"--settings-demo") == 0) opt.settings_demo = true;
+        else if (wcscmp(argv[i], L"--section") == 0 && i + 1 < argc) opt.section = ct::WideToUtf8(argv[++i]);
         else if (wcscmp(argv[i], L"--project") == 0 && i + 1 < argc) opt.project = ct::WideToUtf8(argv[++i]);
         else if (wcscmp(argv[i], L"--screenshot") == 0 && i + 1 < argc) opt.screenshot = ct::WideToUtf8(argv[++i]);
         else if (wcscmp(argv[i], L"--frames") == 0 && i + 1 < argc) opt.frames = _wtoi(argv[++i]);
@@ -181,7 +188,11 @@ bool RenderOneFrame(App& app) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (app.editor) {
+    if (app.settings) {
+        app.settings->Draw();
+        app.continuous = app.settings->WantsRedraw();
+        if (!app.settings->IsOpen()) PostQuitMessage(0);
+    } else if (app.editor) {
         app.editor->status.frame_ms = app.last_frame_ms;
         app.editor->Frame();
         app.continuous = app.editor->WantsContinuousRedraw();
@@ -326,6 +337,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(com_hr)) CT_LOG_ERROR("CoInitializeEx failed: %s", ct::HrToString(com_hr).c_str());
 
+    // P09 editor mode: `--editor [file]` or a bare file argument (the .ctproj association passes --editor "%1").
+    if (ct::ui::EditorLaunch editor_launch; ct::ui::ParseEditorLaunch(GetCommandLineW(), &editor_launch)) {
+        const int editor_code = ct::ui::RunEditorApp(instance, show_cmd, editor_launch);
+        if (SUCCEEDED(com_hr)) CoUninitialize();
+        ct::platform::SingleInstance::Release();
+        ct::Log::Shutdown();
+        return editor_code;
+    }
+
     App* app_ptr = new App();   // big and long-lived; not on the stack
     App& app = *app_ptr;
     LARGE_INTEGER freq;
@@ -347,8 +367,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         Window::Desc desc;
         desc.class_name = L"CamtesiaMain";
         desc.title = L"Camtesia";
-        desc.w_dip = opt.editor_demo ? 1600 : 1280;
-        desc.h_dip = opt.editor_demo ? 900 : 800;
+        desc.w_dip = opt.editor_demo ? 1600 : opt.settings_demo ? 840 : 1280;
+        desc.h_dip = opt.editor_demo ? 900 : opt.settings_demo ? 580 : 800;
         desc.resizable = true;
         desc.icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
         desc.quit_on_destroy = true;
@@ -361,12 +381,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
             ImGuiIO& io = ImGui::GetIO();
             io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
             io.IniFilename = nullptr;   // layout persistence is decided in P09
-            if (opt.editor_demo) ct::ui::EditorShell::SetupImGui();   // theme + system fonts + icons
+            if (opt.editor_demo || opt.settings_demo) ct::ui::EditorShell::SetupImGui();   // theme + system fonts + icons
             else ImGui::StyleColorsDark();
             app.base_style = ImGui::GetStyle();
             ImGui_ImplWin32_Init(app.win.Hwnd());
             ImGui_ImplDX11_Init(app.dev.Device(), app.dev.Context());
-            if (!opt.editor_demo) LoadFonts();
+            if (!opt.editor_demo && !opt.settings_demo) LoadFonts();
+            if (opt.settings_demo)
+                app.settings = ct::ui::SettingsWindow::CreateDemo(opt.section, app.dev.AdapterName(), [&app] {
+                    app.redraw_requested = true;
+                    SetEvent(app.wake_event);
+                }).release();
             if (opt.editor_demo) {
                 app.editor = new ct::ui::EditorShell();
                 app.editor->SetHostWindow(app.win.Hwnd());
@@ -382,6 +407,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
 
             delete app.editor;
             app.editor = nullptr;
+            delete app.settings;
+            app.settings = nullptr;
             ImGui_ImplDX11_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();

@@ -2,9 +2,9 @@
 // mf_util_internal.h (private to ct_media)
 // Small Media Foundation helpers shared by media_info / video_decoder / audio_decoder.
 
-#include "mf_startup_internal.h"
 
 #include <ct/core/types.h>
+#include <ct/platform/mf_runtime.h>
 #include <ct/platform/win.h>
 
 #include <mfapi.h>

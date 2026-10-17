@@ -1,6 +1,8 @@
 // tests/data/pattern_*.mp4 (written by tools/gen_test_media): stream layout, frame counter, flashes and beeps.
-// The counter reader below is the reference for the layout documented in tests/data/README.md.
+// The counter is read with tests/common/frame_index.h, the one reader for the layout in tests/data/README.md.
 #include "media_test_util.h"
+
+#include "../common/frame_index.h"
 
 #include <ct/media/mf_runtime.h>
 #include <ct/media/probe.h>
@@ -15,26 +17,6 @@ using namespace ct::media;
 using namespace ct::media_test;
 
 namespace {
-
-// Segment centres (a..g) relative to a digit cell's top-left corner (x0 = 34 + 33 * d, y0 = 36).
-constexpr int kSegCentre[7][2] = {{14, 2}, {26, 15}, {26, 41}, {14, 54}, {2, 41}, {2, 15}, {14, 28}};
-constexpr uint8_t kDigitSegs[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
-
-int64_t ReadCounter(const uint8_t* y, int pitch) {
-    int64_t v = 0;
-    for (int d = 0; d < 12; ++d) {
-        const int x0 = 34 + 33 * d, y0 = 36;
-        uint8_t bits = 0;
-        for (int s = 0; s < 7; ++s)
-            if (y[static_cast<size_t>(y0 + kSegCentre[s][1]) * pitch + x0 + kSegCentre[s][0]] > 128) bits |= 1 << s;
-        int digit = -1;
-        for (int k = 0; k < 10; ++k)
-            if (kDigitSegs[k] == bits) digit = k;
-        if (digit < 0) return -1;
-        v = v * 10 + digit;
-    }
-    return v;
-}
 
 struct Check {
     int frames = 0, counter_errors = 0, flash_errors = 0;
@@ -57,10 +39,10 @@ void CheckFile(const char* path, int w, int h, int frames, int64_t duration_us) 
     CT_REQUIRE(SUCCEEDED(ScanStream(path, 0, v)));
     CT_CHECK_EQ(v.samples, static_cast<uint64_t>(frames));
     Check c;
-    CT_REQUIRE(DecodeLuma(path, 125, [](void* u, int frame, const uint8_t* y, int pitch, int, int) {
+    CT_REQUIRE(DecodeLuma(path, 125, [](void* u, int frame, const uint8_t* y, int pitch, int w, int h) {
         auto& k = *static_cast<Check*>(u);
         ++k.frames;
-        if (ReadCounter(y, pitch) != frame) ++k.counter_errors;
+        if (test::ReadFrameIndexY(y, w, h, pitch) != frame) ++k.counter_errors;
         const bool flash = frame % 60 == 0;
         const uint8_t probe = y[static_cast<size_t>(500) * pitch + 700];   // outside the counter box
         if (flash != (probe > 230)) ++k.flash_errors;

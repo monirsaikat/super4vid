@@ -1161,6 +1161,47 @@ Why: dithering noise defeated index-level differencing; the rest are spec gaps o
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
 
+## 2026-10-17 · P10 task 10.2 (prerequisite) · render::TimelinePlayer details
+Spec said: P09 "Core structures" `TimelinePlayer { Init(RenderContext&, AudioDevices&); SetProject; Cache(media); Resolve;
+ResolveExact; Clock; Audio; Play/Pause/Seek/SetRate/StepFrames; HintScrub; RenderAudio }`, mixing "active audio-bearing clips".
+Done instead (every specified member exists with its signature; additions only):
+- `ct_render` now depends on `ct_playback` (DEPS line in src/render/CMakeLists.txt). frame_inputs.h/compositor.h stay
+  playback-free (the P08 entry still holds for them).
+- Additions: `Options { audio_output, async_open }` + `Init(rc, AudioDevices*, Options)` (export/tests run without WASAPI),
+  `Tick()` (per UI frame: returns the playhead, pauses at the end, refreshes the audio plan), `Now`, `Playing`, `Rate`,
+  `Duration`, `HasAudioOutput`, `MediaPending`, `CameraCache`, `Events`, `WaitMediaOpen`, `ProjectChanged`, static
+  `AudioFramesBetween/AudioSampleIndex` (floor(t * 48000 / 1e6), so per-frame chunks add up exactly).
+- Media: one slot per media id. Recordings (`.ctrec`) open `<bundle>/<meta screen.file>` (Screen clips, mic/system audio)
+  and `<bundle>/<meta camera.file>` (Camera clips) as two MediaCaches, and load events.ctev for Screen clips. Resolve opens
+  media on the IO pool (`all_exact = false` meanwhile); ResolveExact opens synchronously. Images: `is_rgba`,
+  `rgba_premultiplied = true` (ImageIo decodes premultiplied). The Image background is decoded once per path.
+- Frame requests ask for the *middle of the nominal frame slot* of the clip's media time (`FrameIndexAt` on the media fps):
+  decoded durations are rounded (16666 us at 60 fps), and asking for a time in the 1 us hole after a frame (e.g. a clip's
+  last frame at `out_us - 1` on a frame boundary) made the prefetcher drop that frame forever (MediaCache skips frames that
+  end at or before the target). `VideoLayerInput::media_t_us` keeps the exact media time (events). When a file's decode
+  ends before its container duration (AAC padding), ResolveExact remembers the time after one timeout and shows the last
+  frame from then on.
+- One cache hint per file per Resolve (the first clip using it): two clips of the same file far apart in media time (a
+  transition between distant parts of one recording) fight over one prefetch window; the second clip's frame comes from
+  its miss/wait. Acceptable for transitions (0.5 s); per-clip caches would double decoder count.
+- SRV lifetime: the views of the last Resolve are AddRef'ed until the next Resolve, and MediaCache pins the last 4 frames per
+  file; more than 4 simultaneous frames from one file in one Resolve is unsupported.
+- Audio-bearing clips = clips on unmuted *audio* tracks (Recording/Video/Audio media); clips on video tracks are silent. The
+  editor adds a linked audio clip when a video with audio is dropped. Stream: Mic/System via `Media::audio_streams` labels,
+  else the first audio stream (index into `MediaInfo::AudioStreams()`, file order).
+- Mix (src/render/src/audio_mixer.*, shared by playback and RenderAudio): one AudioDecoder per clip, re-seeked only on a
+  discontinuity; speed via `audio::Resampler` (48000 * speed -> 48000: pitch follows speed, like varispeed; clips outside
+  0.125..8x are silent: the resampler's ratio limit); gain = dB(static or `audio.gain_db` keys) * linear fades * normalize,
+  evaluated exactly every 256 frames and ramped linearly in between. Normalize = -1 dBFS peak target from the waveform
+  peaks of the clip's range, capped at +20 dB; playback takes peaks from the MediaCache (unity until built), RenderAudio
+  loads/builds them itself (blocking).
+- Playback feed: "ct-audio-mix" thread (above normal) mixes 10 ms chunks into a 300 ms AudioRing; `Pull` follows
+  playback::Player's protocol (try-lock, catch-up drop, silence until the requested generation has data) but counts in
+  samples, not microseconds (no rounding drift). Edits are picked up by the mixer at the next chunk (<= 300 ms latency, no
+  restart). Decoders of clips starting within 1 s are opened ahead.
+Why: P09 interface gaps; MediaCache rounding behaviour; real-time constraints of the audio thread.
+Impact: P09b drives `Tick()` each frame, calls `Resolve(playhead)` and re-renders while `all_exact` is false, and adds
+audio clips on audio tracks for dropped video media.
 ## 2026-10-17 · Review fix (P04) · Mp4Writer never frees its state under a live ct-encode thread
 Spec said: `Abort()` returns after at most 3 s and does not join; the destructor finalizes and releases the writer.
 Done instead: the destructor joins ct-encode (no timeout) before releasing anything when `Finalize`'s 60 s join timed out.
@@ -1248,48 +1289,111 @@ TYPING Tick runs up to the cutoff.
 Why: a control's time was read before it was queued; a drain in between wrote later hook events first.
 Impact: records of the last 5 ms before a periodic drain wait for the next drain (100 ms); `Flush()` still writes
 everything recorded before the call.
+## 2026-10-17 · P11 tasks 11.5/11.6 · Settings window, error banner and first run details
+Spec said: `ui::SettingsWindow` modal with sections Recording (incl. keystrokes mode with a privacy note), Audio (meters
+test), Camera, Hotkeys, Editor, Export, Privacy, About; saves through the 500 ms debounce; error banners per docs/05.
+Done instead:
+- Keystroke capture mode lives in the Privacy section (with the off / shortcuts / all note), not in Recording, so all
+  privacy-relevant choices sit together. The live mic meter test is not built yet (11.6 stays `[~]`).
+- `recording.mic_device` stores the WASAPI endpoint id (UTF-8) and `recording.webcam_device` the camera's symbolic
+  link (UTF-8); empty = default mic / no camera. `webcam_resolution` stays "WxH" from `WebcamInfo::sizes`.
+- The debounce runs on its own thread (`ui::SettingsSaver`, "ct-settings-save"): each change re-arms 500 ms, the
+  thread writes the latest copy with `Settings::Save`; the destructor flushes synchronously. The UI thread never
+  writes the file. `Debouncer` is the pure, tested part.
+- The window is an ImGui modal popup (dims the viewport, Esc / Done close, Enter closes when no item has keyboard
+  focus). Hosts smaller than 840x580 DIP (the recorder bar) need ImGui multi-viewports or their own host window.
+- Hotkey recorder: claims every key (`SetKeyOwner`, LockThisFrame) while listening so ImGui nav does not see Tab/Esc.
+  Esc cancels, Backspace/Delete clears to "None"; letters/digits/navigation keys need Ctrl, Alt or Win (Shift alone is
+  refused); F1-F24, Pause, PrintScreen and Insert may stand alone. Conflict check order: duplicate of another of our
+  actions, unchanged, then a test `RegisterHotKey` on a thread-bound id (`SystemHotkeyProbe`). Because our own global
+  hotkeys would swallow the keys and fail the probe, the owner gets `suspend_hotkeys()` when recording starts and
+  `reregister_hotkeys(hotkeys, &err)` when it ends.
+- Icons beyond icons.h used only by the window: Keyboard E92E, Refresh E72C (both checked in SegoeIcons.ttf and
+  segmdl2.ttf by `ct_ui_tests settings_icons_present_in_icon_font`); wide glyphs are scaled into an 18 DIP slot.
+- `ct_ui` now links `ct_audio ct_capture ct_media ct_export` (AudioDevices, WebcamSource::Enumerate, EncoderCaps,
+  Preset). `webcam_source.h` pulls `d3d_device.h` (and its `mfobjects.h`) into `settings_window_logic.cpp` only.
+- Error messages keep a `%s` placeholder replaced by `ui::FillPlaceholder` (no printf, paths may contain `%`);
+  DiskFull shows the volume (`ui::DriveOf`: "D:", "\server\share", `\?\` prefixes stripped).
+- First run = `settings.json` missing. `FirstRun::Run` pushes the toast (12 s) and on the IO pool creates the folders
+  and writes the current settings, so the next start is not a first run.
+Why: spec gaps (storage format of device ids, keyboard capture semantics, where the save happens) and grouping.
+Impact: P05b bar: `settings_window.suspend_hotkeys/reregister_hotkeys/on_changed`, call `FirstRun::Run(&toasts,
+settings, SettingsFilePath())` once at startup. P09b editor: `ErrorBanner` per panel, Preferences -> `Open()`.
+## 2026-10-17 · Integration (after P04-P08 merge) · One test pattern, MfRuntime in ct_platform, media enums in presets, SessionClock as MediaTimeSource
+Spec said: P04's `tools/gen_test_media` writes tests/data/pattern_*.mp4; P06 replaces its private MF guard with
+`media::MfRuntime::Ensure()` and P05's webcam does the same; P10's Preset switches to `media::VideoCodec`/`RateControl`
+once ct_media exists; `recorder::SessionClock` derives from `capture::MediaTimeSource`.
+Done:
+- Test pattern: `tests/common/frame_index.h` now decodes exactly the counter `tools/gen_test_media` draws (12 digits,
+  28 x 56 px cells at (34 + 33 k, 36), 4 px strokes, box (32,32)-(432,96)); the P06 layout (24 x 48 glyphs, 6 px
+  strokes) is gone. The P06 helper `ct_gen_test_media` (tests/media/gen_pattern_main.cpp) and the `out/testmedia/`
+  fallback are deleted: tests read only the committed tests/data files (regenerate with
+  `gen_test_media --all tests/data`). `DrawFrameIndexY` is removed with its only user.
+- MfRuntime: ct_media depends on ct_capture, so ct_capture cannot use ct_media. `MfRuntime`/`MfScope` moved to
+  ct_platform (`ct/platform/mf_runtime.h`, `platform::MfRuntime`); `ct/media/mf_runtime.h` is a forwarding header
+  (`using platform::MfRuntime; using platform::MfScope;`), so existing `media::MfRuntime` callers are unchanged.
+  Added `MfRuntime::EnsureForProcess()`: the first successful call takes one reference that is never released. The
+  decoders, `MediaInfo::Load` and the webcam (Enumerate/Init/synthetic reader) use it, keeping the old guards'
+  process-lifetime semantics (no MFShutdown while a decoder or DXGI manager may still be alive) while sharing the one
+  refcount. `mf_startup_internal.h` and `capture::internal::EnsureMfStarted` are deleted. MFSTARTUP_LITE and
+  MFSTARTUP_NOSOCKET are the same flag value.
+- Presets: `exportng::VideoCodec` / `exportng::RateControl` are now `using media::VideoCodec` / `using
+  media::RateControl`; ct_export depends on ct_media. JSON names unchanged (static_asserts pin the enum order of the
+  name tables). ExportJob needs no static_cast.
+- SessionClock: `struct SessionClock final : capture::MediaTimeSource`; `QpcHnsToMediaUs` forwards to `HnsToMediaUs`,
+  `NowMediaUs` is the override. `MediaTimeSource`/`QpcMediaTimeSource` moved from webcam_source.h to the new light
+  header `ct/capture/media_time_source.h` (webcam_source.h includes it), so session_clock.h does not pull in D3D/MF.
+Why: the parallel phases each had a placeholder for a piece another phase owned; the counter layouts disagreed so the
+decoder/cache/player tests failed on the committed files.
+Impact: Recorder session: `webcam.Start(session.clock, sink)` works directly. New MF users without a Shutdown point
+call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shutdown` or `MfScope`.
+- Timing checks in the P04/P06 tests (`video_decoder_seek_*`, `player_plays_in_sync_and_steps`, `media_cache_budget_*`,
+  `media_cache_thumbnail_within_1s` (gross limit 3 s), `audio_engine_position_*`, `mp4_writer_2s_*` `pool_empty`) follow docs/06: budgets are enforced only with `CT_STRICT_TIMING=1`, otherwise a gross limit
+  (seeks 2000 ms, clock deviation 50 ms) or report-only. Helper `tests/common/timing.h` (`StrictTiming`, `TimingLimit`).
+  They failed intermittently in Release on the loaded machine (seek p95 583 ms, 62 frames shown in 90 ticks) with all
+  correctness checks (frame indices, cache misses = 0) passing.
+- One counter reader: `tests/common/frame_index.h` (names `ReadFrameIndexWith`, `ReadFrameIndexY`, `ReadFrameIndex`;
+  the RGBA reader gained optional `ox, oy` frame offsets). P10's `tests/common/pattern_counter.h` (export branch) samples
+  the identical segment centres, as did the private reader in tests/media/test_data_test.cpp (now uses frame_index.h);
+  when that branch merges it should become a thin include of frame_index.h, with
+  `ReadPatternCounterWith/Y/Rgba` forwarding to `ReadFrameIndexWith/Y/ReadFrameIndex`.
 
-## 2026-10-17 · P10 task 10.2 (prerequisite) · render::TimelinePlayer details
-Spec said: P09 "Core structures" `TimelinePlayer { Init(RenderContext&, AudioDevices&); SetProject; Cache(media); Resolve;
-ResolveExact; Clock; Audio; Play/Pause/Seek/SetRate/StepFrames; HintScrub; RenderAudio }`, mixing "active audio-bearing clips".
-Done instead (every specified member exists with its signature; additions only):
-- `ct_render` now depends on `ct_playback` (DEPS line in src/render/CMakeLists.txt). frame_inputs.h/compositor.h stay
-  playback-free (the P08 entry still holds for them).
-- Additions: `Options { audio_output, async_open }` + `Init(rc, AudioDevices*, Options)` (export/tests run without WASAPI),
-  `Tick()` (per UI frame: returns the playhead, pauses at the end, refreshes the audio plan), `Now`, `Playing`, `Rate`,
-  `Duration`, `HasAudioOutput`, `MediaPending`, `CameraCache`, `Events`, `WaitMediaOpen`, `ProjectChanged`, static
-  `AudioFramesBetween/AudioSampleIndex` (floor(t * 48000 / 1e6), so per-frame chunks add up exactly).
-- Media: one slot per media id. Recordings (`.ctrec`) open `<bundle>/<meta screen.file>` (Screen clips, mic/system audio)
-  and `<bundle>/<meta camera.file>` (Camera clips) as two MediaCaches, and load events.ctev for Screen clips. Resolve opens
-  media on the IO pool (`all_exact = false` meanwhile); ResolveExact opens synchronously. Images: `is_rgba`,
-  `rgba_premultiplied = true` (ImageIo decodes premultiplied). The Image background is decoded once per path.
-- Frame requests ask for the *middle of the nominal frame slot* of the clip's media time (`FrameIndexAt` on the media fps):
-  decoded durations are rounded (16666 us at 60 fps), and asking for a time in the 1 us hole after a frame (e.g. a clip's
-  last frame at `out_us - 1` on a frame boundary) made the prefetcher drop that frame forever (MediaCache skips frames that
-  end at or before the target). `VideoLayerInput::media_t_us` keeps the exact media time (events). When a file's decode
-  ends before its container duration (AAC padding), ResolveExact remembers the time after one timeout and shows the last
-  frame from then on.
-- One cache hint per file per Resolve (the first clip using it): two clips of the same file far apart in media time (a
-  transition between distant parts of one recording) fight over one prefetch window; the second clip's frame comes from
-  its miss/wait. Acceptable for transitions (0.5 s); per-clip caches would double decoder count.
-- SRV lifetime: the views of the last Resolve are AddRef'ed until the next Resolve, and MediaCache pins the last 4 frames per
-  file; more than 4 simultaneous frames from one file in one Resolve is unsupported.
-- Audio-bearing clips = clips on unmuted *audio* tracks (Recording/Video/Audio media); clips on video tracks are silent. The
-  editor adds a linked audio clip when a video with audio is dropped. Stream: Mic/System via `Media::audio_streams` labels,
-  else the first audio stream (index into `MediaInfo::AudioStreams()`, file order).
-- Mix (src/render/src/audio_mixer.*, shared by playback and RenderAudio): one AudioDecoder per clip, re-seeked only on a
-  discontinuity; speed via `audio::Resampler` (48000 * speed -> 48000: pitch follows speed, like varispeed; clips outside
-  0.125..8x are silent: the resampler's ratio limit); gain = dB(static or `audio.gain_db` keys) * linear fades * normalize,
-  evaluated exactly every 256 frames and ramped linearly in between. Normalize = -1 dBFS peak target from the waveform
-  peaks of the clip's range, capped at +20 dB; playback takes peaks from the MediaCache (unity until built), RenderAudio
-  loads/builds them itself (blocking).
-- Playback feed: "ct-audio-mix" thread (above normal) mixes 10 ms chunks into a 300 ms AudioRing; `Pull` follows
-  playback::Player's protocol (try-lock, catch-up drop, silence until the requested generation has data) but counts in
-  samples, not microseconds (no rounding drift). Edits are picked up by the mixer at the next chunk (<= 300 ms latency, no
-  restart). Decoders of clips starting within 1 s are opened ahead.
-Why: P09 interface gaps; MediaCache rounding behaviour; real-time constraints of the audio thread.
-Impact: P09b drives `Tick()` each frame, calls `Resolve(playhead)` and re-renders while `all_exact` is false, and adds
-audio clips on audio tracks for dropped video media.
+## 2026-10-17 · P09 tasks 9.1-9.7 (second half) · Editor window, preview, file ops, app mode
+Spec said: a MediaCache-backed TimelineMediaProvider, a preview panel with gizmos/overlays/transport, IFileDialog file
+ops, recent files, autosave recovery, unsaved prompt, layout ini, media probing/relink, Regenerate, error banners and
+`Camtesia.exe --editor [file]`.
+Done / interpreted:
+- Player: the editor uses `render::TimelinePlayer` directly (`detail::PlayerTransport` adapts it to `PlaybackControl`;
+  Tick() once per frame gives the playhead; loop wraps in the adapter). `PlaybackControl` gained `Volume/SetVolume/
+  Muted/SetMuted` virtuals with no-op defaults so SimplePlayback and test fakes are unchanged.
+- `TimelinePlayer::Cache(id)` now opens the media's slot lazily (`GetSlot(m, false)`) instead of returning null for
+  media not yet touched by Resolve; otherwise bin cards and off-screen timeline clips never got thumbnails/peaks.
+- Provider (`detail::CacheMediaProvider`, private): thumbnails are ComPtr-pinned until the next frame's BeginFrame so
+  ImGui never draws a released SRV; peaks are cached per `path#stream` as min/max pairs; a clip still loading shimmers
+  for at most 30 s, then draws flat.
+- Preview: the compositor renders into a canvas-size B8G8R8A8 target owned by the window, only when the revision,
+  playhead, view or "inexact frame" state changed (idle = 0 GPU work). While a camera key is selected the camera is
+  disabled and the key's window is drawn as a dashed rect with the rest dimmed. Scale is uniform (Alt = about the
+  opposite handle), Shift snaps rotation to 15 degrees, Space/middle drag pans the view. Each gizmo drag is one undo entry.
+- Linked audio: since only clips on audio tracks sound (TimelinePlayer rule), dropping/adding/importing a video that
+  has audio also adds a Source::Default clip with the same start/in/out/speed on the first unlocked audio track with
+  room, else a new "Audio" track (`cmd::AddLinkedAudioClip`, same as RecImporter). Opening a media file into an empty,
+  clean project sets the canvas from the video and creates the video + audio tracks.
+- Recent files: `%APPDATA%\Camtesia\recent.json` (max 10; an entry whose file fails to open is removed). Layout:
+  `%APPDATA%\Camtesia\editor_layout.ini`; screenshot/bench runs use the built-in layout and write nothing.
+- Banners: `BannerStack` is one P11a `ErrorBanner` per panel (Media/Preview/Properties/Timeline); a new error on a
+  panel replaces the old one.
+- App: `RunEditorApp` (src/ui) owns its own window (class "CamtesiaMain", so SingleInstance forwarding reaches it),
+  D3D device, AudioDevices and Async UI poster; main.cpp only dispatches. A forwarded command line opens its paths
+  (through the unsaved prompt). The loop renders only after input or while something animates; a 1 Hz waitable timer
+  drives autosave.
+- Bench flags (`--bench-drag N`, `--bench-scrub N`, `--bench-play N`, `--stats`, `--size WxH`) inject synthetic
+  mouse input after the Win32 backend's NewFrame and print results; they are used for the 9.7 numbers.
+- Review fixes: ##camkey/##camsec ID scopes; group move sorted by shift direction; autosave notified on every commit;
+  PropTime coalesces before returning; marker and dragged clip/selection excluded from snapping (allocation-free
+  SnapIgnore); trims clamp analytically (no Project copies); marker label typing is one undo entry.
+Impact: P10's export dialog plugs into `EditorShell::on_export` (currently a toast); P05b's recorder can open the
+editor in-process later by calling `RunEditorApp`-equivalent pieces or by launching `--editor folder.ctrec`.
 
 ## 2026-10-17 · P10 tasks 10.2-10.5 · ExportJob, Scaler, MP4/GIF/PNG/M4A details
 Spec said: export loop in docs/phases/P10 10.2 (one thread, `WriteVideoSync` with 2 alternating NV12 textures, audio after

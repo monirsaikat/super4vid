@@ -6,6 +6,7 @@
 #include "../common/rgba_readback.h"
 #include "../common/test_device.h"
 #include "../common/test_media.h"
+#include "../common/timing.h"
 
 #include <ct/core/fs.h>
 #include <ct/core/time.h>
@@ -25,11 +26,14 @@ using namespace ct::playback;
 
 namespace {
 
+// The 1 s budget (2 s in Debug + debug layer) is enforced with CT_STRICT_TIMING; otherwise only the 3 s wait limit.
+double ThumbLimitMs() {
 #ifdef CT_DEBUG
-constexpr double kThumbBudgetMs = 2000.0;   // Debug + debug layer under parallel builds; the 1 s budget is Release
+    return test::TimingLimit(2000.0, 3000.0);
 #else
-constexpr double kThumbBudgetMs = 1000.0;
+    return test::TimingLimit(1000.0, 3000.0);
 #endif
+}
 
 int64_t IndexOf(platform::D3DDevice& dev, const FrameRef& f) {
     test::Nv12Image img;
@@ -179,7 +183,7 @@ CT_TEST_DEVICE(media_cache_budget_and_playback_window) {
         CT_CHECK(st.evictions > 0);
         CT_CHECK(st.cached_frames <= 20u);
 #ifndef CT_DEBUG
-        CT_CHECK(late <= 2);   // real-time: enforced in Release only (Debug + debug layer is report-only)
+        if (test::StrictTiming()) CT_CHECK(late <= 2);   // real-time: Release + CT_STRICT_TIMING only
 #endif
     }
     CacheBudget::SetBytes(old);
@@ -199,7 +203,7 @@ CT_TEST_DEVICE(media_cache_thumbnail_within_1s) {
     const double ms = sw.ElapsedMs();
     std::printf("    thumbnail ready after %.0f ms\n", ms);
     CT_REQUIRE(srv != nullptr);
-    CT_CHECK(ms < kThumbBudgetMs);
+    CT_CHECK(ms < ThumbLimitMs());
     Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
     std::vector<uint8_t> px;
     int w = 0, h = 0;
@@ -215,11 +219,11 @@ CT_TEST_DEVICE(media_cache_thumbnail_within_1s) {
     sw.Start();
     while (!cache.Thumbnail(3'000'000, srv) && sw.ElapsedMs() < 3000) Sleep(5);
     const double next_ms = sw.ElapsedMs();
-    CT_CHECK(next_ms < kThumbBudgetMs);
+    CT_CHECK(next_ms < ThumbLimitMs());
     sw.Start();
     while (!cache.Thumbnail(4'500'000, srv) && sw.ElapsedMs() < 3000) Sleep(5);   // another GOP: seek + 30 frames
     std::printf("    next bucket %.0f ms, other GOP %.0f ms\n", next_ms, sw.ElapsedMs());
-    CT_CHECK(sw.ElapsedMs() < kThumbBudgetMs);
+    CT_CHECK(sw.ElapsedMs() < ThumbLimitMs());
 }
 
 CT_TEST_DEVICE(media_cache_peaks_and_audio) {

@@ -245,6 +245,9 @@ TimelinePlayer::MediaSlot* TimelinePlayer::GetSlot(const project::Media& m, bool
 }
 
 playback::MediaCache* TimelinePlayer::Cache(const project::Id& media) {
+    // P09: the media bin and the timeline ask for thumbnails/peaks of media no visible clip uses yet: open lazily.
+    if (m_project && m_slots.find(media) == m_slots.end())
+        if (const project::Media* m = m_project->FindMedia(media)) GetSlot(*m, false);
     auto it = m_slots.find(media);
     if (it == m_slots.end() || it->second->state.load(std::memory_order_acquire) != 2) return nullptr;
     return it->second->main.get();
