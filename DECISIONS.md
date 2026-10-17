@@ -1197,3 +1197,14 @@ Spec said: Image background with an optional cached blur.
 Done instead: the cache key is a `ComPtr<ID3D11ShaderResourceView>` (plus blur and size) instead of a raw pointer.
 Why: a freed wallpaper's address could be reused by the next one, which then showed the old blur.
 Impact: the compositor keeps the last blurred wallpaper's SRV alive until the wallpaper changes or Shutdown.
+
+## 2026-10-17 · P05 review fix · events.ctev records are written in time order across controls and hook events
+Spec said: ct-events-io drains every 100 ms, records merged in time order.
+Done instead: a control (MARKER, PAUSE, initial WINDOW_FOCUS) is stamped inside `PushControl` under the control lock, and
+each drain reads its cutoff under the same lock. Only records with t <= cutoff are written; later ones stay in the batch
+for the next drain. Cutoff: periodic drains `QpcToMediaUs(now - 5 ms)` (covers a hook event stamped just before its push;
+inside a pause it maps to the pause start, so the PAUSE record is not held back), `Flush()` = now, stop = everything.
+TYPING Tick runs up to the cutoff.
+Why: a control's time was read before it was queued; a drain in between wrote later hook events first.
+Impact: records of the last 5 ms before a periodic drain wait for the next drain (100 ms); `Flush()` still writes
+everything recorded before the call.
