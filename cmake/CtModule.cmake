@@ -32,7 +32,7 @@ function(ct_compile_shaders target)
     set(out ${out_dir}/${stem}_${entry}.h)
     add_custom_command(OUTPUT ${out}
       COMMAND ${FXC_EXE} /nologo /T ${profile} /E ${entry} /WX
-              $<IF:$<CONFIG:Debug>,/Zi;/Od,/O3> /Fh ${out} /Vn g_${stem}_${entry}
+              "$<IF:$<CONFIG:Debug>,/Zi;/Od,/O3>" /Fh ${out} /Vn g_${stem}_${entry}
               ${CMAKE_CURRENT_SOURCE_DIR}/${file}
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${file}
       COMMAND_EXPAND_LISTS COMMENT "fxc ${file} (${entry})")

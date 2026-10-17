@@ -263,3 +263,26 @@ Done instead (specified members unchanged):
   machine has one GPU.
 Why: robustness against hot-plug, DPI-unaware hosts and mode changes.
 Impact: P05's pool textures for capture need `D3D11_BIND_RENDER_TARGET` (ScreenCapturer creates them that way).
+
+## 2026-10-17 · P02 task 2.4 · ColorConverter details; ct_compile_shaders fix
+Spec said: `bgra_to_nv12.hlsl` with a runtime `tonemap` flag and `float4x4 rot_uv`; `rgba16f_to_nv12.hlsl` as a separate file;
+the `ColorConverter` declaration in section 2.4; the video processor enumerator with "Usage NORMAL".
+Done instead:
+- `rot_uv` is declared `row_major` so the C++ side (`RotationUvMatrix`, exported for tests) writes it in reading order.
+- `rgba16f_to_nv12.hlsl` defines `CT_HDR_SOURCE` and includes `bgra_to_nv12.hlsl`: the scRGB scale + sRGB encode is compiled
+  only into the FP16 variant; `tonemap` stays a runtime flag inside it. BT.709 constants are unchanged. An FP16 source with
+  `hdr_tonemap = false` is still scaled to SDR white and sRGB-encoded (only the roll-off is skipped).
+- Note: the specified roll-off `c / (1 + max(c - 1, 0))` equals 1 for every c >= 1, so it behaves as a clip at SDR white. Kept as
+  specified; a real shoulder curve is a P11 polish item if HDR captures look flat.
+- `Config` gained `force_video_processor` (tests run the fallback on hardware that has the shader path) and `Shutdown()`.
+  Exported CPU references `RotationUvMatrix`, `RotateUvRef`, `RgbToNv12Ref` live in `color_convert.h`.
+- Views (SRV, per-plane RTVs, VP input/output views) are created on first use per texture and cached (16 slots each); with
+  the 3 + 12 pool textures this means no view creation after the first second of a session.
+- Video processor fallback: `D3D11_VIDEO_USAGE_PLAYBACK_NORMAL`, auto-processing off, source/dest/target rects set. Rotation maps
+  R90 -> `D3D11_VIDEO_PROCESSOR_ROTATION_90` (clockwise, the same mapping as the shader's uv transform); not verified on a
+  rotated monitor.
+- `cmake/CtModule.cmake` `ct_compile_shaders`: the `$<IF:$<CONFIG:Debug>,/Zi;/Od,/O3>` argument is now quoted. Unquoted, the
+  `;` split the generator expression and ninja rejected the build file ("bad $-escape"); P02 is the first user of the helper.
+Measured: GPU vs CPU reference, 10,000 samples per rotation, max |dY| = 1 and max |dUV| = 1 for all four rotations; the video
+processor fallback gives max |dY| 1 / |dUV| 1 on a smooth gradient (27 on hard sawtooth edges, its chroma filter differs).
+Impact: P08 can reuse `fullscreen.hlsl` and the helper.

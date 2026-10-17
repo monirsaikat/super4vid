@@ -46,7 +46,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager) — AMD Radeon (5700G iGPU): NV12 RT yes, FP16 RT yes, video device yes
 - [x] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag) — reference machine: 2 x 1920x1080 SDR (HP M22f 60 Hz primary, HP 22fw 59 Hz), 96 dpi, one adapter
 - [x] 2.3 `DesktopDuplicator`: acquire loop, crop copy, timeout/repeat, access-lost recovery — first S_OK 22-26 ms after Init (Debug, debug layer), content verified by readback; letterbox path tested
-- [ ] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback
+- [x] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback — GPU vs CPU reference max |dY| 1, |dUV| 1 (all 4 rotations, 10,000 samples); VP fallback max 1/1 on a smooth gradient
 - [ ] 2.5 `CursorTracker`: 120 Hz position poll + shape capture (color, mask, animated), dedupe by hash
 - [ ] 2.6 Capture pacing: CFR tick emitter, frame repeat, drop accounting, stats
 - [ ] 2.7 Acceptance: `capture_bench --monitor 0 --fps 60 --seconds 30` shows 0 drops, CPU < 3 %, GPU < 8 % at 1080p
