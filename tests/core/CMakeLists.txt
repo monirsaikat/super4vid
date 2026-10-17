@@ -3,4 +3,5 @@ ct_add_test(ct_core_tests DEPS ct_core SOURCES
   strings_test.cpp
   time_test.cpp
   containers_test.cpp
-  thread_test.cpp)
+  thread_test.cpp
+  json_test.cpp)

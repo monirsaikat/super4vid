@@ -150,3 +150,15 @@ Done instead (additions only):
 Why: testability and no lost jobs at exit.
 Impact: the app (P05/P09) defines `WM_CT_INVOKE`, installs the poster after creating its main window, and in the handler does
 `auto* fn = (std::function<void()>*)lparam; (*fn)(); delete fn;`. Call `Async::Shutdown()` before `Log::Shutdown()`.
+
+## 2026-10-17 · P01 task 1.5 · Json additions and parser choices
+Spec said: the `Json` class in P01 section 1.5.
+Done instead (additions only): `Json(std::nullptr_t)`, a constructor template for the other integer types (`uint32_t`, `size_t`,
+`long`, ...; without it they are ambiguous between int/int64_t/double/bool), `IsInteger()`, `operator==`/`!=` (deep, 1 == 1.0),
+and a non-const `operator[](size_t)` (without it `j[0]` on a non-const value is ambiguous with the string_view overload).
+Parser choices the spec leaves open: nesting depth 256 is accepted, 257 rejected; unpaired `\uD800`-style surrogates become U+FFFD
+(not an error); `-0` is stored as a double so its sign survives; integers beyond int64 become doubles; duplicate keys are kept in
+order and lookups return the first; raw bytes >= 0x80 pass through unvalidated. `Get<T>` supports bool, integers (clamped),
+floating point and `std::string`.
+Why: the spec's overload set does not compile for common call sites; the rest are the conservative choices.
+Impact: P07 can rely on byte-identical Dump after Parse -> Dump -> Parse.
