@@ -283,3 +283,23 @@ media without a positive frame rate and size, and images without a size (canvas 
 Why: independent review: a corrupt shape record (65535x65535 RLE) requested ~17 GB and terminated the process (no
 exceptions); a zero fps_den would divide by zero in frame-time math.
 Impact: P05 must not write shapes larger than 1024 px (CursorTracker already caps them); P08 can trust EventLog sizes.
+
+## 2026-10-17 · P07 task 7.3 · Edit-op semantics; streaming .ctproj writer; <charconv>
+Spec said: the op list in P07 7.3; `SetCrop(...)` etc. without full signatures; serialization through the Json DOM.
+Done instead:
+- Setter signatures are `(Project&, const Id& clip, const T&)`; `SetPip` takes `std::optional<Pip>` (nullopt removes the PIP).
+  Clip-mutating ops refuse locked tracks. A failed op leaves the project byte-identical (the fuzz test checks this).
+- Transitions that an edit makes invalid (no longer adjacent, or longer than half the shorter clip) are removed by the op.
+  Split keeps the incoming transition on the left part and moves the outgoing one to the right part (the spec's
+  "transitions touching the split point" cannot exist: a split is strictly inside a clip).
+- TrimIn shifts the clip's keyframes so they stay with the content; Slip and SetSpeed leave them alone. Split inserts a key
+  at the split on each side only where the track has keys beyond it, so values at the split are kept exactly.
+- Split trims the right part's `out_us` by the 1-2 us that truncation can add at speeds < 1, so it never grows into the next clip.
+- `ToJson`/`Save` write with a streaming writer that reproduces `Json::Dump(2)` byte for byte (extras are dumped with
+  `Json::Dump` and re-indented). The DOM version took 169 us for the 8-clip fixture (undo snapshots serialize on every edit);
+  the writer takes 22 us. `ToJsonValue` is now `Json::Parse(ToJson(p))`.
+- Number formatting uses `<charconv>` (`std::to_chars`/`from_chars`, locale-independent) - not in the docs/02 header list,
+  but it is part of the standard library, allocation-free, and faster than `_snprintf_l` + `_strtod_l`.
+- The fuzz test runs 10,000 ops in Release and 2,000 in Debug (/Od + checked iterators are ~10x slower).
+Why: completeness of the API, speed of undo snapshots, determinism.
+Impact: P09 calls these ops; selection lists may reference clips removed by ripple/remove ops (UI prunes them).

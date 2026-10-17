@@ -6,20 +6,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
-#include <locale.h>
 
 namespace ct::project {
 
 namespace {
-
-_locale_t CLocale() {
-    static _locale_t loc = _create_locale(LC_NUMERIC, "C");
-    return loc;
-}
 
 // ---- enum names (docs/04 section 3) ---------------------------------------------------------------------------
 
@@ -39,9 +34,9 @@ constexpr const char* kDirections[] = {"left", "right", "up", "down"};
 constexpr const char* kCameraModes[] = {"manual", "auto"};
 
 template <class E, size_t N>
-Json EnumJson(E e, const char* const (&names)[N]) {
+const char* EnumName(E e, const char* const (&names)[N]) {
     const size_t i = static_cast<size_t>(e);
-    return Json(i < N ? names[i] : names[0]);
+    return i < N ? names[i] : names[0];
 }
 
 template <class E, size_t N>
@@ -52,298 +47,480 @@ E EnumFrom(const Json& v, const char* const (&names)[N], E def) {
     return def;
 }
 
-// ---- writer helpers -------------------------------------------------------------------------------------------
+// ---- known keys per object (reader: what goes to `extra`; writer: extras never shadow these) -------------------
 
-Json F(float v) { return Json(RoundFloat(v)); }
-Json T(TimeUs v) { return Json(static_cast<int64_t>(v)); }
-Json Color(const ColorF& c) { return Json(c.ToHex()); }
+using Keys = std::initializer_list<std::string_view>;
+const Keys kShadowKeys = {"enabled", "blur_px", "offset_y_px", "opacity"};
+const Keys kBackgroundKeys = {"kind", "color_a", "color_b", "angle_deg", "image", "blur"};
+const Keys kCanvasKeys = {"width", "height", "fps_num", "fps_den", "background", "padding_px", "corner_radius_px", "shadow"};
+const Keys kMediaKeys = {"id", "kind", "path", "duration_us", "video", "audio_streams", "has_events", "has_camera"};
+const Keys kTrackKeys = {"id", "kind", "name", "muted", "locked", "hidden", "height_px"};
+const Keys kCursorKeys = {"visible", "scale", "smoothing", "click_effect", "click_color", "hide_when_idle_us", "spotlight", "shadow"};
+const Keys kKeystrokeKeys = {"enabled", "position", "style", "hold_ms"};
+const Keys kPipKeys = {"corner", "size", "margin_px", "mask", "radius_px", "shadow", "mirror"};
+const Keys kAnnotationKeys = {"type", "text", "font", "size_px", "weight", "color", "fill", "stroke", "stroke_px", "radius_px",
+                              "rect", "pointer", "arrow_head_px", "blur_px", "pixelate", "anim_in", "anim_out", "anim_ms"};
+const Keys kTransformKeys = {"x", "y", "scale", "rotation_deg", "opacity", "anchor"};
+const Keys kCropKeys = {"left", "top", "right", "bottom"};
+const Keys kAudioKeys = {"gain_db", "muted", "fade_in_us", "fade_out_us", "normalize", "noise_gate_db"};
+const Keys kClipKeys = {"id", "track", "media", "kind", "source", "start_us", "in_us", "out_us", "speed", "name", "color",
+                        "transform", "crop", "corner_radius_px", "shadow", "audio", "keyframes", "cursor", "keystrokes",
+                        "pip", "annotation"};
+const Keys kTransitionKeys = {"track", "between", "kind", "duration_us", "color", "direction"};
+const Keys kAutoKeys = {"zoom", "min_hold_us", "lead_us", "ease_ms", "follow", "follow_deadzone", "trigger_on"};
+const Keys kCameraKeys = {"mode", "keyframes", "auto"};
+const Keys kMarkerKeys = {"t_us", "label", "color"};
+const Keys kUiKeys = {"playhead_us", "zoom", "scroll_us", "selected", "loop"};
+const Keys kProjectKeys = {"format", "version", "app_version", "id", "name", "canvas", "media", "tracks", "clips",
+                           "transitions", "camera", "markers", "ui"};
 
-// Appends the preserved unknown keys after the known ones (a key the writer already emitted wins).
-void AppendExtra(Json& o, const Json& extra) {
-    if (!extra.IsObject()) return;
-    for (const auto& [k, v] : extra.Items())
-        if (!o.Has(k)) o.Set(k, v);
+bool IsKnown(std::string_view key, const Keys& known) {
+    for (std::string_view k : known)
+        if (k == key) return true;
+    return false;
 }
 
-Json StringArray(const std::vector<std::string>& v) {
-    Json a = Json::Array();
-    for (const std::string& s : v) a.Push(Json(s));
-    return a;
-}
+// ---- streaming writer -----------------------------------------------------------------------------------------
+// Produces exactly the layout of Json::Dump(2) without building a DOM (undo snapshots serialize the whole project on
+// every edit, so this is on the interactive path).
 
-Json ShadowJson(const Shadow& s) {
-    Json o = Json::Object();
-    o.Set("enabled", s.enabled);
-    o.Set("blur_px", F(s.blur_px));
-    o.Set("offset_y_px", F(s.offset_y_px));
-    o.Set("opacity", F(s.opacity));
-    AppendExtra(o, s.extra);
-    return o;
-}
-
-Json CanvasJson(const Canvas& c) {
-    Json o = Json::Object();
-    o.Set("width", c.width);
-    o.Set("height", c.height);
-    o.Set("fps_num", c.fps_num);
-    o.Set("fps_den", c.fps_den);
-    Json bg = Json::Object();
-    bg.Set("kind", EnumJson(c.background.kind, kBackgroundKinds));
-    bg.Set("color_a", Color(c.background.color_a));
-    bg.Set("color_b", Color(c.background.color_b));
-    bg.Set("angle_deg", F(c.background.angle_deg));
-    bg.Set("image", c.background.image.empty() ? Json(nullptr) : Json(c.background.image));
-    bg.Set("blur", F(c.background.blur));
-    AppendExtra(bg, c.background.extra);
-    o.Set("background", std::move(bg));
-    o.Set("padding_px", c.padding_px);
-    o.Set("corner_radius_px", c.corner_radius_px);
-    o.Set("shadow", ShadowJson(c.shadow));
-    AppendExtra(o, c.extra);
-    return o;
-}
-
-Json MediaJson(const Media& m) {
-    Json o = Json::Object();
-    o.Set("id", m.id);
-    o.Set("kind", EnumJson(m.kind, kMediaKinds));
-    o.Set("path", m.path);
-    o.Set("duration_us", T(m.duration_us));
-    if (m.kind != Media::Kind::Audio) {
-        Json v = Json::Object();
-        v.Set("width", m.width);
-        v.Set("height", m.height);
-        v.Set("fps_num", m.fps_num);
-        v.Set("fps_den", m.fps_den);
-        o.Set("video", std::move(v));
+void AppendEscaped(std::string& out, std::string_view s) {
+    static const char kHex[] = "0123456789abcdef";
+    out.push_back('"');
+    size_t run = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c >= 0x20 && c != '"' && c != '\\') continue;
+        out.append(s.data() + run, i - run);
+        run = i + 1;
+        switch (c) {
+        case '"': out.append("\\\""); break;
+        case '\\': out.append("\\\\"); break;
+        case '\b': out.append("\\b"); break;
+        case '\f': out.append("\\f"); break;
+        case '\n': out.append("\\n"); break;
+        case '\r': out.append("\\r"); break;
+        case '\t': out.append("\\t"); break;
+        default:
+            out.append("\\u00");
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 15]);
+            break;
+        }
     }
-    o.Set("audio_streams", StringArray(m.audio_streams));
-    o.Set("has_events", m.has_events);
-    o.Set("has_camera", m.has_camera);
-    AppendExtra(o, m.extra);
-    return o;
+    out.append(s.data() + run, s.size() - run);
+    out.push_back('"');
 }
 
-Json TrackJson(const Track& t) {
-    Json o = Json::Object();
-    o.Set("id", t.id);
-    o.Set("kind", EnumJson(t.kind, kTrackKinds));
-    o.Set("name", t.name);
-    o.Set("muted", t.muted);
-    o.Set("locked", t.locked);
-    o.Set("hidden", t.hidden);
-    o.Set("height_px", t.height_px);
-    AppendExtra(o, t.extra);
-    return o;
+// Same rule as Json::Dump: the shortest of %.15g / %.16g / %.17g that reads back to the same bits.
+void AppendDouble(std::string& out, double v) {
+    if (!std::isfinite(v)) {
+        out.append("null");
+        return;
+    }
+    char buf[40];
+    for (int precision = 15; precision <= 17; ++precision) {
+        const auto res = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general, precision);
+        double back = 0;
+        std::from_chars(buf, res.ptr, back);
+        if (precision == 17 || back == v) {
+            out.append(buf, res.ptr);
+            return;
+        }
+    }
 }
 
-Json CursorJson(const CursorStyle& c) {
-    Json o = Json::Object();
-    o.Set("visible", c.visible);
-    o.Set("scale", F(c.scale));
-    o.Set("smoothing", F(c.smoothing));
-    o.Set("click_effect", EnumJson(c.click, kClickEffects));
-    o.Set("click_color", Color(c.click_color));
-    o.Set("hide_when_idle_us", T(c.hide_when_idle_us));
-    o.Set("spotlight", c.spotlight);
-    o.Set("shadow", c.shadow);
-    AppendExtra(o, c.extra);
-    return o;
+class Writer {
+public:
+    explicit Writer(std::string& out) : m_out(out) {}
+
+    void BeginObject() { Open('{'); }
+    void EndObject() { Close('}'); }
+    void BeginArray() { Open('['); }
+    void EndArray() { Close(']'); }
+    Writer& Key(std::string_view k) {
+        Element();
+        AppendEscaped(m_out, k);
+        m_out.append(": ");
+        m_after_key = true;
+        return *this;
+    }
+    void Null() { Prefix(); m_out.append("null"); }
+    void Bool(bool v) { Prefix(); m_out.append(v ? "true" : "false"); }
+    void Int(int64_t v) {
+        Prefix();
+        char buf[24];
+        const auto res = std::to_chars(buf, buf + sizeof(buf), v);
+        m_out.append(buf, res.ptr);
+    }
+    void Double(double v) { Prefix(); AppendDouble(m_out, v); }
+    // %.6g of the float (C locale), -0 -> 0, non-finite -> 0. Reads back to a float that prints the same digits.
+    void Float(float v) {
+        Prefix();
+        if (!std::isfinite(v) || v == 0.0f) {
+            m_out.push_back('0');
+            return;
+        }
+        char buf[32];
+        const auto res = std::to_chars(buf, buf + sizeof(buf), static_cast<double>(v), std::chars_format::general, 6);
+        m_out.append(buf, res.ptr);
+    }
+    void String(std::string_view s) { Prefix(); AppendEscaped(m_out, s); }
+    void Color(const ColorF& c) { String(c.ToHex()); }
+    // A preserved Json value: Json::Dump(2) re-indented to the current depth.
+    void Raw(const Json& v) {
+        Prefix();
+        const std::string s = v.Dump(2);
+        const size_t indent = m_counts.size() * 2;
+        for (char ch : s) {
+            m_out.push_back(ch);
+            if (ch == '\n') m_out.append(indent, ' ');
+        }
+    }
+    // Unknown keys of `extra` (an object) after the known ones.
+    void Extra(const Json& extra, const Keys& known) {
+        if (!extra.IsObject()) return;
+        for (const auto& [k, v] : extra.Items())
+            if (!IsKnown(k, known)) Key(k).Raw(v);
+    }
+
+    // Shorthands for "key": value.
+    void KInt(std::string_view k, int64_t v) { Key(k).Int(v); }
+    void KBool(std::string_view k, bool v) { Key(k).Bool(v); }
+    void KFloat(std::string_view k, float v) { Key(k).Float(v); }
+    void KDouble(std::string_view k, double v) { Key(k).Double(v); }
+    void KString(std::string_view k, std::string_view v) { Key(k).String(v); }
+    void KColor(std::string_view k, const ColorF& c) { Key(k).Color(c); }
+    void KStringOrNull(std::string_view k, const std::string& v) {
+        if (v.empty()) Key(k).Null();
+        else Key(k).String(v);
+    }
+    void KStrings(std::string_view k, const std::vector<std::string>& v) {
+        Key(k).BeginArray();
+        for (const std::string& s : v) String(s);
+        EndArray();
+    }
+
+private:
+    void Indent(size_t level) {
+        m_out.push_back('\n');
+        m_out.append(level * 2, ' ');
+    }
+    void Element() {
+        if (m_counts.empty()) return;
+        if (m_counts.back()++ > 0) m_out.push_back(',');
+        Indent(m_counts.size());
+    }
+    void Prefix() {
+        if (m_after_key) m_after_key = false;
+        else Element();
+    }
+    void Open(char c) {
+        Prefix();
+        m_out.push_back(c);
+        m_counts.push_back(0);
+    }
+    void Close(char c) {
+        const int n = m_counts.back();
+        m_counts.pop_back();
+        if (n > 0) Indent(m_counts.size());
+        m_out.push_back(c);
+    }
+
+    std::string& m_out;
+    std::vector<int> m_counts;   // elements written per open container
+    bool m_after_key = false;
+};
+
+void WriteShadow(Writer& w, const Shadow& s) {
+    w.BeginObject();
+    w.KBool("enabled", s.enabled);
+    w.KFloat("blur_px", s.blur_px);
+    w.KFloat("offset_y_px", s.offset_y_px);
+    w.KFloat("opacity", s.opacity);
+    w.Extra(s.extra, kShadowKeys);
+    w.EndObject();
 }
 
-Json KeystrokesJson(const KeystrokeStyle& k) {
-    Json o = Json::Object();
-    o.Set("enabled", k.enabled);
-    o.Set("position", EnumJson(k.pos, kKeyPositions));
-    o.Set("style", EnumJson(k.style, kKeyStyles));
-    o.Set("hold_ms", k.hold_ms);
-    AppendExtra(o, k.extra);
-    return o;
+void WriteCanvas(Writer& w, const Canvas& c) {
+    w.BeginObject();
+    w.KInt("width", c.width);
+    w.KInt("height", c.height);
+    w.KInt("fps_num", c.fps_num);
+    w.KInt("fps_den", c.fps_den);
+    w.Key("background").BeginObject();
+    w.KString("kind", EnumName(c.background.kind, kBackgroundKinds));
+    w.KColor("color_a", c.background.color_a);
+    w.KColor("color_b", c.background.color_b);
+    w.KFloat("angle_deg", c.background.angle_deg);
+    w.KStringOrNull("image", c.background.image);
+    w.KFloat("blur", c.background.blur);
+    w.Extra(c.background.extra, kBackgroundKeys);
+    w.EndObject();
+    w.KInt("padding_px", c.padding_px);
+    w.KInt("corner_radius_px", c.corner_radius_px);
+    w.Key("shadow");
+    WriteShadow(w, c.shadow);
+    w.Extra(c.extra, kCanvasKeys);
+    w.EndObject();
 }
 
-Json PipJson(const Pip& p) {
-    Json o = Json::Object();
-    o.Set("corner", EnumJson(p.corner, kPipCorners));
-    o.Set("size", F(p.size));
-    o.Set("margin_px", p.margin_px);
-    o.Set("mask", EnumJson(p.mask, kPipMasks));
-    o.Set("radius_px", p.radius_px);
-    o.Set("shadow", p.shadow);
-    o.Set("mirror", p.mirror);
-    AppendExtra(o, p.extra);
-    return o;
+void WriteMedia(Writer& w, const Media& m, const std::string& path) {
+    w.BeginObject();
+    w.KString("id", m.id);
+    w.KString("kind", EnumName(m.kind, kMediaKinds));
+    w.KString("path", path);
+    w.KInt("duration_us", m.duration_us);
+    if (m.kind != Media::Kind::Audio) {
+        w.Key("video").BeginObject();
+        w.KInt("width", m.width);
+        w.KInt("height", m.height);
+        w.KInt("fps_num", m.fps_num);
+        w.KInt("fps_den", m.fps_den);
+        w.EndObject();
+    }
+    w.KStrings("audio_streams", m.audio_streams);
+    w.KBool("has_events", m.has_events);
+    w.KBool("has_camera", m.has_camera);
+    w.Extra(m.extra, kMediaKeys);
+    w.EndObject();
 }
 
-Json AnnotationJson(const Annotation& a) {
-    Json o = Json::Object();
-    o.Set("type", EnumJson(a.type, kAnnotationTypes));
-    o.Set("text", a.text);
-    o.Set("font", a.font);
-    o.Set("size_px", a.size_px);
-    o.Set("weight", a.weight);
-    o.Set("color", Color(a.color));
-    o.Set("fill", Color(a.fill));
-    o.Set("stroke", Color(a.stroke));
-    o.Set("stroke_px", a.stroke_px);
-    o.Set("radius_px", a.radius_px);
-    Json r = Json::Object();
-    r.Set("x", F(a.rect.x));
-    r.Set("y", F(a.rect.y));
-    r.Set("w", F(a.rect.w));
-    r.Set("h", F(a.rect.h));
-    o.Set("rect", std::move(r));
-    Json pt = Json::Object();
-    pt.Set("x", F(a.pointer.x));
-    pt.Set("y", F(a.pointer.y));
-    o.Set("pointer", std::move(pt));
-    o.Set("arrow_head_px", F(a.arrow_head_px));
-    o.Set("blur_px", a.blur_px);
-    o.Set("pixelate", a.pixelate);
-    o.Set("anim_in", EnumJson(a.anim_in, kAnims));
-    o.Set("anim_out", EnumJson(a.anim_out, kAnims));
-    o.Set("anim_ms", a.anim_ms);
-    AppendExtra(o, a.extra);
-    return o;
+void WriteTrack(Writer& w, const Track& t) {
+    w.BeginObject();
+    w.KString("id", t.id);
+    w.KString("kind", EnumName(t.kind, kTrackKinds));
+    w.KString("name", t.name);
+    w.KBool("muted", t.muted);
+    w.KBool("locked", t.locked);
+    w.KBool("hidden", t.hidden);
+    w.KInt("height_px", t.height_px);
+    w.Extra(t.extra, kTrackKeys);
+    w.EndObject();
 }
 
-Json ClipJson(const Clip& c) {
-    Json o = Json::Object();
-    o.Set("id", c.id);
-    o.Set("track", c.track);
-    o.Set("media", c.media.empty() ? Json(nullptr) : Json(c.media));
-    o.Set("source", EnumJson(c.source, kSources));
-    o.Set("start_us", T(c.start_us));
-    o.Set("in_us", T(c.in_us));
-    o.Set("out_us", T(c.out_us));
-    o.Set("speed", Json(c.speed));
-    o.Set("name", c.name);
-    const bool has_color = std::lround(std::clamp(c.color.a, 0.0f, 1.0f) * 255.0f) > 0;
-    o.Set("color", has_color ? Color(c.color) : Json(nullptr));
-    Json tr = Json::Object();
-    tr.Set("x", F(c.transform.x));
-    tr.Set("y", F(c.transform.y));
-    tr.Set("scale", F(c.transform.scale));
-    tr.Set("rotation_deg", F(c.transform.rotation_deg));
-    tr.Set("opacity", F(c.transform.opacity));
-    tr.Set("anchor", "center");
-    AppendExtra(tr, c.transform.extra);
-    o.Set("transform", std::move(tr));
-    Json cr = Json::Object();
-    cr.Set("left", c.crop.left);
-    cr.Set("top", c.crop.top);
-    cr.Set("right", c.crop.right);
-    cr.Set("bottom", c.crop.bottom);
-    AppendExtra(cr, c.crop.extra);
-    o.Set("crop", std::move(cr));
-    o.Set("corner_radius_px", c.corner_radius_px ? Json(*c.corner_radius_px) : Json(nullptr));
-    o.Set("shadow", c.shadow ? ShadowJson(*c.shadow) : Json(nullptr));
-    Json au = Json::Object();
-    au.Set("gain_db", F(c.audio.gain_db));
-    au.Set("muted", c.audio.muted);
-    au.Set("fade_in_us", T(c.audio.fade_in_us));
-    au.Set("fade_out_us", T(c.audio.fade_out_us));
-    au.Set("normalize", c.audio.normalize);
-    au.Set("noise_gate_db", c.audio.noise_gate_db ? F(*c.audio.noise_gate_db) : Json(nullptr));
-    AppendExtra(au, c.audio.extra);
-    o.Set("audio", std::move(au));
-    Json kf = Json::Object();
+void WriteCursor(Writer& w, const CursorStyle& c) {
+    w.BeginObject();
+    w.KBool("visible", c.visible);
+    w.KFloat("scale", c.scale);
+    w.KFloat("smoothing", c.smoothing);
+    w.KString("click_effect", EnumName(c.click, kClickEffects));
+    w.KColor("click_color", c.click_color);
+    w.KInt("hide_when_idle_us", c.hide_when_idle_us);
+    w.KBool("spotlight", c.spotlight);
+    w.KBool("shadow", c.shadow);
+    w.Extra(c.extra, kCursorKeys);
+    w.EndObject();
+}
+
+void WriteKeystrokes(Writer& w, const KeystrokeStyle& k) {
+    w.BeginObject();
+    w.KBool("enabled", k.enabled);
+    w.KString("position", EnumName(k.pos, kKeyPositions));
+    w.KString("style", EnumName(k.style, kKeyStyles));
+    w.KInt("hold_ms", k.hold_ms);
+    w.Extra(k.extra, kKeystrokeKeys);
+    w.EndObject();
+}
+
+void WritePip(Writer& w, const Pip& p) {
+    w.BeginObject();
+    w.KString("corner", EnumName(p.corner, kPipCorners));
+    w.KFloat("size", p.size);
+    w.KInt("margin_px", p.margin_px);
+    w.KString("mask", EnumName(p.mask, kPipMasks));
+    w.KInt("radius_px", p.radius_px);
+    w.KBool("shadow", p.shadow);
+    w.KBool("mirror", p.mirror);
+    w.Extra(p.extra, kPipKeys);
+    w.EndObject();
+}
+
+void WriteAnnotation(Writer& w, const Annotation& a) {
+    w.BeginObject();
+    w.KString("type", EnumName(a.type, kAnnotationTypes));
+    w.KString("text", a.text);
+    w.KString("font", a.font);
+    w.KInt("size_px", a.size_px);
+    w.KInt("weight", a.weight);
+    w.KColor("color", a.color);
+    w.KColor("fill", a.fill);
+    w.KColor("stroke", a.stroke);
+    w.KInt("stroke_px", a.stroke_px);
+    w.KInt("radius_px", a.radius_px);
+    w.Key("rect").BeginObject();
+    w.KFloat("x", a.rect.x);
+    w.KFloat("y", a.rect.y);
+    w.KFloat("w", a.rect.w);
+    w.KFloat("h", a.rect.h);
+    w.EndObject();
+    w.Key("pointer").BeginObject();
+    w.KFloat("x", a.pointer.x);
+    w.KFloat("y", a.pointer.y);
+    w.EndObject();
+    w.KFloat("arrow_head_px", a.arrow_head_px);
+    w.KInt("blur_px", a.blur_px);
+    w.KBool("pixelate", a.pixelate);
+    w.KString("anim_in", EnumName(a.anim_in, kAnims));
+    w.KString("anim_out", EnumName(a.anim_out, kAnims));
+    w.KInt("anim_ms", a.anim_ms);
+    w.Extra(a.extra, kAnnotationKeys);
+    w.EndObject();
+}
+
+void WriteClip(Writer& w, const Clip& c) {
+    w.BeginObject();
+    w.KString("id", c.id);
+    w.KString("track", c.track);
+    w.KStringOrNull("media", c.media);
+    w.KString("source", EnumName(c.source, kSources));
+    w.KInt("start_us", c.start_us);
+    w.KInt("in_us", c.in_us);
+    w.KInt("out_us", c.out_us);
+    w.KDouble("speed", c.speed);
+    w.KString("name", c.name);
+    if (std::lround(std::clamp(c.color.a, 0.0f, 1.0f) * 255.0f) > 0) w.KColor("color", c.color);
+    else w.Key("color").Null();
+    w.Key("transform").BeginObject();
+    w.KFloat("x", c.transform.x);
+    w.KFloat("y", c.transform.y);
+    w.KFloat("scale", c.transform.scale);
+    w.KFloat("rotation_deg", c.transform.rotation_deg);
+    w.KFloat("opacity", c.transform.opacity);
+    w.KString("anchor", "center");
+    w.Extra(c.transform.extra, kTransformKeys);
+    w.EndObject();
+    w.Key("crop").BeginObject();
+    w.KInt("left", c.crop.left);
+    w.KInt("top", c.crop.top);
+    w.KInt("right", c.crop.right);
+    w.KInt("bottom", c.crop.bottom);
+    w.Extra(c.crop.extra, kCropKeys);
+    w.EndObject();
+    if (c.corner_radius_px) w.KInt("corner_radius_px", *c.corner_radius_px);
+    else w.Key("corner_radius_px").Null();
+    w.Key("shadow");
+    if (c.shadow) WriteShadow(w, *c.shadow);
+    else w.Null();
+    w.Key("audio").BeginObject();
+    w.KFloat("gain_db", c.audio.gain_db);
+    w.KBool("muted", c.audio.muted);
+    w.KInt("fade_in_us", c.audio.fade_in_us);
+    w.KInt("fade_out_us", c.audio.fade_out_us);
+    w.KBool("normalize", c.audio.normalize);
+    if (c.audio.noise_gate_db) w.KFloat("noise_gate_db", *c.audio.noise_gate_db);
+    else w.Key("noise_gate_db").Null();
+    w.Extra(c.audio.extra, kAudioKeys);
+    w.EndObject();
+    w.Key("keyframes").BeginObject();
     for (const auto& [prop, track] : c.keyframes) {
         if (track.Empty()) continue;
-        Json arr = Json::Array();
+        w.Key(prop).BeginArray();
         for (const Keyframe<float>& k : track.keys) {
-            Json e = Json::Object();
-            e.Set("t_us", T(k.t_us));
-            e.Set("v", F(k.v));
-            e.Set("ease", EaseName(k.ease));
-            arr.Push(std::move(e));
+            w.BeginObject();
+            w.KInt("t_us", k.t_us);
+            w.KFloat("v", k.v);
+            w.KString("ease", EaseName(k.ease));
+            w.EndObject();
         }
-        kf.Set(prop, std::move(arr));
+        w.EndArray();
     }
-    o.Set("keyframes", std::move(kf));
+    w.EndObject();
     if (c.source == Clip::Source::Screen) {
-        o.Set("cursor", CursorJson(c.cursor));
-        o.Set("keystrokes", KeystrokesJson(c.keystrokes));
+        w.Key("cursor");
+        WriteCursor(w, c.cursor);
+        w.Key("keystrokes");
+        WriteKeystrokes(w, c.keystrokes);
     }
-    if (c.pip) o.Set("pip", PipJson(*c.pip));
-    if (c.annotation) o.Set("annotation", AnnotationJson(*c.annotation));
-    AppendExtra(o, c.extra);
-    return o;
+    if (c.pip) {
+        w.Key("pip");
+        WritePip(w, *c.pip);
+    }
+    if (c.annotation) {
+        w.Key("annotation");
+        WriteAnnotation(w, *c.annotation);
+    }
+    w.Extra(c.extra, kClipKeys);
+    w.EndObject();
 }
 
-Json TransitionJson(const Transition& t) {
-    Json o = Json::Object();
-    o.Set("track", t.track);
-    Json between = Json::Array();
-    between.Push(Json(t.a));
-    between.Push(Json(t.b));
-    o.Set("between", std::move(between));
-    o.Set("kind", EnumJson(t.kind, kTransitionKinds));
-    o.Set("duration_us", T(t.duration_us));
-    o.Set("color", Color(t.color));
-    o.Set("direction", EnumJson(t.dir, kDirections));
-    AppendExtra(o, t.extra);
-    return o;
+void WriteTransition(Writer& w, const Transition& t) {
+    w.BeginObject();
+    w.KString("track", t.track);
+    w.Key("between").BeginArray();
+    w.String(t.a);
+    w.String(t.b);
+    w.EndArray();
+    w.KString("kind", EnumName(t.kind, kTransitionKinds));
+    w.KInt("duration_us", t.duration_us);
+    w.KColor("color", t.color);
+    w.KString("direction", EnumName(t.dir, kDirections));
+    w.Extra(t.extra, kTransitionKeys);
+    w.EndObject();
 }
 
-Json CameraJson(const Camera& c) {
-    Json o = Json::Object();
-    o.Set("mode", EnumJson(c.mode, kCameraModes));
-    Json keys = Json::Array();
+void WriteCamera(Writer& w, const Camera& c) {
+    w.BeginObject();
+    w.KString("mode", EnumName(c.mode, kCameraModes));
+    w.Key("keyframes").BeginArray();
     for (const CameraKey& k : c.keys) {
-        Json e = Json::Object();
-        e.Set("t_us", T(k.t_us));
-        e.Set("zoom", F(k.zoom));
-        e.Set("cx", F(k.cx));
-        e.Set("cy", F(k.cy));
-        e.Set("ease", EaseName(k.ease));
-        if (k.generated) e.Set("generated", true);
-        keys.Push(std::move(e));
+        w.BeginObject();
+        w.KInt("t_us", k.t_us);
+        w.KFloat("zoom", k.zoom);
+        w.KFloat("cx", k.cx);
+        w.KFloat("cy", k.cy);
+        w.KString("ease", EaseName(k.ease));
+        if (k.generated) w.KBool("generated", true);
+        w.EndObject();
     }
-    o.Set("keyframes", std::move(keys));
+    w.EndArray();
     const AutoZoomParams& a = c.auto_params;
-    Json ap = Json::Object();
-    ap.Set("zoom", F(a.zoom));
-    ap.Set("min_hold_us", T(a.min_hold_us));
-    ap.Set("lead_us", T(a.lead_us));
-    ap.Set("ease_ms", a.ease_ms);
-    ap.Set("follow", a.follow);
-    ap.Set("follow_deadzone", F(a.follow_deadzone));
-    Json trig = Json::Array();
-    if (a.on_click) trig.Push(Json("click"));
-    if (a.on_typing) trig.Push(Json("typing"));
-    ap.Set("trigger_on", std::move(trig));
-    AppendExtra(ap, a.extra);
-    o.Set("auto", std::move(ap));
-    AppendExtra(o, c.extra);
-    return o;
+    w.Key("auto").BeginObject();
+    w.KFloat("zoom", a.zoom);
+    w.KInt("min_hold_us", a.min_hold_us);
+    w.KInt("lead_us", a.lead_us);
+    w.KInt("ease_ms", a.ease_ms);
+    w.KBool("follow", a.follow);
+    w.KFloat("follow_deadzone", a.follow_deadzone);
+    w.Key("trigger_on").BeginArray();
+    if (a.on_click) w.String("click");
+    if (a.on_typing) w.String("typing");
+    w.EndArray();
+    w.Extra(a.extra, kAutoKeys);
+    w.EndObject();
+    w.Extra(c.extra, kCameraKeys);
+    w.EndObject();
 }
 
-Json MarkerJson(const Marker& m) {
-    Json o = Json::Object();
-    o.Set("t_us", T(m.t_us));
-    o.Set("label", m.label);
-    o.Set("color", Color(m.color));
-    AppendExtra(o, m.extra);
-    return o;
+void WriteMarker(Writer& w, const Marker& m) {
+    w.BeginObject();
+    w.KInt("t_us", m.t_us);
+    w.KString("label", m.label);
+    w.KColor("color", m.color);
+    w.Extra(m.extra, kMarkerKeys);
+    w.EndObject();
 }
 
-Json UiJson(const UiState& u) {
-    Json o = Json::Object();
-    o.Set("playhead_us", T(u.playhead_us));
-    o.Set("zoom", Json(u.zoom));
-    o.Set("scroll_us", T(u.scroll_us));
-    o.Set("selected", StringArray(u.selected));
+void WriteUi(Writer& w, const UiState& u) {
+    w.BeginObject();
+    w.KInt("playhead_us", u.playhead_us);
+    w.KDouble("zoom", u.zoom);
+    w.KInt("scroll_us", u.scroll_us);
+    w.KStrings("selected", u.selected);
     if (u.loop) {
-        Json l = Json::Array();
-        l.Push(T(u.loop->first));
-        l.Push(T(u.loop->second));
-        o.Set("loop", std::move(l));
+        w.Key("loop").BeginArray();
+        w.Int(u.loop->first);
+        w.Int(u.loop->second);
+        w.EndArray();
     } else {
-        o.Set("loop", Json(nullptr));
+        w.Key("loop").Null();
     }
-    AppendExtra(o, u.extra);
-    return o;
+    w.Extra(u.extra, kUiKeys);
+    w.EndObject();
 }
+
+// project_dir non-empty: media paths are written relative to it where possible (Save).
+std::string WriteProject(const Project& p, const std::string& project_dir);
 
 // ---- reader helpers -------------------------------------------------------------------------------------------
 
@@ -655,49 +832,60 @@ std::string StoredPath(const std::string& project_dir, const std::string& media_
     return rel;
 }
 
+std::string WriteProject(const Project& p, const std::string& project_dir) {
+    std::string out;
+    out.reserve(4096 + p.clips.size() * 1400 + p.media.size() * 300);
+    Writer w(out);
+    w.BeginObject();
+    w.KString("format", "ctproj");
+    w.KInt("version", p.version);
+    w.KString("app_version", CT_VERSION_STRING);
+    w.KString("id", p.id);
+    w.KString("name", p.name);
+    w.Key("canvas");
+    WriteCanvas(w, p.canvas);
+    w.Key("media").BeginArray();
+    for (const Media& m : p.media) WriteMedia(w, m, project_dir.empty() ? m.path : StoredPath(project_dir, m.path));
+    w.EndArray();
+    w.Key("tracks").BeginArray();
+    for (const Track& t : p.tracks) WriteTrack(w, t);
+    w.EndArray();
+    w.Key("clips").BeginArray();
+    for (const Clip& c : p.clips) WriteClip(w, c);
+    w.EndArray();
+    w.Key("transitions").BeginArray();
+    for (const Transition& t : p.transitions) WriteTransition(w, t);
+    w.EndArray();
+    w.Key("camera");
+    WriteCamera(w, p.camera);
+    w.Key("markers").BeginArray();
+    for (const Marker& m : p.markers) WriteMarker(w, m);
+    w.EndArray();
+    w.Key("ui");
+    WriteUi(w, p.ui);
+    w.Extra(p.extra, kProjectKeys);
+    w.EndObject();
+    out.push_back('\n');
+    return out;
+}
+
 } // namespace
 
 double RoundFloat(float v) {
-    if (!std::isfinite(v)) return 0.0;
-    if (v == 0.0f) return 0.0;   // also turns -0 into 0
+    if (!std::isfinite(v) || v == 0.0f) return 0.0;   // also turns -0 into 0
     char buf[32];
-    _snprintf_l(buf, sizeof(buf), "%.6g", CLocale(), static_cast<double>(v));
-    return _strtod_l(buf, nullptr, CLocale());
+    const auto res = std::to_chars(buf, buf + sizeof(buf), static_cast<double>(v), std::chars_format::general, 6);
+    double back = 0;
+    std::from_chars(buf, res.ptr, back);
+    return back;
 }
+
+std::string ToJson(const Project& p) { return WriteProject(p, std::string()); }
 
 Json ToJsonValue(const Project& p) {
-    Json o = Json::Object();
-    o.Set("format", "ctproj");
-    o.Set("version", p.version);
-    o.Set("app_version", CT_VERSION_STRING);
-    o.Set("id", p.id);
-    o.Set("name", p.name);
-    o.Set("canvas", CanvasJson(p.canvas));
-    Json media = Json::Array();
-    for (const Media& m : p.media) media.Push(MediaJson(m));
-    o.Set("media", std::move(media));
-    Json tracks = Json::Array();
-    for (const Track& t : p.tracks) tracks.Push(TrackJson(t));
-    o.Set("tracks", std::move(tracks));
-    Json clips = Json::Array();
-    for (const Clip& c : p.clips) clips.Push(ClipJson(c));
-    o.Set("clips", std::move(clips));
-    Json transitions = Json::Array();
-    for (const Transition& t : p.transitions) transitions.Push(TransitionJson(t));
-    o.Set("transitions", std::move(transitions));
-    o.Set("camera", CameraJson(p.camera));
-    Json markers = Json::Array();
-    for (const Marker& m : p.markers) markers.Push(MarkerJson(m));
-    o.Set("markers", std::move(markers));
-    o.Set("ui", UiJson(p.ui));
-    AppendExtra(o, p.extra);
-    return o;
-}
-
-std::string ToJson(const Project& p) {
-    std::string s = ToJsonValue(p).Dump(2);
-    s.push_back('\n');
-    return s;
+    Json j;
+    Json::Parse(ToJson(p), j);
+    return j;
 }
 
 bool Migrate(Json& j, int from_version, Err* err) {
@@ -789,13 +977,7 @@ bool FromJson(std::string_view text, Project& p, Err* err) {
 
 bool Save(const Project& p, std::string_view path, Err* err) {
     const std::string abs = fs::Absolute(path);
-    const std::string dir(PathParent(abs));
-    Json j = ToJsonValue(p);
-    Json& media = j["media"];
-    for (size_t i = 0; i < media.Size() && i < p.media.size(); ++i)
-        media[i].Set("path", StoredPath(dir, p.media[i].path));
-    std::string text = j.Dump(2);
-    text.push_back('\n');
+    const std::string text = WriteProject(p, std::string(PathParent(abs)));
     if (!fs::WriteAtomic(abs, text)) {
         if (err) err->Set("Could not save the project to " + abs);
         return false;

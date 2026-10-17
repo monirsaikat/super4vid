@@ -90,7 +90,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 7.0 ct_events module (`.ctev` writer/reader, `EventLog` time queries; created here because P05 is not built yet)
 - [x] 7.1 Types (`Project`, `Media`, `Track`, `Clip`, `Keyframe<T>`, `Annotation`, `Transition`, `Camera`, `CursorStyle`)
 - [x] 7.2 JSON (de)serialization with versioning + defaults + unknown-key tolerance
-- [ ] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
+- [x] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
 - [ ] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
 - [ ] 7.5 `.ctrec` import -> project (tracks, cursor track from `.ctev`, keystrokes)
 - [ ] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
