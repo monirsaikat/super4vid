@@ -481,6 +481,7 @@ void Compositor::DrawRegionEffect(const Clip& c, const Annotation& a, TimeUs, co
     cb.mask = 1.f;
     cb.opacity = alpha;
     cb.premul = 1.f;
+    SetSourceUv(cb, 0, src, copy_size);   // pooled temps are larger than copy_size
     if (blur) {
         DrawQuad(*m_rc, Ps::Rgba, cb, src);
     } else {   // Highlight: multiply by the fill colour

@@ -1170,3 +1170,16 @@ Why: an animated annotation (rect/text/colour/scale) or a changing keystroke com
 frame that was never freed.
 Impact: Layer pointers are valid until the end of the frame (EndFrame), not until the next Trim. Measured: 1000 frames of
 a moving annotation keep at most 61 layers (1.9 MB).
+
+## 2026-10-17 · P08 review fix · Temp render targets are bucketed to 64 px and evicted when idle
+Spec said: `AcquireTemp` pooled per size, reset each frame (exact sizes, never freed).
+Done instead: the texture is the request rounded up to 64 px per axis (`RenderContext::TempTextureSize`); `TempRT::size`
+is the requested (used) size, drawn with `SetFullscreen(rtv, size)` into the top-left sub-rect. Sampling goes through a
+per-texture source uv transform: `QuadCb` grew to 240 bytes with `src[2]` (xy scale = used / texture size, zw = half a used
+texel), `SetSourceUv` fills it from the SRV's texture desc, and blur/copy/pixelate/rgba/multiply/transition shaders sample
+`SrcUv0/SrcUv1(uv)` = clamp(uv, zw, 1 - zw) * xy (what clamp addressing gives an exactly sized texture; identity by
+default). `BeginFrame` frees entries not acquired for more than `kTempIdleFrames` (60) frames. `TempBytes()` added.
+Why: blur/highlight regions and Gaussian downsample levels request sizes that change every frame during a zoom or an
+animated region; the pool kept one texture per distinct size forever.
+Impact: goldens unchanged. Code sampling a pooled temp must call `SetSourceUv` (effects and transitions do). Measured: 500
+frames of animated regions under an animated zoom: at most 21 temps / 6.5 MB at 640x360.
