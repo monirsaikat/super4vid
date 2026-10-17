@@ -23,6 +23,7 @@ namespace ct::render {
 using Microsoft::WRL::ComPtr;
 
 namespace {
+constexpr TimeUs kEndSlackUs = 250'000;   // a decode that stops this close to the container's end is "the end"
 constexpr size_t kRingFrames = 14'400;   // 300 ms: edits reach the speakers quickly
 constexpr uint32_t kFeedChunk = 480;     // 10 ms per mix step
 constexpr int64_t kPrepareSamples = 48'000;   // open decoders of clips starting within 1 s
@@ -425,12 +426,27 @@ bool TimelinePlayer::FillInputs(TimeUs t, FrameInputs& out, bool wait, uint32_t 
         } else {
             found = w.cache->GetVideoFrame(w.lookup_t, f, exact);
             if (!exact && wait && w.lookup_t < known_end) {
-                if (!w.cache->WaitForFrame(w.lookup_t, timeout_ms)) {
-                    // The decoded stream ends before the container's duration: remember it, use the last frame.
-                    if (w.cache->GetStats().cached_frames > 0) known_end = std::min(known_end, w.lookup_t);
-                    else ok = false;
+                // Wait for the exact frame; retry while it is evicted between the wait and the lookup (several caches
+                // compete for the global CacheBudget).
+                Stopwatch ws;
+                ws.Start();
+                // Close to the container's end the frame may never come (decoded stream shorter): wait less there.
+                const TimeUs dur_hint = w.cache->DurationUs();
+                const uint32_t budget = (dur_hint > 0 && w.lookup_t >= dur_hint - kEndSlackUs) ? std::min<uint32_t>(timeout_ms, 2000) : timeout_ms;
+                for (;;) {
+                    const double left = static_cast<double>(budget) - ws.ElapsedMs();
+                    const bool arrived = left > 0 && w.cache->WaitForFrame(w.lookup_t, static_cast<uint32_t>(left));
+                    found = w.cache->GetVideoFrame(w.lookup_t, f, exact);
+                    if (exact) break;
+                    if (!arrived) {
+                        // Timed out. Near the end of the file the decoded stream is shorter than the container says
+                        // (AAC padding): remember that and keep showing the last frame. Anywhere else it is a failure.
+                        const TimeUs dur = w.cache->DurationUs();
+                        if (found && dur > 0 && w.lookup_t >= dur - kEndSlackUs) known_end = std::min(known_end, w.lookup_t);
+                        else ok = false;
+                        break;
+                    }
                 }
-                found = w.cache->GetVideoFrame(w.lookup_t, f, exact);
             }
             if (!exact && w.lookup_t >= known_end && found) exact = true;   // past the real end: last frame is right
             got.push_back(Got{w.cache, w.lookup_t, f, exact, found});

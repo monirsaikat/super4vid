@@ -16,6 +16,7 @@
 #include <ct/media/image_io.h>
 #include <ct/media/mp4_writer.h>
 #include <ct/platform/win.h>
+#include <ct/playback/cache_budget.h>
 #include <ct/render/compositor.h>
 #include <ct/render/readback.h>
 #include <ct/render/timeline_player.h>
@@ -39,6 +40,7 @@ static_assert(static_cast<int>(RateControl::Cbr) == static_cast<int>(media::Rate
 
 namespace {
 
+constexpr size_t kWindowFrames = 50;     // MediaCache paused window (0.75 s at 60 fps) + pinned frames
 constexpr int kGifPaletteStride = 30;    // two-pass global palette: every 30th frame
 constexpr TimeUs kM4aChunkUs = 100'000;  // audio-only export step
 
@@ -93,6 +95,7 @@ struct ExportJob::Impl {
     ComPtr<ID3D11RenderTargetView> canvas_rtv, scaled_rtv;
     ComPtr<ID3D11ShaderResourceView> canvas_srv, scaled_srv;
     int64_t inexact_frames = 0;
+    size_t budget_extra = 0;
     double resolve_ms = 0, render_ms = 0, lock_ms = 0, compose_ms = 0, gpu_ms = 0;
     int64_t gpu_frames = 0;
 
@@ -106,6 +109,17 @@ struct ExportJob::Impl {
         o.async_open = false;
         CT_RETURN_IF_FAILED(tp.Init(*rc, nullptr, o));
         tp.SetProject(&req.project_snapshot);
+        // The job's MediaCaches share the process-wide decoded-frame budget with the editor's. Each needs its paused
+        // prefetch window (~0.75 s of frames) or the export stalls on evictions: grow the budget for the job's
+        // lifetime by that much per video file (screen + camera for recordings).
+        size_t extra = 0;
+        for (const project::Media& md : req.project_snapshot.media) {
+            if (md.kind == project::Media::Kind::Audio || md.kind == project::Media::Kind::Image) continue;
+            const size_t frame = static_cast<size_t>(std::max(md.width, 640)) * static_cast<size_t>(std::max(md.height, 360)) * 3 / 2;
+            extra += frame * kWindowFrames * (md.kind == project::Media::Kind::Recording && md.has_camera ? 2 : 1);
+        }
+        budget_extra = extra;
+        playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() + budget_extra);
         platform::D3DDevice::Lock lock(*dev);
         return comp.Init(*rc);
     }
@@ -551,6 +565,7 @@ void ExportJob::Main() {
     pr.compose_gpu_avg_ms = j.gpu_frames > 0 ? j.gpu_ms / static_cast<double>(j.gpu_frames) : -1;
     pr.inexact_frames = j.inexact_frames;
     j.tp.Shutdown();
+    if (j.budget_extra) playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() - j.budget_extra);
     {
         platform::D3DDevice::Lock lock(*j.dev);
         j.comp.Shutdown();
