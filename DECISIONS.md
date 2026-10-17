@@ -173,3 +173,13 @@ TIME_CRITICAL made no difference). The 200 us spin cannot hide that, and the spe
 default spin would cost ~6 % of a core at 60 Hz, which the capture CPU budget cannot afford.
 Impact: pacing threads that need sub-500 us wakes (none so far: capture timestamps are tick-aligned, audio is event-driven) call
 `SetSpinUs(1000)` and accept the CPU cost.
+
+## 2026-10-17 · P01 task 1.6 · fs choices; known folders stay in ct::platform::Paths
+Spec said: `ct::fs` signatures in P01 section 1.6; PROGRESS.md 1.6 also mentions "known folders".
+Done instead: no known-folder API in `ct::fs`; `ct::platform::Paths` (P00) already resolves and creates them. `Delete` returns true
+when nothing is left at the path (missing counts as success); `DeleteTree` removes read-only files and does not follow junctions.
+`Relative` returns `Absolute(path)` across drives/shares and "." for equal paths; comparisons are ordinal case-insensitive.
+`TempPath(ext)` accepts the extension with or without the dot. `SameVolume` compares volume GUIDs (falls back to mount paths).
+`ShowInExplorer`/`OpenWithShell` initialize STA COM on the calling thread when it has no apartment.
+Why: the spec leaves these open; these are the conservative choices.
+Impact: none.
