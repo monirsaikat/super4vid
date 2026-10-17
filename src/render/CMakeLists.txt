@@ -1,7 +1,10 @@
 ct_add_module(render
   SOURCES src/render_context.cpp src/layer_math.cpp src/effects.cpp src/text_renderer.cpp src/cursor_renderer.cpp
           src/compositor.cpp
-  DEPS ct_platform ct_project ct_events)
+          src/audio_mixer.cpp
+          src/timeline_player.cpp
+  DEPS ct_platform ct_project ct_events
+       ct_playback)
 set(CT_RENDER_SHADERS
   shaders/fullscreen.hlsl:vs_5_0:vs_main
   shaders/fullscreen.hlsl:vs_5_0:vs_quad

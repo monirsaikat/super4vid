@@ -28,6 +28,8 @@ private:
     void DrawEffectsTab(EditorState& state);
     TimelineMediaProvider* m_media = &NullMediaProvider::Instance();
     project::Id m_ctx;
+    project::Id m_confirm;     // remove confirmation pending (media used by clips)
+    int m_confirm_clips = 0;
 };
 
 } // namespace ct::ui

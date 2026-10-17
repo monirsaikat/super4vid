@@ -1161,6 +1161,47 @@ Why: dithering noise defeated index-level differencing; the rest are spec gaps o
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
 
+## 2026-10-17 · P10 task 10.2 (prerequisite) · render::TimelinePlayer details
+Spec said: P09 "Core structures" `TimelinePlayer { Init(RenderContext&, AudioDevices&); SetProject; Cache(media); Resolve;
+ResolveExact; Clock; Audio; Play/Pause/Seek/SetRate/StepFrames; HintScrub; RenderAudio }`, mixing "active audio-bearing clips".
+Done instead (every specified member exists with its signature; additions only):
+- `ct_render` now depends on `ct_playback` (DEPS line in src/render/CMakeLists.txt). frame_inputs.h/compositor.h stay
+  playback-free (the P08 entry still holds for them).
+- Additions: `Options { audio_output, async_open }` + `Init(rc, AudioDevices*, Options)` (export/tests run without WASAPI),
+  `Tick()` (per UI frame: returns the playhead, pauses at the end, refreshes the audio plan), `Now`, `Playing`, `Rate`,
+  `Duration`, `HasAudioOutput`, `MediaPending`, `CameraCache`, `Events`, `WaitMediaOpen`, `ProjectChanged`, static
+  `AudioFramesBetween/AudioSampleIndex` (floor(t * 48000 / 1e6), so per-frame chunks add up exactly).
+- Media: one slot per media id. Recordings (`.ctrec`) open `<bundle>/<meta screen.file>` (Screen clips, mic/system audio)
+  and `<bundle>/<meta camera.file>` (Camera clips) as two MediaCaches, and load events.ctev for Screen clips. Resolve opens
+  media on the IO pool (`all_exact = false` meanwhile); ResolveExact opens synchronously. Images: `is_rgba`,
+  `rgba_premultiplied = true` (ImageIo decodes premultiplied). The Image background is decoded once per path.
+- Frame requests ask for the *middle of the nominal frame slot* of the clip's media time (`FrameIndexAt` on the media fps):
+  decoded durations are rounded (16666 us at 60 fps), and asking for a time in the 1 us hole after a frame (e.g. a clip's
+  last frame at `out_us - 1` on a frame boundary) made the prefetcher drop that frame forever (MediaCache skips frames that
+  end at or before the target). `VideoLayerInput::media_t_us` keeps the exact media time (events). When a file's decode
+  ends before its container duration (AAC padding), ResolveExact remembers the time after one timeout and shows the last
+  frame from then on.
+- One cache hint per file per Resolve (the first clip using it): two clips of the same file far apart in media time (a
+  transition between distant parts of one recording) fight over one prefetch window; the second clip's frame comes from
+  its miss/wait. Acceptable for transitions (0.5 s); per-clip caches would double decoder count.
+- SRV lifetime: the views of the last Resolve are AddRef'ed until the next Resolve, and MediaCache pins the last 4 frames per
+  file; more than 4 simultaneous frames from one file in one Resolve is unsupported.
+- Audio-bearing clips = clips on unmuted *audio* tracks (Recording/Video/Audio media); clips on video tracks are silent. The
+  editor adds a linked audio clip when a video with audio is dropped. Stream: Mic/System via `Media::audio_streams` labels,
+  else the first audio stream (index into `MediaInfo::AudioStreams()`, file order).
+- Mix (src/render/src/audio_mixer.*, shared by playback and RenderAudio): one AudioDecoder per clip, re-seeked only on a
+  discontinuity; speed via `audio::Resampler` (48000 * speed -> 48000: pitch follows speed, like varispeed; clips outside
+  0.125..8x are silent: the resampler's ratio limit); gain = dB(static or `audio.gain_db` keys) * linear fades * normalize,
+  evaluated exactly every 256 frames and ramped linearly in between. Normalize = -1 dBFS peak target from the waveform
+  peaks of the clip's range, capped at +20 dB; playback takes peaks from the MediaCache (unity until built), RenderAudio
+  loads/builds them itself (blocking).
+- Playback feed: "ct-audio-mix" thread (above normal) mixes 10 ms chunks into a 300 ms AudioRing; `Pull` follows
+  playback::Player's protocol (try-lock, catch-up drop, silence until the requested generation has data) but counts in
+  samples, not microseconds (no rounding drift). Edits are picked up by the mixer at the next chunk (<= 300 ms latency, no
+  restart). Decoders of clips starting within 1 s are opened ahead.
+Why: P09 interface gaps; MediaCache rounding behaviour; real-time constraints of the audio thread.
+Impact: P09b drives `Tick()` each frame, calls `Resolve(playhead)` and re-renders while `all_exact` is false, and adds
+audio clips on audio tracks for dropped video media.
 ## 2026-10-17 · Review fix (P04) · Mp4Writer never frees its state under a live ct-encode thread
 Spec said: `Abort()` returns after at most 3 s and does not join; the destructor finalizes and releases the writer.
 Done instead: the destructor joins ct-encode (no timeout) before releasing anything when `Finalize`'s 60 s join timed out.
@@ -1316,3 +1357,121 @@ call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shut
   the identical segment centres, as did the private reader in tests/media/test_data_test.cpp (now uses frame_index.h);
   when that branch merges it should become a thin include of frame_index.h, with
   `ReadPatternCounterWith/Y/Rgba` forwarding to `ReadFrameIndexWith/Y/ReadFrameIndex`.
+
+## 2026-10-17 · P09 tasks 9.1-9.7 (second half) · Editor window, preview, file ops, app mode
+Spec said: a MediaCache-backed TimelineMediaProvider, a preview panel with gizmos/overlays/transport, IFileDialog file
+ops, recent files, autosave recovery, unsaved prompt, layout ini, media probing/relink, Regenerate, error banners and
+`Camtesia.exe --editor [file]`.
+Done / interpreted:
+- Player: the editor uses `render::TimelinePlayer` directly (`detail::PlayerTransport` adapts it to `PlaybackControl`;
+  Tick() once per frame gives the playhead; loop wraps in the adapter). `PlaybackControl` gained `Volume/SetVolume/
+  Muted/SetMuted` virtuals with no-op defaults so SimplePlayback and test fakes are unchanged.
+- `TimelinePlayer::Cache(id)` now opens the media's slot lazily (`GetSlot(m, false)`) instead of returning null for
+  media not yet touched by Resolve; otherwise bin cards and off-screen timeline clips never got thumbnails/peaks.
+- Provider (`detail::CacheMediaProvider`, private): thumbnails are ComPtr-pinned until the next frame's BeginFrame so
+  ImGui never draws a released SRV; peaks are cached per `path#stream` as min/max pairs; a clip still loading shimmers
+  for at most 30 s, then draws flat.
+- Preview: the compositor renders into a canvas-size B8G8R8A8 target owned by the window, only when the revision,
+  playhead, view or "inexact frame" state changed (idle = 0 GPU work). While a camera key is selected the camera is
+  disabled and the key's window is drawn as a dashed rect with the rest dimmed. Scale is uniform (Alt = about the
+  opposite handle), Shift snaps rotation to 15 degrees, Space/middle drag pans the view. Each gizmo drag is one undo entry.
+- Linked audio: since only clips on audio tracks sound (TimelinePlayer rule), dropping/adding/importing a video that
+  has audio also adds a Source::Default clip with the same start/in/out/speed on the first unlocked audio track with
+  room, else a new "Audio" track (`cmd::AddLinkedAudioClip`, same as RecImporter). Opening a media file into an empty,
+  clean project sets the canvas from the video and creates the video + audio tracks.
+- Recent files: `%APPDATA%\Camtesia\recent.json` (max 10; an entry whose file fails to open is removed). Layout:
+  `%APPDATA%\Camtesia\editor_layout.ini`; screenshot/bench runs use the built-in layout and write nothing.
+- Banners: `BannerStack` is one P11a `ErrorBanner` per panel (Media/Preview/Properties/Timeline); a new error on a
+  panel replaces the old one.
+- App: `RunEditorApp` (src/ui) owns its own window (class "CamtesiaMain", so SingleInstance forwarding reaches it),
+  D3D device, AudioDevices and Async UI poster; main.cpp only dispatches. A forwarded command line opens its paths
+  (through the unsaved prompt). The loop renders only after input or while something animates; a 1 Hz waitable timer
+  drives autosave.
+- Bench flags (`--bench-drag N`, `--bench-scrub N`, `--bench-play N`, `--stats`, `--size WxH`) inject synthetic
+  mouse input after the Win32 backend's NewFrame and print results; they are used for the 9.7 numbers.
+- Review fixes: ##camkey/##camsec ID scopes; group move sorted by shift direction; autosave notified on every commit;
+  PropTime coalesces before returning; marker and dragged clip/selection excluded from snapping (allocation-free
+  SnapIgnore); trims clamp analytically (no Project copies); marker label typing is one undo entry.
+Impact: P10's export dialog plugs into `EditorShell::on_export` (currently a toast); P05b's recorder can open the
+editor in-process later by calling `RunEditorApp`-equivalent pieces or by launching `--editor folder.ctrec`.
+
+
+## 2026-10-17 · P05 tasks 5.1/5.2 · Session control thread, start order, fps clamp, meta details, headless modes
+Spec said: `RecordingSession::Prepare` runs on the IO pool; `StartNow` order audio -> `Mp4Writer::Start` -> capturer ->
+webcam -> events; `Stats()` returns `const LiveStats&`; `CrashHandler::RegisterEmergency` set in Prepare, cleared in Stop;
+`--record --out "D:\x.ctrec"`; meta.json per docs/04 section 1.
+Done instead:
+- Every component is created, started, paused and stopped on the session's own **"ct-session" thread (COM MTA)** fed by a
+  command queue (WASAPI/MF want one MTA owner thread; the UI thread is an STA). `StartNow/TogglePause/AddMarker/Stop/
+  Cancel/PrepareAsync` return at once; `Prepare` posts and waits (IO pool / console thread). A StartNow queued behind a
+  running prepare simply runs after it, so the countdown overlaps the prepare. TogglePause takes one QPC on the caller's
+  thread and passes it to the clock and both audio streams.
+- Additions: `PrepareAsync`, `IsPrepared`, `IsActive`, `StartNow(trigger_qpc)` (trigger -> first frame latency, logged and
+  kept in `Stats::T("session.hotkey_to_frame")`, `LastStartLatencyMs()`), `WaitIdle(ms)` (headless/tests), `Stats()` returns
+  a copy (it changes on ct-session), `SessionListener::OnWarning` (low disk, camera/audio device lost, no mic) and
+  `OnPrepared(hr)` with empty defaults; `SessionConfig::{system_device, webcam_synthetic, events}`; `LiveStats::{state,
+  frames, fps, has_mic, has_system, has_camera}`. `dropped_frames` also counts the capturer's skipped late ticks.
+- Start order: `Mp4Writer::Start` (screen, then cam) **before** the producers, because the writer rejects input until
+  Start (`m_accepting`); then mic, system, capturer (epoch), webcam, events. The writer start only spawns ct-encode, so
+  audio still starts within microseconds of the epoch.
+- fps clamp (P04 left it to P05): requested rate, then 120/60/30 below it; each attempt re-creates capturer + writer;
+  HEVC falls back to H.264 when no rate works; file errors (path/access/disk full) fail at once. Audio streams whose
+  `Init` fails (or no endpoint) are left out of screen.mp4 instead of becoming empty tracks; the user gets a warning.
+- Webcam time base: a private `ClockTimeSource : capture::MediaTimeSource` adapter over the SessionClock (the
+  integration change makes SessionClock implement the interface; the adapter keeps working).
+- Errors: a component error (capture OnError, writer listener, disk < 200 MB) -> Error -> finalize -> Idle, `OnError`,
+  and `OnFinished` too when frames were written (the partial recording is kept with a normal meta.json). Camera/cam
+  writer and audio device errors only warn.
+- Emergency: `RegisterEmergency` has no unregister and allows 8 entries, so the session registers one thunk per process;
+  it acts on the session armed between StartNow and Finish (atomic pointer). The `incomplete` meta.json is built at
+  StartNow (duration 0) and the filter only writes its bytes; the writers are Aborted and never destroyed afterwards.
+- meta.json: `created_utc` without milliseconds (docs/04 example); `duration_us` = last video frame time + one frame
+  (the capturer's last tick); `stream_index` = `Mp4Writer::AudioStreamIndex`; `incomplete: true` only on the crash path;
+  `scale` is written as the JSON number 1.
+- Headless: `--out` names the folder that receives `<stamp>.ctrec` (as the recorder does; P05 tests say `--out <tmp>`);
+  extras `--region x,y,w,h --codec --quality --keys --camera --synthetic-camera --pause-at S --pause-for S --verify`;
+  `--record`/`--selftest` skip the single-instance check (they run next to a running bar or another agent's instance).
+  `--selftest` adds a synthetic camera so cam.mp4 is exercised without hardware. `VerifyBundle` checks constant frame rate
+  from the sample spacing: the MP4 source's `MF_MT_FRAME_RATE` includes the first frame's offset from 0 (29.4 fps for a
+  30 fps file whose first frame is at 33 ms).
+Why: COM apartment rules, the writer's accept gate, parallel instances on the test machine, and robustness.
+Impact: the bar (5.6) uses PrepareAsync + StartCountdown + StartNow(trigger) and the listener additions.
+
+## 2026-10-17 · P05 task 5.6 · Recorder bar windows, hotkeys, previews and diagnostics
+Decision:
+- ImGui multi-viewport with `ConfigViewportsNoAutoMerge`: popovers and toasts get their own platform windows, so they
+  can extend past the 560x64 / 260x44 dip bar. `Platform_CreateWindow` is wrapped to apply WDA_EXCLUDEFROMCAPTURE,
+  topmost, DWM round corners, border colour and dark mode to every viewport. The settings window is the exception: an
+  `ImGuiWindowClass` (ParentViewportId 0, clear NoDecoration/NoTaskBarIcon) gives it a normal decorated, non-topmost
+  top-level window "Camtesia Settings". Secondary viewports fill with bg2 to hide the black clear.
+- `ui::SettingsWindow` got one additive method, `SetHostRect(pos, size)` (+ `WindowName()`), so its fill-viewport mode
+  fills that window instead of the main viewport.
+- Hotkeys (`RegisterHotKey`) and the tray icon belong to the bar window itself; no separate message window. While
+  the countdown runs, Esc is registered as a temporary hotkey (the bar does not have focus).
+- Monitor popover draws a schematic layout of the displays (proportional rectangles + list), not live thumbnails
+  (no capture before REC, no camera/mic LEDs, no cost).
+- Idle meters: an `AudioMonitor` null-sink capture runs only while the mic or system popover is open; during
+  recording the meters read the session's `LiveLevels()` atomics (updated at 30 Hz on ct-session). The camera preview
+  opens the device only while the camera popover/hover preview shows, and the session's webcam while recording.
+  `--synthetic-camera` substitutes the synthetic reader (no camera on the reference machine).
+- Toasts are drawn by the bar in their own viewport ("Saved" with Open in editor / Show in folder / Delete), not by
+  `ToastStack`, which draws into the main viewport (the bar is too small).
+- Default "Open in editor" launches `Camtesia.exe --editor <bundle>` with CAMTESIA_SEPARATE_INSTANCE=1.
+- Redraw policy: `RedrawIntervalMs` 16 while animating, 33 while recording/meters/preview, 250 while toasts show,
+  0 (wait for messages) otherwise.
+- Hotkey latency = start trigger (WM_HOTKEY, or the end of the countdown) -> first captured frame QPC. With countdown 0
+  it includes the session prepare (~150-600 ms in Release) because prepare starts at the hotkey; with a countdown the
+  prepare runs during the countdown.
+- Diagnostic modes (`--screenshot`, `--time-to-window`, `--bench-hotkey`) skip the single-instance check, never write
+  the user's settings, and record into a temp folder deleted at exit.
+Why: the bar is tiny and topmost and must stay out of recordings; device LEDs must stay off when idle; diagnostics must
+not touch user data.
+Impact: P09b/P11 may replace the Open-in-editor launch with in-process editor opening.
+
+## 2026-10-17 · P05 task 5.6 · App mode dispatch next to the P09 editor mode
+Decision: `ui::IsRecorderBarCommandLine` picks the recorder bar unless the command line has `--editor`,
+`--editor-demo`, `--settings-demo` or a `.ctproj`/`.ctrec` file argument (then P09's `ParseEditorLaunch` runs).
+`ParseEditorLaunch` alone cannot decide it, because it treats any bare value (`--countdown 1`, `--bar-open mic`) as a file.
+Why: double-clicking a project must open the editor; recorder flags take values. Impact: a double-clicked file while the
+bar runs still forwards to the bar instance through SingleInstance (the bar ignores it) — integration should open the
+editor for a forwarded file argument or exempt editor launches from the single-instance check.

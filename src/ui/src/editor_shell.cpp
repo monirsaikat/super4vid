@@ -81,7 +81,9 @@ ImU32 ToU32(const ColorF& c) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r,
 
 } // namespace
 
-EditorShell::EditorShell() {}
+EditorShell::EditorShell() {
+    m_preview.run_action = [this](Action a) { Run(a); };
+}
 EditorShell::~EditorShell() = default;
 
 void EditorShell::SetupImGui() {
@@ -129,7 +131,8 @@ void EditorShell::SetMediaProvider(TimelineMediaProvider* p) {
 }
 
 bool EditorShell::WantsContinuousRedraw() const {
-    return m_state.playback->Playing() || m_timeline.WantsRedraw() || !m_toasts.Empty() || m_state.DragActive() || m_stats;
+    return m_state.playback->Playing() || m_timeline.WantsRedraw() || m_preview.WantsRedraw() || !m_toasts.Empty() ||
+           m_state.DragActive() || m_stats || m_props.WantsRedraw();
 }
 
 // --- actions ------------------------------------------------------------------------------------------------------
@@ -225,16 +228,28 @@ void EditorShell::DrawMenuBar() {
         if (ImGui::BeginMenu(str::kMenuFile)) {
             item(str::kNew, Action::New);
             item(str::kOpen, Action::Open);
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(str::kOpenRecent);
-            ImGui::EndDisabled();
+            if (ImGui::BeginMenu(str::kOpenRecent, !recent_files.empty() && on_open_recent)) {
+                std::string pick;
+                for (size_t i = 0; i < recent_files.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    const std::string& f = recent_files[i];
+                    const size_t slash = f.find_last_of("\\/");
+                    const char* name = slash == std::string::npos ? f.c_str() : f.c_str() + slash + 1;
+                    if (ImGui::MenuItem(name)) pick = f;
+                    ItemTooltip(f.c_str());
+                    ImGui::PopID();
+                }
+                ImGui::EndMenu();
+                if (!pick.empty()) on_open_recent(pick);
+            }
             ImGui::Separator();
             item(str::kImportMedia, Action::Import);
-            if (ImGui::MenuItem(str::kImportRecording)) Run(Action::Import);
+            if (ImGui::MenuItem(str::kImportRecording, nullptr, false, static_cast<bool>(on_import_recording))) on_import_recording();
             ImGui::Separator();
             item(str::kSave, Action::Save);
             item(str::kSaveAs, Action::SaveAs);
             item(str::kExportEllipsis, Action::Export);
+            if (ImGui::MenuItem(str::kClose, nullptr, false, static_cast<bool>(on_close_project))) on_close_project();
             ImGui::Separator();
             if (ImGui::MenuItem(str::kExit) && m_hwnd) PostMessageW(static_cast<HWND>(m_hwnd), WM_CLOSE, 0, 0);
             ImGui::EndMenu();
@@ -254,9 +269,7 @@ void EditorShell::DrawMenuBar() {
             item(str::kDelete, Action::Delete, !s.selection.Empty());
             item(str::kSelectAll, Action::SelectAll);
             ImGui::Separator();
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(str::kPreferences);
-            ImGui::EndDisabled();
+            if (ImGui::MenuItem(str::kPreferences, nullptr, false, static_cast<bool>(on_preferences))) on_preferences();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(str::kMenuView)) {
@@ -308,10 +321,8 @@ void EditorShell::DrawMenuBar() {
         }
         if (ImGui::BeginMenu(str::kMenuHelp)) {
             item(str::kShortcuts, Action::CheatSheet, true, m_cheat_sheet);
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(str::kOpenLogs);
-            ImGui::MenuItem(str::kAbout);
-            ImGui::EndDisabled();
+            if (ImGui::MenuItem(str::kOpenLogs, nullptr, false, static_cast<bool>(on_open_logs))) on_open_logs();
+            if (ImGui::MenuItem(str::kAbout, nullptr, false, static_cast<bool>(on_about))) on_about();
             ImGui::EndMenu();
         }
 
@@ -373,183 +384,6 @@ void EditorShell::BuildLayout(unsigned int id) {
     ImGui::DockBuilderFinish(id);
 }
 
-// --- preview ----------------------------------------------------------------------------------------------------------
-
-void EditorShell::DrawPreviewPlaceholder(ImVec2 mn, ImVec2 mx) {
-    const Canvas& cv = m_state.project.canvas;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float r = Dp(kRadiusCanvas);
-    // Canvas background (gradient along the angle).
-    const int v0 = dl->VtxBuffer.Size;
-    dl->AddRectFilled(mn, mx, ToU32(cv.background.color_a), r);
-    if (cv.background.kind == Background::Kind::Gradient) {
-        const float ang = cv.background.angle_deg * 3.14159265f / 180.0f;
-        const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
-        const float half = 0.5f * (std::fabs((mx.x - mn.x) * std::sin(ang)) + std::fabs((mx.y - mn.y) * std::cos(ang)));
-        const ImVec2 d(std::sin(ang) * half, -std::cos(ang) * half);
-        ImGui::ShadeVertsLinearColorGradientKeepAlpha(dl, v0, dl->VtxBuffer.Size, c - d, c + d, ToU32(cv.background.color_a), ToU32(cv.background.color_b));
-    }
-    // Screen layer inset by the padding, with the canvas corner radius and shadow.
-    const float scale = (mx.x - mn.x) / std::max(1, cv.width);
-    const float pad = cv.padding_px * scale;
-    const ImVec2 sa(mn.x + pad, mn.y + pad), sb(mx.x - pad, mx.y - pad);
-    if (sb.x > sa.x + 8 && sb.y > sa.y + 8) {
-        const float sr = cv.corner_radius_px * scale;
-        if (cv.shadow.enabled) {
-            const float blur = std::max(2.0f, cv.shadow.blur_px * scale);
-            const float off = cv.shadow.offset_y_px * scale;
-            for (int i = 6; i >= 1; --i) {
-                const float g = blur * i / 6.0f;
-                dl->AddRectFilled(ImVec2(sa.x - g * 0.5f, sa.y - g * 0.5f + off), ImVec2(sb.x + g * 0.5f, sb.y + g * 0.5f + off),
-                                  Rgb(0x000000, static_cast<uint32_t>(cv.shadow.opacity * 255 / 10)), sr + g);
-            }
-        }
-        dl->AddRectFilled(sa, sb, Rgb(0x0B0D11), sr);
-        // A faux window chrome so the placeholder reads as a screen recording.
-        const float bar = std::max(6.0f, (sb.y - sa.y) * 0.06f);
-        dl->AddRectFilled(sa, ImVec2(sb.x, sa.y + bar), Rgb(0x1A1E26), sr, ImDrawFlags_RoundTop);
-        for (int i = 0; i < 3; ++i)
-            dl->AddCircleFilled(ImVec2(sa.x + bar * (0.8f + 0.7f * i), sa.y + bar * 0.5f), bar * 0.18f,
-                                i == 0 ? Rgb(0xFF5F57) : i == 1 ? Rgb(0xFEBC2E) : Rgb(0x28C840));
-        const ImVec2 body(sa.x, sa.y + bar);
-        const float bw = sb.x - sa.x;
-        dl->AddRectFilled(ImVec2(body.x + bw * 0.04f, body.y + bar * 0.9f), ImVec2(body.x + bw * 0.24f, sb.y - bar * 0.9f), Rgb(0x151922), Dp(4));
-        for (int i = 0; i < 4; ++i) {
-            const float y = body.y + bar * (1.2f + 1.1f * i);
-            if (y + bar * 0.4f > sb.y - bar) break;
-            dl->AddRectFilled(ImVec2(body.x + bw * 0.28f, y), ImVec2(body.x + bw * (0.85f - 0.12f * (i % 3)), y + bar * 0.35f), Rgb(0x1C212B), Dp(3));
-        }
-        // Caption.
-        const char* msg = str::kPreviewPending;
-        FontScope f(FontRole::Label);
-        const ImVec2 ts = ImGui::CalcTextSize(msg);
-        const ImVec2 tp((sa.x + sb.x - ts.x) * 0.5f, sb.y - bar * 1.6f - ts.y);
-        if (ts.x < bw - Dp(16)) {
-            dl->AddRectFilled(tp - Dp(10, 5), tp + ts + Dp(10, 5), WithAlpha(col::bg0, 0.8f), Dp(999));
-            dl->AddText(tp, col::text_dim, msg);
-        }
-    }
-    if (m_safe_areas) {
-        const ImVec2 sz = mx - mn;
-        dl->AddRect(mn + sz * 0.05f, mx - sz * 0.05f, WithAlpha(col::text, 0.35f));
-        dl->AddRect(mn + sz * 0.10f, mx - sz * 0.10f, WithAlpha(col::text, 0.25f));
-    }
-}
-
-void EditorShell::DrawTransport() {
-    EditorState& s = m_state;
-    PlaybackControl& pb = *s.playback;
-    const float h = Dp(kControlDefault);
-    const float total_w = ImGui::GetContentRegionAvail().x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Dp(12));
-    if (IconButton("start", ICON_PREVIOUS, "Go to start", false, nullptr, ImVec2(h, h))) Run(Action::GoStart);
-    ImGui::SameLine(0, Dp(2));
-    if (IconButton("prev", ICON_CHEVRON_LEFT, "Previous frame", false, nullptr, ImVec2(h, h))) Run(Action::PrevFrame);
-    ImGui::SameLine(0, Dp(2));
-    {
-        // Primary play button: filled accent circle.
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("play", ImVec2(h + Dp(4), h));
-        const bool hov = ImGui::IsItemHovered();
-        if (ImGui::IsItemClicked()) Run(Action::TogglePlay);
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 c(p.x + (h + Dp(4)) * 0.5f, p.y + h * 0.5f);
-        dl->AddCircleFilled(c, h * 0.5f, hov ? col::accent_hover : col::accent, 32);
-        FontScope f(FontRole::Icon);
-        const char* icon = pb.Playing() ? ICON_PAUSE : ICON_PLAY;
-        const ImVec2 ts = ImGui::CalcTextSize(icon);
-        dl->AddText(ImVec2(std::floor(c.x - ts.x * 0.5f + (pb.Playing() ? 0 : Dp(1))), std::floor(c.y - ts.y * 0.5f)), Rgb(0xFFFFFF), icon);
-        ItemTooltip(pb.Playing() ? "Pause" : "Play", "Space");
-    }
-    ImGui::SameLine(0, Dp(2));
-    if (IconButton("next", ICON_CHEVRON_RIGHT, "Next frame", false, nullptr, ImVec2(h, h))) Run(Action::NextFrame);
-    ImGui::SameLine(0, Dp(2));
-    if (IconButton("end", ICON_NEXT, "Go to end", false, nullptr, ImVec2(h, h))) Run(Action::GoEnd);
-    ImGui::SameLine(0, Dp(16));
-    {
-        // Timecode "00:01:12.03 / 00:03:05.00" (current bright, total faint), vertically centred on the buttons.
-        char a[32], b[32];
-        const auto& cv = s.project.canvas;
-        FormatTimecode(a, sizeof(a), s.Playhead(), cv.fps_num, cv.fps_den);
-        std::snprintf(b, sizeof(b), "  /  ");
-        const size_t bl = std::strlen(b);
-        FormatTimecode(b + bl, sizeof(b) - bl, s.project.Duration(), cv.fps_num, cv.fps_den);
-        ImFont* mono = Fonts::Get(FontRole::Mono);
-        const float fs = Dp(13);
-        const ImVec2 sa = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, a) : ImVec2(0, 0);
-        const ImVec2 sb = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, b) : ImVec2(0, 0);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float ty = std::floor(p.y + (h - sa.y) * 0.5f);
-        dl->AddText(mono, fs, ImVec2(p.x, ty), col::text, a);
-        dl->AddText(mono, fs, ImVec2(p.x + sa.x, ty), col::text_faint, b);
-        ImGui::Dummy(ImVec2(sa.x + sb.x, h));
-    }
-    if (pb.Rate() != 0 && pb.Rate() != 1) {
-        ImGui::SameLine(0, Dp(10));
-        char r[16];
-        std::snprintf(r, sizeof(r), "%.4g\xC3\x97", pb.Rate());
-        ImGui::TextColored(ToVec4(col::warn), "%s", r);
-    }
-    // Right side: fit, loop, safe areas, volume.
-    const float right_w = Dp(84) + h * 3 + Dp(24);
-    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + Dp(8), total_w - right_w));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY());
-    static const char* const kFit[] = {"Fit", "50 %", "100 %", "200 %"};
-    char fit[32];
-    std::snprintf(fit, sizeof(fit), "%s  %s", kFit[m_fit_mode], ICON_CHEVRON_DOWN);
-    if (Button(fit, ButtonKind::Normal, ImVec2(Dp(84), h))) ImGui::OpenPopup("##fitmenu");
-    if (BeginPopover("##fitmenu")) {
-        for (int i = 0; i < 4; ++i)
-            if (ImGui::Selectable(kFit[i], m_fit_mode == i)) m_fit_mode = i;
-        EndPopover();
-    }
-    ImGui::SameLine(0, Dp(4));
-    const bool loop = s.project.ui.loop.has_value();
-    if (IconButton("loop", ICON_REPEAT, str::kLoop, loop, nullptr, ImVec2(h, h))) {
-        if (loop) s.project.ui.loop.reset();
-        else s.project.ui.loop = std::make_pair(TimeUs(0), s.project.Duration());
-        s.Touch();
-    }
-    ImGui::SameLine(0, Dp(2));
-    if (IconButton("safe", ICON_FULLSCREEN, str::kSafeAreas, m_safe_areas, nullptr, ImVec2(h, h))) m_safe_areas = !m_safe_areas;
-    ImGui::SameLine(0, Dp(2));
-    IconButton("vol", ICON_VOLUME, "Volume", false, nullptr, ImVec2(h, h));
-}
-
-void EditorShell::DrawPreview() {
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float transport_h = Dp(48);
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 area(avail.x, std::max(1.0f, avail.y - transport_h));
-    const Canvas& cv = m_state.project.canvas;
-    const float margin = Dp(kPreviewMargin);
-    const float aw = std::max(1.0f, area.x - margin * 2), ah = std::max(1.0f, area.y - margin * 2);
-    const float aspect = static_cast<float>(std::max(1, cv.width)) / static_cast<float>(std::max(1, cv.height));
-    float w = aw, h = aw / aspect;
-    if (h > ah) {
-        h = ah;
-        w = ah * aspect;
-    }
-    if (m_fit_mode > 0) {
-        const float z = m_fit_mode == 1 ? 0.5f : m_fit_mode == 2 ? 1.0f : 2.0f;
-        w = cv.width * z;
-        h = cv.height * z;
-    }
-    const ImVec2 mn(std::floor(origin.x + (area.x - w) * 0.5f), std::floor(origin.y + (area.y - h) * 0.5f));
-    const ImVec2 mx(mn.x + w, mn.y + h);
-    ImGui::GetWindowDrawList()->PushClipRect(origin, origin + area, true);
-    if (draw_preview) draw_preview(mn, mx);
-    else DrawPreviewPlaceholder(mn, mx);
-    ImGui::GetWindowDrawList()->PopClipRect();
-    ImGui::Dummy(area);
-    // Transport bar on a slightly darker strip.
-    const ImVec2 tp = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddLine(tp, ImVec2(tp.x + avail.x, tp.y), col::border);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Dp(8));
-    DrawTransport();
-}
-
 void EditorShell::DrawStats() {
     if (!m_stats) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -560,9 +394,11 @@ void EditorShell::DrawStats() {
     if (ImGui::Begin("##stats", nullptr, flags)) {
         FontScope f(FontRole::Mono);
         ImGui::Text("frame   %6.2f ms", m_frame_ms);
-        ImGui::Text("gpu     %s", status.gpu_ms >= 0 ? "" : "-");
+        if (status.gpu_ms >= 0) ImGui::Text("gpu     %6.2f ms", status.gpu_ms);
+        else ImGui::Text("gpu          -");
         ImGui::Text("clips   %d drawn / %zu", m_timeline.ClipsDrawn(), m_state.project.clips.size());
         ImGui::Text("undo    %zu (%zu KB)", m_state.undo.Entries(), m_state.undo.Bytes() / 1024);
+        if (draw_stats_extra) draw_stats_extra();
     }
     ImGui::End();
 }
@@ -590,16 +426,17 @@ void EditorShell::Frame() {
 
     DrawMenuBar();
     if (DrawStatusBar(m_state, status)) {
-        if (on_action) on_action(Action::None);
+        if (on_open_logs) on_open_logs();
     }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const ImGuiID dock_id = ImGui::GetID("##editordock");
-    if (!m_layout_built || m_reset_layout || !ImGui::DockBuilderGetNode(dock_id)) {
+    // With a persisted layout the ini restored the dock nodes: build only when there is none (or on Reset layout).
+    if (m_reset_layout || !ImGui::DockBuilderGetNode(dock_id) || (!persist_layout && !m_layout_built)) {
         BuildLayout(dock_id);
-        m_layout_built = true;
         m_reset_layout = false;
         for (bool& b : m_show_panels) b = true;
     }
+    m_layout_built = true;
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ToVec4(col::bg0));
     ImGui::DockSpaceOverViewport(dock_id, vp, ImGuiDockNodeFlags_None);
     ImGui::PopStyleColor();
@@ -610,7 +447,10 @@ void EditorShell::Frame() {
     wc.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoCloseButton | ImGuiDockNodeFlags_NoWindowMenuButton;
     if (m_show_panels[0]) {
         ImGui::SetNextWindowClass(&wc);
-        if (ImGui::Begin(str::kPanelMedia, nullptr, panel)) m_media.Draw(m_state);
+        if (ImGui::Begin(str::kPanelMedia, nullptr, panel)) {
+            m_banners.Draw(BannerPanel::Media);
+            m_media.Draw(m_state);
+        }
         ImGui::End();
     }
     if (m_show_panels[1]) {
@@ -620,12 +460,18 @@ void EditorShell::Frame() {
         const bool open = ImGui::Begin(str::kPanelPreview, nullptr, panel | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
-        if (open) DrawPreview();
+        if (open) {
+            m_banners.Draw(BannerPanel::Preview);
+            m_preview.Draw(m_state);
+        }
         ImGui::End();
     }
     if (m_show_panels[2]) {
         ImGui::SetNextWindowClass(&wc);
-        if (ImGui::Begin(str::kPanelProperties, nullptr, panel)) m_props.Draw(m_state);
+        if (ImGui::Begin(str::kPanelProperties, nullptr, panel)) {
+            m_banners.Draw(BannerPanel::Properties);
+            m_props.Draw(m_state);
+        }
         ImGui::End();
     }
     if (m_show_panels[3]) {
@@ -634,6 +480,7 @@ void EditorShell::Frame() {
         const bool open = ImGui::Begin(str::kPanelTimeline, nullptr, panel | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::PopStyleVar();
         if (open) {
+            m_banners.Draw(BannerPanel::Timeline);
             m_timeline.DrawToolbar(m_state);
             ImGui::Dummy(Dp(0, 2));
             m_timeline.Draw(m_state);

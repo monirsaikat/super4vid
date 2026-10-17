@@ -389,6 +389,8 @@ const SectionInfo kSections[kSettingsSectionCount] = {
 
 // ---- Window frame ------------------------------------------------------------------------------------------------------
 
+const char* SettingsWindow::WindowName() { return kPopupId; }
+
 void SettingsWindow::Draw() {
     if (!m_open) {
         // Closed from outside (Close() between frames): end the ImGui modal too, or it keeps blocking input.
@@ -418,8 +420,8 @@ void SettingsWindow::Draw() {
     ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ToVec4(WithAlpha(col::bg0, 0.62f)));
     bool visible = false;
     if (m_fill_viewport) {
-        ImGui::SetNextWindowPos(vp->WorkPos);
-        ImGui::SetNextWindowSize(vp->WorkSize);
+        ImGui::SetNextWindowPos(m_has_host ? m_host_pos : vp->WorkPos);
+        ImGui::SetNextWindowSize(m_has_host ? m_host_size : vp->WorkSize);
         visible = ImGui::Begin(kPopupId, nullptr, flags | ImGuiWindowFlags_NoBringToFrontOnFocus);
     } else {
         if (!ImGui::IsPopupOpen(kPopupId)) ImGui::OpenPopup(kPopupId);
