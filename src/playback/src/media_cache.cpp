@@ -89,7 +89,7 @@ HRESULT MediaCache::Open(platform::D3DDevice& dev, std::string_view path) {
     opt.priority = 1;   // THREAD_PRIORITY_ABOVE_NORMAL
     if (!m_thread.Start(opt, [this] { PrefetchMain(); })) return E_FAIL;
     m_wake.Set();
-    // Pre-warm the thumbnail decoder on the IO pool (creating a software decoder takes ~0.5 s on a loaded machine);
+    // Pre-warm the thumbnail decoder on the IO pool (creating a decoder takes 0.1-0.5 s on a loaded machine);
     // requests made meanwhile queue up and are served by this same job.
     {
         ExclusiveGuard g(m_aux_lock);
@@ -518,9 +518,16 @@ void MediaCache::ThumbJob() {
         cfg.path = m_path;
         cfg.stream_index = m_info.FirstVideo();
         cfg.pool_size = 2;
-        cfg.allow_hardware = false;   // do not contend with the playback decoder
+        // A second DXVA session (not the spec's software decoder): under CPU load from other work the software
+        // decoder needed > 1 s per thumbnail; GPU decode costs ~2 ms per frame and little CPU (DECISIONS.md 6.6).
+        cfg.allow_hardware = true;
         auto blit = std::make_unique<platform::Nv12Blit>();
-        if (FAILED(dec->Init(*m_dev, cfg)) || FAILED(blit->Init(*m_dev))) {
+        HRESULT hr = dec->Init(*m_dev, cfg);
+        if (FAILED(hr)) {
+            cfg.allow_hardware = false;
+            hr = dec->Init(*m_dev, cfg);
+        }
+        if (FAILED(hr) || FAILED(blit->Init(*m_dev))) {
             CT_LOG_WARN("MediaCache: thumbnail decoder unavailable for %s", m_path.c_str());
             ExclusiveGuard g(m_aux_lock);
             m_thumb_queue.clear();

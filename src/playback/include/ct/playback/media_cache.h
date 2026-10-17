@@ -2,7 +2,7 @@
 // ct/playback/media_cache.h
 // One per open media file. Owns the hardware VideoDecoder and its prefetch thread ("ct-decode-N", above normal), an LRU
 // cache of decoded NV12 frames (copies, so the decoder keeps running) bounded by the global CacheBudget, audio readers,
-// 160x90 thumbnails (software decoder on the IO pool) and waveform peaks (IO pool, disk cache). Images (PNG/JPG/...)
+// 160x90 thumbnails (a second decoder on the IO pool) and waveform peaks (IO pool, disk cache). Images (PNG/JPG/...)
 // are one RGBA texture shown at every time.
 // Thread model: Open/Close on the owner (UI) thread; GetVideoFrame/Hint/Thumbnail/GetPeaks/GetStats are non-blocking
 // and callable from any one thread at a time (normally the UI thread); OpenAudio from any thread (blocking: opens a

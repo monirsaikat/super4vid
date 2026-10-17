@@ -539,3 +539,24 @@ rates are silent (the PlaybackClock runs them on QPC). Additions: `Muted`, `Peak
 `DeviceName`. Default-device hot-swap is not followed (the editor reopens the engine; P09/P11).
 Why: correctness of the clock; the render thread must not block.
 Impact: P09's timeline mixer implements `AudioEngine::Source` fed from decoder threads (Pull must not block).
+
+## 2026-10-17 · P06 task 6.6 · PlaybackClock / Player details; thumbnails on a second DXVA decoder
+Spec said: `PlaybackClock` and `Player` as declared; thumbnails from a software `VideoDecoder` (`allow_hardware = false`).
+Done instead (additions only):
+- `PlaybackClock`: `UsingAudio()`, `ClampRate()` (|rate| 0.25..4, negative = reverse on QPC, 0/NaN -> 1),
+  `SetQpcSourceForTest()`. The audio engine is the clock only while playing forward with a working device
+  (`AudioEngine::DeviceOk`); every Play/Seek/SetRate re-anchors both clocks at the current position.
+- `Player`: audio goes through a "ct-audio-feed" thread that decodes the first audio stream into a 1 s `AudioRing`;
+  `Feed::Pull` (render thread) try-locks, drops stale frames to catch up with `from_us` and plays silence until data for
+  the requested generation exists, so a seek never blocks the audio thread and audio rejoins in sync. Additions:
+  `Close`, `Playing`, `Rate`, `Duration`, `HasAudio`, `ClockUsesAudio`, `Cache()`, `Engine()`, `ResetStats`. Tick stops at
+  the end (last frame) and at 0 for reverse; `seek_to_frame_ms` = `Seek()` -> first Tick with the exact frame;
+  `frames_late` counts newly shown frames already > 50 ms stale.
+- Thumbnails use a second hardware (DXVA) decoder, falling back to software: with the machine at 70-100 % CPU (parallel
+  agent builds) the software decoder needed 1.1-3 s for the first thumbnail; DXVA: 450 ms first (decoder creation),
+  95-140 ms after.
+- Real-time assertions in the playback tests (late frames, cache misses during 60 fps playback, the 1 s thumbnail) are
+  enforced in Release only; Debug + debug layer under load only reports them. On a machine at 100 % CPU from other
+  processes even Release misses them; the numbers in PROGRESS.md come from runs at <= 70 % background load.
+Why: measured behaviour; non-blocking audio thread.
+Impact: P09 drives `Player`-like logic per timeline (MediaCache per clip media, AudioEngine::Source = timeline mixer).

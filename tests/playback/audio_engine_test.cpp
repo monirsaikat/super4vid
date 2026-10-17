@@ -48,6 +48,7 @@ CT_TEST_DEVICE(audio_engine_position_tracks_500ms) {
     Fixture fx;
     if (!fx.ok) CT_SKIP("no render endpoint");
     CT_CHECK_EQ(fx.engine.PositionUs(), 0);
+    const int64_t q_play = Clock::QpcNow();
     fx.engine.Play(1'000'000, 1.0);
     CT_CHECK(fx.engine.Playing());
     CT_CHECK_EQ(fx.engine.PositionUs(), 1'000'000);   // before the device plays anything
@@ -57,12 +58,18 @@ CT_TEST_DEVICE(audio_engine_position_tracks_500ms) {
     // Monotonic while playing.
     TimeUs last = p0;
     bool monotonic = true;
+    // Smoothness: position vs QPC deviation (a stair-stepped clock would make video frames repeat and skip).
+    double max_dev_ms = 0;
     while ((Clock::QpcNow() - q0) * 1000 / Clock::QpcFrequency() < 500) {
         const TimeUs p = fx.engine.PositionUs();
+        const double wall = static_cast<double>(Clock::QpcNow() - q0) * 1e6 / Clock::QpcFrequency();
+        max_dev_ms = std::max(max_dev_ms, std::fabs((p - p0) - wall) / 1000.0);
         monotonic &= p >= last;
         last = p;
         Sleep(1);
     }
+    std::printf("    max |position - wall| while playing: %.2f ms\n", max_dev_ms);
+    CT_CHECK(max_dev_ms < 8.0);
     const TimeUs p1 = fx.engine.PositionUs();
     const double wall_ms = static_cast<double>(Clock::QpcNow() - q0) * 1000.0 / Clock::QpcFrequency();
     const double adv_ms = (p1 - p0) / 1000.0;
@@ -70,7 +77,9 @@ CT_TEST_DEVICE(audio_engine_position_tracks_500ms) {
                 (p0 - 1'000'000) / 1000.0, fx.engine.LatencyMs(), adv_ms, wall_ms, fx.engine.PeakLevel());
     CT_CHECK(monotonic);
     CT_CHECK_NEAR(adv_ms, wall_ms, 30.0);
-    CT_CHECK(p0 > 1'000'000 + 100'000 && p0 < 1'000'000 + 200'000);
+    // p0 trails the time since Play by the output latency (+ one buffer until the render thread applied Play).
+    const double since_play_ms = static_cast<double>(q0 - q_play) * 1000.0 / Clock::QpcFrequency();
+    CT_CHECK((p0 - 1'000'000) / 1000.0 <= since_play_ms && (p0 - 1'000'000) / 1000.0 >= since_play_ms - 80.0);
     CT_CHECK_EQ(fx.tone.discontinuities.load(), 0);
     // Pause freezes the position.
     fx.engine.Pause();

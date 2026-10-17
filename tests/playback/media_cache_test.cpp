@@ -118,7 +118,9 @@ CT_TEST_DEVICE(media_cache_budget_and_playback_window) {
                     st.cached_frames, static_cast<unsigned long long>(st.seeks));
         CT_CHECK(st.evictions > 0);
         CT_CHECK(st.cached_frames <= 20u);
-        CT_CHECK(late <= 2);
+#ifndef CT_DEBUG
+        CT_CHECK(late <= 2);   // real-time: enforced in Release only (Debug + debug layer is report-only)
+#endif
     }
     CacheBudget::SetBytes(old);
     CT_CHECK_EQ(CacheBudget::Used(), 0u);
