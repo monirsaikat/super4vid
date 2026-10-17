@@ -48,6 +48,7 @@ const char* StateName(State s) {
 namespace {
 
 constexpr int64_t kTickMs = 250;   // LiveStats at 4 Hz
+constexpr int64_t kMeterMs = 33;   // live meter levels at 30 Hz
 
 // SessionClock as the webcam's time base (the capture module cannot depend on the recorder).
 struct ClockTimeSource final : capture::MediaTimeSource {
@@ -118,6 +119,7 @@ struct RecordingSession::Impl {
     LiveStats stats;
     std::string bundle_path;   // under stats_lock
     std::atomic<double> last_latency_ms{-1.0};
+    std::atomic<float> live_mic_db{audio::Meter::kFloorDb}, live_sys_db{audio::Meter::kFloorDb};
     SessionListener* listener = nullptr;
 
     // Component errors (ct-capture, ct-encode, ...): first one wins, handled on ct-session.
@@ -251,7 +253,7 @@ struct RecordingSession::Impl {
             if (st == State::Recording || st == State::Paused) {
                 const int64_t now = Clock::QpcNow();
                 const int64_t left_ms = (next_tick_qpc - now) * 1000 / Clock::QpcFrequency();
-                timeout = static_cast<DWORD>(std::clamp<int64_t>(left_ms, 0, kTickMs));
+                timeout = static_cast<DWORD>(std::clamp<int64_t>(left_ms, 0, kMeterMs));   // meters at 30 Hz
             }
             WaitForSingleObject(wake.Handle(), timeout);
 
@@ -271,6 +273,10 @@ struct RecordingSession::Impl {
             if (quit) break;
 
             const State now_state = state.load();
+            if (now_state == State::Recording || now_state == State::Paused) {
+                live_mic_db.store(mic ? PeakDb(mic->Levels()) : audio::Meter::kFloorDb, std::memory_order_relaxed);
+                live_sys_db.store(sys ? PeakDb(sys->Levels()) : audio::Meter::kFloorDb, std::memory_order_relaxed);
+            }
             if ((now_state == State::Recording || now_state == State::Paused) && Clock::QpcNow() >= next_tick_qpc) {
                 next_tick_qpc = Clock::QpcNow() + Clock::QpcFrequency() * kTickMs / 1000;
                 Tick();
@@ -542,6 +548,7 @@ struct RecordingSession::Impl {
         SetState(State::Starting);
         trigger_qpc = trig ? trig : Clock::QpcNow();
         screen_sink.first_frame_qpc.store(0);
+        last_latency_ms.store(-1.0);
 
         const int64_t epoch = Clock::QpcNow();
         clock->Start(epoch);
@@ -780,6 +787,8 @@ struct RecordingSession::Impl {
     // Writers before the pools they reference (capturer, webcam).
     void Release() {
         g_armed.store(nullptr, std::memory_order_release);
+        live_mic_db.store(audio::Meter::kFloorDb);
+        live_sys_db.store(audio::Meter::kFloorDb);
         if (capturer) capturer->Stop();
         if (webcam) webcam->Stop();
         if (mic) mic->Stop();
@@ -849,8 +858,7 @@ void RecordingSession::PrepareAsync(platform::D3DDevice& dev, const SessionConfi
 bool RecordingSession::IsPrepared() const { return m_impl->prepared.load(std::memory_order_acquire); }
 
 void RecordingSession::StartCountdown() {
-    State expected = State::Idle;
-    if (!m_impl->prepared.load() && !m_impl->preparing.load()) return;
+    State expected = State::Idle;   // the prepare may still be queued (PrepareAsync posted from another thread)
     if (!m_impl->state.compare_exchange_strong(expected, State::Countdown)) return;
     CT_LOG_INFO("state Idle -> Countdown");
     {
@@ -927,6 +935,11 @@ std::string RecordingSession::BundlePath() const {
 }
 
 double RecordingSession::LastStartLatencyMs() const { return m_impl->last_latency_ms.load(); }
+
+void RecordingSession::LiveLevels(float* mic_db, float* sys_db) const {
+    if (mic_db) *mic_db = m_impl->live_mic_db.load(std::memory_order_relaxed);
+    if (sys_db) *sys_db = m_impl->live_sys_db.load(std::memory_order_relaxed);
+}
 
 bool RecordingSession::WaitIdle(uint32_t timeout_ms) {
     const int64_t end = Clock::QpcNow() + static_cast<int64_t>(timeout_ms) * Clock::QpcFrequency() / 1000;

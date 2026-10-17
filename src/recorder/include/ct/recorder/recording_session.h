@@ -114,6 +114,8 @@ public:
     std::string BundlePath() const;
     const SessionClock& Clock() const { return m_clock; }
     double LastStartLatencyMs() const;        // trigger -> first frame of the last recording, -1 if unknown
+    // Peak dBFS of the mic / system streams, refreshed at 30 Hz while recording (floor otherwise). Any thread.
+    void LiveLevels(float* mic_db, float* sys_db) const;
     // Blocks until the session is Idle with nothing queued (headless mode, tests). false on timeout.
     bool WaitIdle(uint32_t timeout_ms);
 

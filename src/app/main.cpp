@@ -13,6 +13,7 @@
 #include <ct/ui/editor_shell.h>
 #include <ct/ui/theme.h>
 #include <ct/recorder/headless.h>
+#include <ct/ui/recorder_app.h>
 #include <ct/version.h>
 
 #include "resource.h"
@@ -311,7 +312,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     // before Log::Init stay in the ring and are written once the file exists).
     // --record / --selftest are console modes: they run next to a running instance instead of forwarding to it.
     const bool headless = ct::recorder::IsHeadlessCommandLine(GetCommandLineW());
-    if (!headless && !ct::platform::SingleInstance::Acquire(L"Local\\Camtesia.Instance", GetCommandLineW())) {
+    const bool separate = headless || ct::ui::RunsAsSeparateInstance(GetCommandLineW());
+    if (!separate && !ct::platform::SingleInstance::Acquire(L"Local\\Camtesia.Instance", GetCommandLineW())) {
         ct::Log::Shutdown();
         return 0;   // forwarded to the running instance via WM_COPYDATA
     }
@@ -331,6 +333,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     if (headless) {
         const int rc = ct::recorder::RunHeadless(GetCommandLineW());
         if (SUCCEEDED(com_hr)) CoUninitialize();
+        CT_LOG_INFO("exit %d", rc);
+        ct::Log::Shutdown();
+        return rc;
+    }
+    if (!opt.editor_demo && !wcsstr(GetCommandLineW(), L"--editor")) {   // default mode: the recorder bar
+        ct::ui::RecorderAppOptions ro;
+        ro.tray = opt.tray;
+        ro.stats = opt.stats;
+        ro.time_to_window = opt.time_to_window;
+        ro.screenshot = opt.screenshot;
+        ro.frames = opt.frames;
+        ro.icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+        const int rc = ct::ui::RunRecorderApp(ro);
+        if (SUCCEEDED(com_hr)) CoUninitialize();
+        ct::platform::SingleInstance::Release();
         CT_LOG_INFO("exit %d", rc);
         ct::Log::Shutdown();
         return rc;

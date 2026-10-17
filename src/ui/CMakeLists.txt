@@ -6,4 +6,5 @@ ct_add_module(ui
     src/editor_state.cpp src/editor_commands.cpp src/timeline_math.cpp
     src/editor_shell.cpp
     src/panels/timeline_widget.cpp src/panels/properties_panel.cpp src/panels/media_panel.cpp src/panels/status_bar.cpp
-  DEPS ct_core ct_project ct_platform imgui)
+    src/recorder_bar.cpp src/recorder_app.cpp
+  DEPS ct_core ct_project ct_platform imgui ct_recorder)
