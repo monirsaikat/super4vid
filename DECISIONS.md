@@ -1160,3 +1160,34 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · P11 tasks 11.5/11.6 · Settings window, error banner and first run details
+Spec said: `ui::SettingsWindow` modal with sections Recording (incl. keystrokes mode with a privacy note), Audio (meters
+test), Camera, Hotkeys, Editor, Export, Privacy, About; saves through the 500 ms debounce; error banners per docs/05.
+Done instead:
+- Keystroke capture mode lives in the Privacy section (with the off / shortcuts / all note), not in Recording, so all
+  privacy-relevant choices sit together. The live mic meter test is not built yet (11.6 stays `[~]`).
+- `recording.mic_device` stores the WASAPI endpoint id (UTF-8) and `recording.webcam_device` the camera's symbolic
+  link (UTF-8); empty = default mic / no camera. `webcam_resolution` stays "WxH" from `WebcamInfo::sizes`.
+- The debounce runs on its own thread (`ui::SettingsSaver`, "ct-settings-save"): each change re-arms 500 ms, the
+  thread writes the latest copy with `Settings::Save`; the destructor flushes synchronously. The UI thread never
+  writes the file. `Debouncer` is the pure, tested part.
+- The window is an ImGui modal popup (dims the viewport, Esc / Done close, Enter closes when no item has keyboard
+  focus). Hosts smaller than 840x580 DIP (the recorder bar) need ImGui multi-viewports or their own host window.
+- Hotkey recorder: claims every key (`SetKeyOwner`, LockThisFrame) while listening so ImGui nav does not see Tab/Esc.
+  Esc cancels, Backspace/Delete clears to "None"; letters/digits/navigation keys need Ctrl, Alt or Win (Shift alone is
+  refused); F1-F24, Pause, PrintScreen and Insert may stand alone. Conflict check order: duplicate of another of our
+  actions, unchanged, then a test `RegisterHotKey` on a thread-bound id (`SystemHotkeyProbe`). Because our own global
+  hotkeys would swallow the keys and fail the probe, the owner gets `suspend_hotkeys()` when recording starts and
+  `reregister_hotkeys(hotkeys, &err)` when it ends.
+- Icons beyond icons.h used only by the window: Keyboard E92E, Refresh E72C (both checked in SegoeIcons.ttf and
+  segmdl2.ttf by `ct_ui_tests settings_icons_present_in_icon_font`); wide glyphs are scaled into an 18 DIP slot.
+- `ct_ui` now links `ct_audio ct_capture ct_media ct_export` (AudioDevices, WebcamSource::Enumerate, EncoderCaps,
+  Preset). `webcam_source.h` pulls `d3d_device.h` (and its `mfobjects.h`) into `settings_window_logic.cpp` only.
+- Error messages keep a `%s` placeholder replaced by `ui::FillPlaceholder` (no printf, paths may contain `%`);
+  DiskFull shows the volume (`ui::DriveOf`: "D:", "\server\share", `\?\` prefixes stripped).
+- First run = `settings.json` missing. `FirstRun::Run` pushes the toast (12 s) and on the IO pool creates the folders
+  and writes the current settings, so the next start is not a first run.
+Why: spec gaps (storage format of device ids, keyboard capture semantics, where the save happens) and grouping.
+Impact: P05b bar: `settings_window.suspend_hotkeys/reregister_hotkeys/on_changed`, call `FirstRun::Run(&toasts,
+settings, SettingsFilePath())` once at startup. P09b editor: `ErrorBanner` per panel, Preferences -> `Open()`.
