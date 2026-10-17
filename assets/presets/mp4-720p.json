@@ -1,0 +1,31 @@
+{
+  "id": "mp4-720p",
+  "name": "MP4 720p (H.264)",
+  "container": "mp4",
+  "video": {
+    "codec": "h264",
+    "width": 1280,
+    "height": 720,
+    "fps": "source",
+    "rate_control": "vbr",
+    "bitrate_kbps": 5000,
+    "max_bitrate_kbps": 8000,
+    "quality": 75,
+    "gop_s": 2,
+    "bframes": true,
+    "profile": "high"
+  },
+  "audio": {
+    "codec": "aac",
+    "bitrate_kbps": 192,
+    "sample_rate": 48000,
+    "channels": 2
+  },
+  "gif": {
+    "max_colors": 256,
+    "dither": true,
+    "per_frame_palette": false,
+    "fps": 20
+  },
+  "fast_start": true
+}

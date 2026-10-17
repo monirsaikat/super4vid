@@ -1,0 +1,31 @@
+{
+  "id": "m4a-audio",
+  "name": "M4A (audio only)",
+  "container": "m4a",
+  "video": {
+    "codec": "h264",
+    "width": 0,
+    "height": 0,
+    "fps": "source",
+    "rate_control": "vbr",
+    "bitrate_kbps": 10000,
+    "max_bitrate_kbps": 16000,
+    "quality": 75,
+    "gop_s": 2,
+    "bframes": true,
+    "profile": "high"
+  },
+  "audio": {
+    "codec": "aac",
+    "bitrate_kbps": 192,
+    "sample_rate": 48000,
+    "channels": 2
+  },
+  "gif": {
+    "max_colors": 256,
+    "dither": true,
+    "per_frame_palette": false,
+    "fps": 20
+  },
+  "fast_start": true
+}
