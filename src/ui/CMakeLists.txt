@@ -1,4 +1,9 @@
-# P00: header-only target that exposes ct_imconfig.h. P09 turns this into ct_add_module(ui ...) with the same name.
-add_library(ct_ui INTERFACE)
-target_include_directories(ct_ui INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(ct_ui INTERFACE ct_core imgui)
+# P09: the ui module (theme, fonts, widgets, shortcuts, editor state, timeline, panels). Target name stays ct_ui;
+# ct_imconfig.h stays in include/ct/ui (the imgui target points IMGUI_USER_CONFIG at it).
+ct_add_module(ui
+  SOURCES
+    src/theme.cpp src/fonts.cpp src/widgets.cpp src/shortcuts.cpp
+    src/editor_state.cpp src/editor_commands.cpp src/timeline_math.cpp
+    src/editor_shell.cpp
+    src/panels/timeline_widget.cpp src/panels/properties_panel.cpp src/panels/media_panel.cpp src/panels/status_bar.cpp
+  DEPS ct_core ct_project ct_platform imgui)
