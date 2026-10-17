@@ -28,7 +28,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
   - [ ] HUMAN: ImGui keyboard navigation and text input (incl. IME) work in the Debug demo window
 
 ## P01 Core library
-- [ ] 1.1 strings (utf8<->utf16, format, split, trim, path ops)
+- [x] 1.1 strings (utf8<->utf16, format, split, trim, path ops)
 - [ ] 1.2 time (QPC clock, `Now()`, `SleepUntil`, high-resolution waitable timer, `Stopwatch`)
 - [ ] 1.3 containers (`SpscQueue<T>`, `ObjectPool<T>`, `RingBuffer`, `Arena`)
 - [ ] 1.4 threads (`Thread` wrapper with name + priority + MMCSS class, `Event`, `SrwLock`)

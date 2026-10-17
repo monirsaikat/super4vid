@@ -4,7 +4,7 @@
 #include <ct/core/log.h>
 #include <ct/platform/win.h>
 
-#include "utf_internal.h"
+#include <ct/core/strings.h>
 
 #include <knownfolders.h>
 #include <objbase.h>
@@ -38,7 +38,7 @@ std::string Ensure(const std::wstring& dir) {
     const int rc = SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
     if (rc != ERROR_SUCCESS && rc != ERROR_ALREADY_EXISTS && rc != ERROR_FILE_EXISTS)
         CT_LOG_WARN("could not create %ls (error %d)", dir.c_str(), rc);
-    return detail::Narrow(dir.c_str());
+    return WideToUtf8(dir);
 }
 
 } // namespace
@@ -53,7 +53,7 @@ void Paths::Init() {
     std::wstring exe_dir(exe, n);
     const size_t slash = exe_dir.find_last_of(L"\\/");
     if (slash != std::wstring::npos) exe_dir.resize(slash);
-    d.exe_dir = detail::Narrow(exe_dir.c_str());
+    d.exe_dir = WideToUtf8(exe_dir);
 
     d.portable = GetFileAttributesW((exe_dir + L"\\portable.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
     std::wstring local, roaming, recordings;

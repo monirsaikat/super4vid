@@ -5,7 +5,7 @@
 #include <ct/core/log.h>
 #include <ct/platform/win.h>
 
-#include "utf_internal.h"
+#include <ct/core/strings.h>
 
 #include <dbghelp.h>
 #include <eh.h>
@@ -161,7 +161,7 @@ void CrashHandler::Install() {
 }
 
 void CrashHandler::SetDumpDir(const char* utf8) {
-    const std::wstring dir = detail::Widen(utf8);
+    const std::wstring dir = Utf8ToWide(utf8 ? utf8 : "");
     if (dir.empty() || dir.size() >= MAX_PATH) return;
     wcsncpy_s(g_dump_dir, dir.c_str(), _TRUNCATE);
 }
