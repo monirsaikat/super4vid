@@ -320,3 +320,39 @@ Done instead (additions only; specified members unchanged):
   last image intact for repeats.
 Why: needed by the bench, tests and P05; the rest are the conservative readings of the sketch.
 Impact: P04's Mp4Writer implements `OnFrame` (and may override `OnError`).
+
+## 2026-10-17 · P02 task 2.7 · GPU budget work: zero-copy conversion, compute converter, repeats re-send the texture
+Spec said: crop-copy every new desktop image into a BGRA pool texture, convert it with two pixel-shader passes, and on a
+tick without a new image convert the previous BGRA texture again into a new NV12 texture. Budget: GPU < 8 % at 1080p60.
+Observed with that design (Release, 1080p60, a 60 fps animation on the monitor, Task Manager's per-process "GPU Engine"
+counter): 20-27 % GPU. GPU timestamps, paced at 60 Hz: crop copy 0.85-0.9 ms, two-pass conversion 1.4 ms, video processor
+1.4-1.8 ms. The iGPU stays at low clocks at this load (the same conversion takes 0.27 ms back to back), so every pass is
+expensive. The 8 % budget cannot be met that way.
+Done instead (DECISIONS-worthy API additions marked +):
+- Zero-copy: `+DesktopDuplicator::AcquireDirect/ReleaseDirect/CanAcquireDirect` hand the duplicated surface and the crop box
+  to the capturer, which converts straight from it with `+ColorConverter::ConvertRegion` (crop as uv offset/scale in the
+  constant buffer; the old `inv_src_size`/`pad` fields became `src_offset`/`src_scale`, `pad2` became `dst_size`) before
+  `ReleaseFrame`. The BGRA crop copy (`AcquireInto`) remains for letterboxing, cross-adapter capture, the video processor
+  fallback and `+ScreenCapturer::Config::zero_copy = false`; the BGRA pool (3) is still created.
+- Compute converter: one dispatch, one thread per 2x2 block, R8/R8G8 UAVs on the NV12 planes (`D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE`
+  on NV12, D3D11.3 `CreateUnorderedAccessView1` with `PlaneSlice`). 0.54-0.8 ms paced vs 1.4-1.8 ms for the two passes,
+  bit-exact to the CPU reference (max |dY| 1, |dUV| 0). Used when supported (`+ColorConverter::Config::allow_compute`,
+  `+UsingCompute()`, `+DstBindFlags()`); the pixel-shader passes stay as the fallback. Shaders split into `nv12_common.hlsli`,
+  `bgra_to_nv12.hlsl` (PS), `bgra_to_nv12_cs.hlsl` (CS) and the two HDR wrappers.
+- Repeats: a tick without a new image re-sends the previous NV12 texture (docs/03 section 4 wording) instead of converting
+  again: `+TexturePool::AddRef(index)` hands the same texture out again, the pool keeps a hand-out count per texture, and the
+  sink releases once per `OnFrame`. Repeats cost no GPU work and no pool texture.
+- `CaptureStats::acquire` measures from max(call time, the image's present time) to return, i.e. the cost of acquiring and not
+  the wait inside `AcquireNextFrame` for the desktop to change (that wait is a kernel wait of up to 3 ms, no CPU). With the
+  spec's definition (whole call), avg was 1.1-1.7 ms on a changing desktop.
+- `+platform::ImageIo::WritePngRgba` (WIC) for `--dump-frame`; P06 extends it.
+- `capture_bench` extras: `--animate` (child process shows a 60 fps animation over 75 % of the monitor as the "video playing"
+  stand-in), `--cursor` (CursorTracker at 120 Hz on the main thread), `--video-processor`, `--copy-path`, `--pixel-shader`,
+  `--debug-layer`. GPU % was read with `Get-Counter "\GPU Engine(pid_<pid>_*)\Utilization Percentage"` (busiest engine,
+  what Task Manager shows) once per second.
+Result (3 x 30 s, animated): GPU 6.4 / 7.0 / 7.8 % avg, 0 drops, 0 late ticks. See PROGRESS.md 2.7.
+Not measured: 4K (the reference machine has two 1080p monitors); lock/unlock recovery (needs a person at the machine).
+Seen once during development (older build, user working on the machine): 3 late ticks in 30 s; not reproduced in the final runs.
+Impact: P04 — the NV12 pool textures carry `D3D11_BIND_UNORDERED_ACCESS` when the compute path is active (check the MF
+encoder accepts them; if not, set `ScreenCapturer::Config::allow_compute = false`), and the same `pool_index` can arrive in
+consecutive `OnFrame` calls (one Release per call). The reuse predicate is consulted only by `Acquire`, never by `AddRef`.

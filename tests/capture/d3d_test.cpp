@@ -149,6 +149,26 @@ CT_TEST_DEVICE(texture_pool_acquire_release_predicate) {
     CT_CHECK(st.calls >= 4);
     pool.Release(3);
 
+    // AddRef: a texture handed out twice is free only after two releases; AddRef on a free texture re-hands it out.
+    CT_CHECK_EQ(pool.InUse(), 0u);
+    pool.SetReusePredicate(nullptr, nullptr);
+    uint32_t r = 99;
+    CT_REQUIRE(pool.Acquire(r) != nullptr);
+    pool.AddRef(r);
+    CT_CHECK_EQ(pool.InUse(), 1u);
+    pool.Release(r);
+    CT_CHECK_EQ(pool.InUse(), 1u);
+    pool.Release(r);
+    CT_CHECK_EQ(pool.InUse(), 0u);
+    pool.AddRef(r);
+    CT_CHECK_EQ(pool.InUse(), 1u);
+    uint32_t others[3];
+    for (uint32_t& o : others) CT_CHECK(pool.Acquire(o) != nullptr && o != r);
+    CT_CHECK(pool.Acquire(extra) == nullptr);
+    pool.Release(r);
+    for (uint32_t o : others) pool.Release(o);
+    CT_CHECK_EQ(pool.InUse(), 0u);
+
     int tag = 7;
     pool.SetUserData(2, &tag);
     CT_CHECK(pool.UserData(2) == &tag);

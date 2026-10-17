@@ -38,6 +38,14 @@ public:
     //   DXGI_ERROR_ACCESS_LOST = caller must call Reinit() (keep using the previous frame meanwhile)
     //   other failures = fatal for this session
     HRESULT AcquireInto(ID3D11Texture2D* dst, uint32_t timeout_ms, int64_t& present_qpc);
+    // Zero-copy variant: on S_OK, `desktop` is the duplicated image and `src_box` the region inside it (native
+    // orientation, Size()). The frame stays acquired until ReleaseDirect(), which the caller calls in the same tick right
+    // after queuing its GPU work (ScreenCapturer converts straight from it). Same return codes as AcquireInto, plus
+    // E_NOTIMPL when this frame showed the direct path is not possible (frame released; use AcquireInto from now on).
+    HRESULT AcquireDirect(uint32_t timeout_ms, ID3D11Texture2D*& desktop, D3D11_BOX& src_box, int64_t& present_qpc);
+    void ReleaseDirect();
+    // Same device, region fully inside the desktop (no letterbox), desktop image bindable as a shader resource.
+    bool CanAcquireDirect() const;
     // Releases and re-creates the duplication. E_ACCESSDENIED (or DXGI_ERROR_UNSUPPORTED / NOT_CURRENTLY_AVAILABLE)
     // while a secure desktop is up: keep retrying every 250 ms. Logs the first failure of a streak only.
     HRESULT Reinit();
@@ -49,6 +57,7 @@ public:
 
 private:
     HRESULT CreateDuplication(bool log_failures);
+    HRESULT AcquireFrame(uint32_t timeout_ms, Microsoft::WRL::ComPtr<ID3D11Texture2D>& tex, int64_t& present_qpc);
     void ComputeBox();
     HRESULT CopyCrossAdapter(ID3D11Texture2D* desktop, ID3D11Texture2D* dst);
     HRESULT ClearDst(ID3D11Texture2D* dst);
@@ -61,6 +70,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device> m_dup_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_dup_context;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_staging;   // cross-adapter: cropped readback on the second device
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_held;      // AcquireDirect frame until ReleaseDirect
     struct ClearView {
         ID3D11Texture2D* tex = nullptr;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
@@ -76,6 +86,7 @@ private:
     Rotation m_rotation = Rotation::Identity;
     bool m_cross_adapter = false;
     bool m_failing = false;      // a Reinit failure streak is in progress (log once)
+    bool m_direct_ok = true;     // cleared when the desktop image cannot be bound as a shader resource
 };
 
 } // namespace ct::capture

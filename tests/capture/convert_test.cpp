@@ -88,7 +88,7 @@ Diff CompareNv12(const std::vector<uint8_t>& gpu, const std::vector<uint8_t>& re
 }
 
 bool RunConvert(D3DDevice& dev, ColorConverter& conv, ID3D11Texture2D* src, int dw, int dh, std::vector<uint8_t>& nv12) {
-    ComPtr<ID3D11Texture2D> dst = MakeTexture(dev, dw, dh, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, nullptr, 0);
+    ComPtr<ID3D11Texture2D> dst = MakeTexture(dev, dw, dh, DXGI_FORMAT_NV12, conv.DstBindFlags(), nullptr, 0);
     if (!dst) return false;
     {
         D3DDevice::Lock lock(dev);
@@ -149,6 +149,7 @@ CT_TEST_DEVICE(gpu_convert_matches_reference) {
     ComPtr<ID3D11Texture2D> src = MakeTexture(dev, sw, sh, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
                                               src_px.data(), sw * 4);
     CT_REQUIRE(src != nullptr);
+    for (int compute = 1; compute >= 0; --compute)
     for (Rotation r : kRotations) {
         const bool swap = r == Rotation::R90 || r == Rotation::R270;
         const int dw = swap ? sh : sw, dh = swap ? sw : sh;
@@ -158,15 +159,18 @@ CT_TEST_DEVICE(gpu_convert_matches_reference) {
         cfg.src_format = DXGI_FORMAT_B8G8R8A8_UNORM;
         cfg.rotation = r;
         cfg.dst_size = SizeI{dw, dh};
+        cfg.allow_compute = compute != 0;
         CT_REQUIRE(SUCCEEDED(conv.Init(dev, cfg)));
         CT_CHECK(!conv.UsingVideoProcessorFallback());
+        if (!compute) CT_CHECK(!conv.UsingCompute());
         std::vector<uint8_t> gpu;
         CT_REQUIRE(RunConvert(dev, conv, src.Get(), dw, dh, gpu));
         const std::vector<uint8_t> rotated = RotateRef(src_px, sw, sh, r, dw, dh);
         std::vector<uint8_t> ref(static_cast<size_t>(dw) * dh * 3 / 2);
         RgbToNv12Ref(rotated.data(), dw, dh, ref.data(), ref.data() + static_cast<size_t>(dw) * dh);
         const Diff d = CompareNv12(gpu, ref, dw, dh, 10000);
-        std::printf("  rotation %s: max |dY| %d, max |dUV| %d over %d samples\n", RotationName(r), d.max_y, d.max_uv, d.samples);
+        std::printf("  %s, rotation %s: max |dY| %d, max |dUV| %d over %d samples\n", conv.UsingCompute() ? "compute" : "pixel shaders",
+                    RotationName(r), d.max_y, d.max_uv, d.samples);
         CT_CHECK(d.max_y <= 2);
         CT_CHECK(d.max_uv <= 2);
     }
@@ -217,13 +221,14 @@ CT_TEST_DEVICE(gpu_convert_hdr_fp16_tonemap) {
         }
     ComPtr<ID3D11Texture2D> src = MakeTexture(dev, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_SHADER_RESOURCE, px.data(), w * 8);
     CT_REQUIRE(src != nullptr);
-    for (int tm = 0; tm < 2; ++tm) {
+    for (int tm = 0; tm < 4; ++tm) {
         ColorConverter conv;
         ColorConverter::Config cfg;
+        cfg.allow_compute = tm >= 2;
         cfg.src_size = SizeI{w, h};
         cfg.src_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         cfg.dst_size = SizeI{w, h};
-        cfg.hdr_tonemap = tm != 0;
+        cfg.hdr_tonemap = (tm & 1) != 0;
         cfg.sdr_white_nits = white_nits;
         CT_REQUIRE(SUCCEEDED(conv.Init(dev, cfg)));
         std::vector<uint8_t> gpu;
@@ -236,5 +241,46 @@ CT_TEST_DEVICE(gpu_convert_hdr_fp16_tonemap) {
         const size_t c = static_cast<size_t>(w) * h + static_cast<size_t>(16) * w + 2 * 16;
         CT_CHECK_NEAR(gpu[c], 128, 1);
         CT_CHECK_NEAR(gpu[c + 1], 128, 1);
+    }
+}
+
+CT_TEST_DEVICE(gpu_convert_region_of_larger_source) {
+    // ConvertRegion (what the zero-copy capture path uses) equals cropping on the CPU and converting the crop.
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(true)));
+    if (!dev.SupportsNv12RenderTarget()) CT_SKIP("no NV12 render target support");
+    const int sw = 800, sh = 600, rx = 136, ry = 90, rw = 320, rh = 240;
+    const std::vector<uint8_t> src_px = Gradient(sw, sh);
+    ComPtr<ID3D11Texture2D> src = MakeTexture(dev, sw, sh, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, src_px.data(), sw * 4);
+    std::vector<uint8_t> crop(static_cast<size_t>(rw) * rh * 4);
+    for (int y = 0; y < rh; ++y)
+        std::memcpy(&crop[static_cast<size_t>(y) * rw * 4], &src_px[(static_cast<size_t>(y + ry) * sw + rx) * 4], static_cast<size_t>(rw) * 4);
+    std::vector<uint8_t> ref(static_cast<size_t>(rw) * rh * 3 / 2);
+    RgbToNv12Ref(crop.data(), rw, rh, ref.data(), ref.data() + static_cast<size_t>(rw) * rh);
+    for (int mode = 0; mode < 3; ++mode) {   // compute, pixel shaders, video processor
+        ColorConverter conv;
+        ColorConverter::Config cfg;
+        cfg.src_size = SizeI{rw, rh};
+        cfg.dst_size = SizeI{rw, rh};
+        cfg.allow_compute = mode == 0;
+        cfg.force_video_processor = mode == 2;
+        if (mode == 2 && !dev.VideoDevice()) continue;
+        CT_REQUIRE(SUCCEEDED(conv.Init(dev, cfg)));
+        ComPtr<ID3D11Texture2D> dst = MakeTexture(dev, rw, rh, DXGI_FORMAT_NV12, conv.DstBindFlags(), nullptr, 0);
+        const D3D11_BOX box{static_cast<UINT>(rx), static_cast<UINT>(ry), 0, static_cast<UINT>(rx + rw), static_cast<UINT>(ry + rh), 1};
+        {
+            D3DDevice::Lock lock(dev);
+            CT_REQUIRE(SUCCEEDED(conv.ConvertRegion(dev.Context(), src.Get(), box, dst.Get())));
+            const D3D11_BOX wrong{0, 0, 0, 10, 10, 1};
+            CT_CHECK(conv.ConvertRegion(dev.Context(), src.Get(), wrong, dst.Get()) == E_INVALIDARG);
+        }
+        std::vector<uint8_t> gpu;
+        UINT w = 0, h = 0;
+        CT_REQUIRE(test_util::ReadbackTexture(dev, dst.Get(), gpu, w, h));
+        const Diff d = CompareNv12(gpu, ref, rw, rh, 10000);
+        std::printf("  region, %s: max |dY| %d, max |dUV| %d\n", mode == 0 ? "compute" : (mode == 1 ? "pixel shaders" : "video processor"),
+                    d.max_y, d.max_uv);
+        CT_CHECK(d.max_y <= 2);
+        if (mode < 2) CT_CHECK(d.max_uv <= 2);   // the video processor's chroma filter differs on the sawtooth (see above)
     }
 }

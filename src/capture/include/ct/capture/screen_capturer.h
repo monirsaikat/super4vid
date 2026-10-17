@@ -1,8 +1,9 @@
 #pragma once
 // ct/capture/screen_capturer.h
 // Constant-frame-rate screen capture: a pacer thread ("ct-capture", TIME_CRITICAL, MMCSS "Capture") ticks at
-// fps_num/fps_den, acquires the newest desktop image (or repeats the previous one), converts it to NV12 and hands it to
-// a FrameSink with a tick-aligned timestamp (docs/03 section 4).
+// fps_num/fps_den, acquires the newest desktop image, converts it to NV12 straight from the duplicated surface (or from
+// a BGRA crop copy when letterboxing / cross-adapter) and hands it to a FrameSink with a tick-aligned timestamp
+// (docs/03 section 4). A tick without a new image re-sends the previous NV12 texture (same pool index, no GPU work).
 // Thread model: Init/Start/Pause/Resume/Stop from the owner thread (UI/session); Stats() from any thread (atomics).
 // The capture thread owns the duplicator and converter; it uses the immediate context under D3DDevice::Lock.
 // Lifetime: Init -> [Nv12Pool() setup] -> Start -> (Pause/Resume)* -> Stop. The destructor calls Stop().
@@ -28,9 +29,10 @@ namespace ct::capture {
 struct CaptureStats {
     std::atomic<uint64_t> ticks{0}, new_frames{0}, repeats{0}, dropped_pool_empty{0}, dropped_sink{0}, late_ticks{0},
         access_lost{0}, reinits{0};
-    Stats::Timing acquire;   // AcquireInto calls that returned S_OK (includes the wait for the frame, max 4 ms)
-    Stats::Timing convert;   // CPU time of ColorConverter::Convert (command submission)
-    Stats::Timing gpu;       // GPU time of the NV12 conversion passes (GpuTimer; resolved a few frames late)
+    Stats::Timing acquire;   // S_OK acquires: from max(call, desktop present time) to return, i.e. without the
+                             // wait for the desktop to change (AcquireNextFrame + crop copy submission + ReleaseFrame)
+    Stats::Timing convert;   // CPU time of the NV12 conversion of new images (command submission)
+    Stats::Timing gpu;       // GPU time of the NV12 conversion of new images (GpuTimer; resolved a few frames late)
     std::atomic<int64_t> first_frame_us{-1};   // t_us of the first frame delivered (tick-aligned), -1 before
     std::atomic<int64_t> last_new_frame_qpc{0};   // QPC when the last new desktop image arrived
 };
@@ -44,6 +46,10 @@ public:
         bool hdr_tonemap = true;
         uint32_t nv12_pool_size = 12;
         bool force_video_processor = false;   // tests/bench: ColorConverter fallback path
+        // Convert straight from the duplicated desktop image (no BGRA crop copy) when possible; false forces the
+        // copy path (bench comparisons; letterboxing and cross-adapter capture always copy).
+        bool zero_copy = true;
+        bool allow_compute = true;   // ColorConverter::Config::allow_compute (NV12 pool gets UAV binding when used)
     };
 
     ScreenCapturer() = default;

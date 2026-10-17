@@ -6,4 +6,5 @@ ct_add_test(ct_capture_tests DEPS ct_capture SOURCES
   duplicator_test.cpp
   convert_test.cpp
   cursor_test.cpp
-  capturer_test.cpp)
+  capturer_test.cpp
+  gpu_bench_test.cpp)

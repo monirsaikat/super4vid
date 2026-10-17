@@ -4,9 +4,11 @@
 #include <ct/core/error.h>
 #include <ct/core/log.h>
 
+#include "bgra_to_nv12_cs_cs_main.h"
 #include "bgra_to_nv12_ps_chroma.h"
 #include "bgra_to_nv12_ps_luma.h"
 #include "fullscreen_vs_main.h"
+#include "rgba16f_to_nv12_cs_cs_main.h"
 #include "rgba16f_to_nv12_ps_chroma.h"
 #include "rgba16f_to_nv12_ps_luma.h"
 
@@ -19,13 +21,13 @@ namespace ct::capture {
 
 namespace {
 
-struct alignas(16) ConvertCb {
-    float inv_src_size[2];
-    float pad[2];
+struct ConvertCb {
+    float src_offset[2];
+    float src_scale[2];
     float rot_uv[16];
     float hdr_scale;
     float tonemap;
-    float pad2[2];
+    float dst_size[2];
 };
 static_assert(sizeof(ConvertCb) == 96, "must match cbuffer CB in bgra_to_nv12.hlsl");
 
@@ -80,21 +82,28 @@ struct ColorConverter::Impl {
     ComPtr<ID3D11PixelShader> ps_luma, ps_chroma;
     ComPtr<ID3D11SamplerState> sampler;
     ComPtr<ID3D11Buffer> cb;
+    ConvertCb cb_data{};
     ComPtr<ID3D11RasterizerState> raster;
     CachedView<ID3D11ShaderResourceView> srvs[kViewCache];
     CachedView<ID3D11RenderTargetView> rtvs[kViewCache];
     int srv_next = 0, rtv_next = 0;
+    // Compute path (one dispatch, UAVs on both NV12 planes)
+    bool compute = false;
+    ComPtr<ID3D11ComputeShader> cs;
+    CachedView<ID3D11UnorderedAccessView1> uavs[kViewCache];
+    int uav_next = 0;
     // Video processor path
     ComPtr<ID3D11VideoProcessorEnumerator> vp_enum;
     ComPtr<ID3D11VideoProcessor> vp;
     CachedView<ID3D11VideoProcessorInputView> vp_in[kViewCache];
     CachedView<ID3D11VideoProcessorOutputView> vp_out[kViewCache];
     int vp_in_next = 0, vp_out_next = 0;
+    RECT vp_src_rect{};
 
-    HRESULT InitShaders();
+    HRESULT InitShaders(bool allow_compute);
     HRESULT InitVideoProcessor();
-    HRESULT ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, ID3D11Texture2D* dst);
-    HRESULT ConvertVideoProcessor(ID3D11Texture2D* src, ID3D11Texture2D* dst);
+    HRESULT ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX* box, ID3D11Texture2D* dst);
+    HRESULT ConvertVideoProcessor(ID3D11Texture2D* src, const D3D11_BOX* box, ID3D11Texture2D* dst);
 };
 
 ColorConverter::~ColorConverter() { Shutdown(); }
@@ -108,21 +117,33 @@ HRESULT ColorConverter::Init(platform::D3DDevice& dev, const Config& cfg) {
     m_impl->dev = &dev;
     m_impl->cfg = cfg;
     m_use_vp = cfg.force_video_processor || !dev.SupportsNv12RenderTarget();
-    const HRESULT hr = m_use_vp ? m_impl->InitVideoProcessor() : m_impl->InitShaders();
+    const HRESULT hr = m_use_vp ? m_impl->InitVideoProcessor() : m_impl->InitShaders(cfg.allow_compute);
     if (FAILED(hr)) {
         Shutdown();
         return hr;
     }
     CT_LOG_INFO("ColorConverter: %dx%d %s -> NV12 %dx%d, rotation %s, %s%s", cfg.src_size.w, cfg.src_size.h,
                 cfg.src_format == DXGI_FORMAT_R16G16B16A16_FLOAT ? "RGBA16F" : "BGRA8", cfg.dst_size.w, cfg.dst_size.h,
-                RotationName(cfg.rotation), m_use_vp ? "video processor" : "shaders",
+                RotationName(cfg.rotation), m_use_vp ? "video processor" : (m_impl->compute ? "compute shader" : "pixel shaders"),
                 cfg.src_format == DXGI_FORMAT_R16G16B16A16_FLOAT && !m_use_vp && cfg.hdr_tonemap ? ", HDR tone-map" : "");
     return S_OK;
 }
 
-HRESULT ColorConverter::Impl::InitShaders() {
+HRESULT ColorConverter::Impl::InitShaders(bool allow_compute) {
     ID3D11Device* d = dev->Device();
     const bool hdr = cfg.src_format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    // Compute path: needs typed UAV stores on NV12 (per-plane R8 / R8G8 UAVs, D3D11.3).
+    if (allow_compute) {
+        D3D11_FEATURE_DATA_FORMAT_SUPPORT2 fs2{DXGI_FORMAT_NV12, 0};
+        UINT fs = 0;
+        compute = SUCCEEDED(d->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &fs2, sizeof(fs2))) &&
+                  (fs2.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE) &&
+                  SUCCEEDED(d->CheckFormatSupport(DXGI_FORMAT_NV12, &fs)) && (fs & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW);
+    }
+    if (compute) {
+        if (hdr) CT_RETURN_IF_FAILED(d->CreateComputeShader(g_rgba16f_to_nv12_cs_cs_main, sizeof(g_rgba16f_to_nv12_cs_cs_main), nullptr, cs.GetAddressOf()));
+        else CT_RETURN_IF_FAILED(d->CreateComputeShader(g_bgra_to_nv12_cs_cs_main, sizeof(g_bgra_to_nv12_cs_cs_main), nullptr, cs.GetAddressOf()));
+    }
     CT_RETURN_IF_FAILED(d->CreateVertexShader(g_fullscreen_vs_main, sizeof(g_fullscreen_vs_main), nullptr, vs.GetAddressOf()));
     if (hdr) {
         CT_RETURN_IF_FAILED(d->CreatePixelShader(g_rgba16f_to_nv12_ps_luma, sizeof(g_rgba16f_to_nv12_ps_luma), nullptr, ps_luma.GetAddressOf()));
@@ -145,15 +166,17 @@ HRESULT ColorConverter::Impl::InitShaders() {
     rd.DepthClipEnable = TRUE;
     CT_RETURN_IF_FAILED(d->CreateRasterizerState(&rd, raster.GetAddressOf()));
 
-    ConvertCb data{};
-    data.inv_src_size[0] = 1.f / static_cast<float>(cfg.src_size.w);
-    data.inv_src_size[1] = 1.f / static_cast<float>(cfg.src_size.h);
+    ConvertCb& data = cb_data;
+    data.src_offset[0] = data.src_offset[1] = 0.f;
+    data.src_scale[0] = data.src_scale[1] = 1.f;
     RotationUvMatrix(cfg.rotation, data.rot_uv);
     data.hdr_scale = 80.f / (cfg.sdr_white_nits > 1.f ? cfg.sdr_white_nits : 80.f);
     data.tonemap = cfg.hdr_tonemap ? 1.f : 0.f;
+    data.dst_size[0] = static_cast<float>(cfg.dst_size.w);
+    data.dst_size[1] = static_cast<float>(cfg.dst_size.h);
     D3D11_BUFFER_DESC bd{};
     bd.ByteWidth = sizeof(ConvertCb);
-    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.Usage = D3D11_USAGE_DEFAULT;   // the region offset/scale change with the source texture
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     D3D11_SUBRESOURCE_DATA init{&data, 0, 0};
     CT_RETURN_IF_FAILED(d->CreateBuffer(&bd, &init, cb.GetAddressOf()));
@@ -206,6 +229,7 @@ HRESULT ColorConverter::Impl::InitVideoProcessor() {
     const RECT src_rect{0, 0, cfg.src_size.w, cfg.src_size.h};
     const RECT dst_rect{0, 0, cfg.dst_size.w, cfg.dst_size.h};
     vc->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &src_rect);
+    vp_src_rect = src_rect;
     vc->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &dst_rect);
     vc->VideoProcessorSetOutputTargetRect(vp.Get(), TRUE, &dst_rect);
     return S_OK;
@@ -213,15 +237,75 @@ HRESULT ColorConverter::Impl::InitVideoProcessor() {
 
 HRESULT ColorConverter::Convert(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, ID3D11Texture2D* dst_nv12) {
     if (!m_impl || !src || !dst_nv12) return E_UNEXPECTED;
-    return m_use_vp ? m_impl->ConvertVideoProcessor(src, dst_nv12) : m_impl->ConvertShaders(ctx, src, dst_nv12);
+    return m_use_vp ? m_impl->ConvertVideoProcessor(src, nullptr, dst_nv12) : m_impl->ConvertShaders(ctx, src, nullptr, dst_nv12);
 }
 
-HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, ID3D11Texture2D* dst) {
+HRESULT ColorConverter::ConvertRegion(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX& box,
+                                      ID3D11Texture2D* dst_nv12) {
+    if (!m_impl || !src || !dst_nv12) return E_UNEXPECTED;
+    if (static_cast<int32_t>(box.right - box.left) != m_impl->cfg.src_size.w ||
+        static_cast<int32_t>(box.bottom - box.top) != m_impl->cfg.src_size.h)
+        return E_INVALIDARG;
+    return m_use_vp ? m_impl->ConvertVideoProcessor(src, &box, dst_nv12) : m_impl->ConvertShaders(ctx, src, &box, dst_nv12);
+}
+
+HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX* box,
+                                             ID3D11Texture2D* dst) {
     ID3D11Device* d = dev->Device();
+    // Region of the source in uv; the constant buffer is rewritten only when it changes (new source size or crop).
+    float offset[2] = {0.f, 0.f}, scale[2] = {1.f, 1.f};
+    if (box) {
+        D3D11_TEXTURE2D_DESC sd;
+        src->GetDesc(&sd);
+        const float iw = 1.f / static_cast<float>(sd.Width), ih = 1.f / static_cast<float>(sd.Height);
+        offset[0] = static_cast<float>(box->left) * iw;
+        offset[1] = static_cast<float>(box->top) * ih;
+        scale[0] = static_cast<float>(box->right - box->left) * iw;
+        scale[1] = static_cast<float>(box->bottom - box->top) * ih;
+    }
+    if (offset[0] != cb_data.src_offset[0] || offset[1] != cb_data.src_offset[1] || scale[0] != cb_data.src_scale[0] ||
+        scale[1] != cb_data.src_scale[1]) [[unlikely]] {
+        cb_data.src_offset[0] = offset[0];
+        cb_data.src_offset[1] = offset[1];
+        cb_data.src_scale[0] = scale[0];
+        cb_data.src_scale[1] = scale[1];
+        ctx->UpdateSubresource(cb.Get(), 0, nullptr, &cb_data, 0, 0);
+    }
     CachedView<ID3D11ShaderResourceView>* sv = nullptr;
     CT_RETURN_IF_FAILED(FindOrCreate(srvs, srv_next, src, sv, [&](CachedView<ID3D11ShaderResourceView>& c) {
         return d->CreateShaderResourceView(src, nullptr, c.a.GetAddressOf());
     }));
+    ID3D11ShaderResourceView* srv = sv->a.Get();
+    ID3D11SamplerState* smp = sampler.Get();
+    ID3D11Buffer* cbs = cb.Get();
+
+    if (compute) {
+        CachedView<ID3D11UnorderedAccessView1>* uv = nullptr;
+        CT_RETURN_IF_FAILED(FindOrCreate(uavs, uav_next, dst, uv, [&](CachedView<ID3D11UnorderedAccessView1>& c) {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC1 ud{};
+            ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+            ud.Format = DXGI_FORMAT_R8_UNORM;     // plane 0
+            ud.Texture2D.PlaneSlice = 0;
+            HRESULT hr = dev->Device()->CreateUnorderedAccessView1(dst, &ud, c.a.GetAddressOf());
+            if (FAILED(hr)) return hr;
+            ud.Format = DXGI_FORMAT_R8G8_UNORM;   // plane 1
+            ud.Texture2D.PlaneSlice = 1;
+            return dev->Device()->CreateUnorderedAccessView1(dst, &ud, c.b.GetAddressOf());
+        }));
+        ID3D11UnorderedAccessView* views[2] = {uv->a.Get(), uv->b.Get()};
+        ctx->CSSetShader(cs.Get(), nullptr, 0);
+        ctx->CSSetShaderResources(0, 1, &srv);
+        ctx->CSSetSamplers(0, 1, &smp);
+        ctx->CSSetConstantBuffers(0, 1, &cbs);
+        ctx->CSSetUnorderedAccessViews(0, 2, views, nullptr);
+        ctx->Dispatch(static_cast<UINT>((cfg.dst_size.w / 2 + 7) / 8), static_cast<UINT>((cfg.dst_size.h / 2 + 7) / 8), 1);
+        ID3D11UnorderedAccessView* null_uavs[2] = {nullptr, nullptr};
+        ID3D11ShaderResourceView* null_srv = nullptr;
+        ctx->CSSetUnorderedAccessViews(0, 2, null_uavs, nullptr);
+        ctx->CSSetShaderResources(0, 1, &null_srv);
+        return S_OK;
+    }
+
     CachedView<ID3D11RenderTargetView>* rv = nullptr;
     CT_RETURN_IF_FAILED(FindOrCreate(rtvs, rtv_next, dst, rv, [&](CachedView<ID3D11RenderTargetView>& c) {
         D3D11_RENDER_TARGET_VIEW_DESC rd{};
@@ -242,9 +326,6 @@ HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Tex
     ctx->RSSetState(raster.Get());
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     ctx->OMSetDepthStencilState(nullptr, 0);
-    ID3D11ShaderResourceView* srv = sv->a.Get();
-    ID3D11SamplerState* smp = sampler.Get();
-    ID3D11Buffer* cbs = cb.Get();
     ctx->PSSetShaderResources(0, 1, &srv);
     ctx->PSSetSamplers(0, 1, &smp);
     ctx->PSSetConstantBuffers(0, 1, &cbs);
@@ -271,8 +352,15 @@ HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Tex
     return S_OK;
 }
 
-HRESULT ColorConverter::Impl::ConvertVideoProcessor(ID3D11Texture2D* src, ID3D11Texture2D* dst) {
+HRESULT ColorConverter::Impl::ConvertVideoProcessor(ID3D11Texture2D* src, const D3D11_BOX* box, ID3D11Texture2D* dst) {
     ID3D11VideoDevice* vd = dev->VideoDevice();
+    const RECT src_rect = box ? RECT{static_cast<LONG>(box->left), static_cast<LONG>(box->top), static_cast<LONG>(box->right),
+                                     static_cast<LONG>(box->bottom)}
+                              : RECT{0, 0, cfg.src_size.w, cfg.src_size.h};
+    if (std::memcmp(&src_rect, &vp_src_rect, sizeof(RECT)) != 0) [[unlikely]] {
+        dev->VideoContext()->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &src_rect);
+        vp_src_rect = src_rect;
+    }
     CachedView<ID3D11VideoProcessorInputView>* iv = nullptr;
     CT_RETURN_IF_FAILED(FindOrCreate(vp_in, vp_in_next, src, iv, [&](CachedView<ID3D11VideoProcessorInputView>& c) {
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC d{};
@@ -293,6 +381,14 @@ HRESULT ColorConverter::Impl::ConvertVideoProcessor(ID3D11Texture2D* src, ID3D11
     stream.Enable = TRUE;
     stream.pInputSurface = iv->a.Get();
     return dev->VideoContext()->VideoProcessorBlt(vp.Get(), ov->a.Get(), 0, 1, &stream);
+}
+
+bool ColorConverter::UsingCompute() const { return m_impl && m_impl->compute; }
+
+UINT ColorConverter::DstBindFlags() const {
+    UINT flags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (UsingCompute()) flags |= D3D11_BIND_UNORDERED_ACCESS;
+    return flags;
 }
 
 void ColorConverter::Shutdown() {

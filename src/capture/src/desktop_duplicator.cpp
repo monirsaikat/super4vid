@@ -212,7 +212,7 @@ HRESULT DesktopDuplicator::ClearDst(ID3D11Texture2D* dst) {
     return S_OK;
 }
 
-HRESULT DesktopDuplicator::AcquireInto(ID3D11Texture2D* dst, uint32_t timeout_ms, int64_t& present_qpc) {
+HRESULT DesktopDuplicator::AcquireFrame(uint32_t timeout_ms, ComPtr<ID3D11Texture2D>& tex, int64_t& present_qpc) {
     if (!m_dup) return DXGI_ERROR_ACCESS_LOST;
     DXGI_OUTDUPL_FRAME_INFO info{};
     ComPtr<IDXGIResource> resource;
@@ -228,32 +228,69 @@ HRESULT DesktopDuplicator::AcquireInto(ID3D11Texture2D* dst, uint32_t timeout_ms
         static ct::Stats::Counter& coalesced = ct::Stats::C("capture.coalesced");
         coalesced.Add(info.AccumulatedFrames - 1);
     }
-
-    ComPtr<ID3D11Texture2D> tex;
     hr = resource.As(&tex);
-    if (SUCCEEDED(hr)) {
-        // The box must lie inside the source or CopySubresourceRegion silently does nothing: re-check the size.
-        D3D11_TEXTURE2D_DESC td{};
-        tex->GetDesc(&td);
-        if (static_cast<int32_t>(td.Width) != m_desktop_native.w || static_cast<int32_t>(td.Height) != m_desktop_native.h) [[unlikely]] {
-            m_desktop_native = SizeI{static_cast<int32_t>(td.Width), static_cast<int32_t>(td.Height)};
-            ComputeBox();
-        }
-        if (m_cross_adapter) {
-            hr = CopyCrossAdapter(tex.Get(), dst);
-        } else {
-            if (m_partial) hr = ClearDst(dst);
-            if (SUCCEEDED(hr) && m_box.right > m_box.left)
-                m_dev->Context()->CopySubresourceRegion(dst, 0, m_dst_x, m_dst_y, 0, tex.Get(), 0, &m_box);
-        }
+    if (FAILED(hr)) {
+        m_dup->ReleaseFrame();
+        LogHr(hr, "desktop resource As(ID3D11Texture2D)", __FILE__, __LINE__);
+        return hr;
+    }
+    // The box must lie inside the source or CopySubresourceRegion silently does nothing: re-check the size.
+    D3D11_TEXTURE2D_DESC td{};
+    tex->GetDesc(&td);
+    if (static_cast<int32_t>(td.Width) != m_desktop_native.w || static_cast<int32_t>(td.Height) != m_desktop_native.h) [[unlikely]] {
+        m_desktop_native = SizeI{static_cast<int32_t>(td.Width), static_cast<int32_t>(td.Height)};
+        ComputeBox();
+    }
+    if (!(td.BindFlags & D3D11_BIND_SHADER_RESOURCE)) [[unlikely]] {
+        if (m_direct_ok) CT_LOG_INFO("DesktopDuplicator: desktop image is not a shader resource; using the copy path");
+        m_direct_ok = false;
     }
     present_qpc = info.LastPresentTime.QuadPart;
+    return S_OK;
+}
+
+HRESULT DesktopDuplicator::AcquireInto(ID3D11Texture2D* dst, uint32_t timeout_ms, int64_t& present_qpc) {
+    ComPtr<ID3D11Texture2D> tex;
+    HRESULT hr = AcquireFrame(timeout_ms, tex, present_qpc);
+    if (hr != S_OK) return hr;
+    if (m_cross_adapter) {
+        hr = CopyCrossAdapter(tex.Get(), dst);
+    } else {
+        if (m_partial) hr = ClearDst(dst);
+        if (SUCCEEDED(hr) && m_box.right > m_box.left)
+            m_dev->Context()->CopySubresourceRegion(dst, 0, m_dst_x, m_dst_y, 0, tex.Get(), 0, &m_box);
+    }
     m_dup->ReleaseFrame();
     if (FAILED(hr)) {
         LogHr(hr, "DesktopDuplicator copy", __FILE__, __LINE__);
         return hr;
     }
     return S_OK;
+}
+
+bool DesktopDuplicator::CanAcquireDirect() const {
+    return m_dup && m_direct_ok && !m_cross_adapter && !m_partial && m_box.right > m_box.left;
+}
+
+HRESULT DesktopDuplicator::AcquireDirect(uint32_t timeout_ms, ID3D11Texture2D*& desktop, D3D11_BOX& src_box,
+                                         int64_t& present_qpc) {
+    ComPtr<ID3D11Texture2D> tex;
+    const HRESULT hr = AcquireFrame(timeout_ms, tex, present_qpc);
+    if (hr != S_OK) return hr;
+    if (!CanAcquireDirect()) {   // learned on this frame (mode change, no SRV binding): caller switches to AcquireInto
+        m_dup->ReleaseFrame();
+        return E_NOTIMPL;
+    }
+    m_held = tex;
+    desktop = tex.Get();
+    src_box = m_box;
+    return S_OK;
+}
+
+void DesktopDuplicator::ReleaseDirect() {
+    if (!m_held) return;
+    m_held.Reset();
+    m_dup->ReleaseFrame();
 }
 
 HRESULT DesktopDuplicator::CopyCrossAdapter(ID3D11Texture2D* desktop, ID3D11Texture2D* dst) {
@@ -286,6 +323,7 @@ HRESULT DesktopDuplicator::CopyCrossAdapter(ID3D11Texture2D* desktop, ID3D11Text
 
 HRESULT DesktopDuplicator::Reinit() {
     if (!m_output) return E_UNEXPECTED;
+    m_held.Reset();
     const HRESULT hr = CreateDuplication(!m_failing);
     if (FAILED(hr)) {
         if (!m_failing && IsRetryable(hr)) CT_LOG_WARN("DesktopDuplicator: duplication unavailable (%s); retrying", HrToString(hr).c_str());
@@ -299,6 +337,7 @@ HRESULT DesktopDuplicator::Reinit() {
 }
 
 void DesktopDuplicator::Shutdown() {
+    m_held.Reset();
     m_dup.Reset();
     m_output.Reset();
     m_staging.Reset();

@@ -57,9 +57,12 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
     cc.sdr_white_nits = m_cfg.display.sdr_white_nits;
     cc.dst_size = m_output_size;
     cc.force_video_processor = m_cfg.force_video_processor;
+    cc.allow_compute = m_cfg.allow_compute;
     CT_RETURN_IF_FAILED(m_conv.Init(dev, cc));
 
-    CT_RETURN_IF_FAILED(m_nv12_pool.Init(dev, TexDesc(m_output_size, DXGI_FORMAT_NV12), m_cfg.nv12_pool_size, "capture.nv12"));
+    D3D11_TEXTURE2D_DESC nv12 = TexDesc(m_output_size, DXGI_FORMAT_NV12);
+    nv12.BindFlags = m_conv.DstBindFlags();
+    CT_RETURN_IF_FAILED(m_nv12_pool.Init(dev, nv12, m_cfg.nv12_pool_size, "capture.nv12"));
     CT_LOG_IF_FAILED(m_gpu_timer.Init(dev));
     CT_LOG_INFO("ScreenCapturer: %dx%d @ %d/%d fps, NV12 pool %u", m_output_size.w, m_output_size.h, m_cfg.fps_num,
                 m_cfg.fps_den, m_cfg.nv12_pool_size);
@@ -125,10 +128,12 @@ void ScreenCapturer::Run() {
     ID3D11DeviceContext4* ctx = m_dev->Context();
 
     int64_t n = 0;
-    bool have_frame = false;
     bool lost = false;
     int64_t next_reinit_qpc = 0;
-    uint32_t cur = 0;   // BGRA pool slot holding the newest desktop image
+    uint32_t cur = 0;            // copy path: BGRA pool slot holding the newest desktop image
+    bool bgra_pending = false;   // copy path: bgra[cur] is newer than the last NV12 frame (not converted yet)
+    bool has_last = false;       // an NV12 pool texture (last_idx) holds the newest delivered frame
+    uint32_t last_idx = 0;
     HANDLE handles[2] = {m_stop_event.Handle(), m_wake_event.Handle()};
 
     while (!m_stop.load(std::memory_order_acquire)) {
@@ -157,22 +162,38 @@ void ScreenCapturer::Run() {
                     next_reinit_qpc = now + reinit_interval_qpc;
                 }
             }
-            bool got = false;
+            bool got = false;                       // a new desktop image this tick
+            ID3D11Texture2D* direct_src = nullptr;  // zero-copy: the acquired desktop image (held until the end of the tick)
+            D3D11_BOX direct_box{};
             if (!lost && SUCCEEDED(fatal)) {
                 now = Clock::QpcNow();
                 const int64_t timeout_qpc = tick_qpc + 2 * ms_qpc - now;
                 const uint32_t timeout_ms =
                     static_cast<uint32_t>(std::clamp<int64_t>((timeout_qpc + ms_qpc - 1) / ms_qpc, 0, 4));
-                const uint32_t next = (cur + 1) % m_bgra_pool.Count();
                 int64_t present_qpc = 0;
                 const int64_t t0 = Clock::QpcNow();
-                const HRESULT hr = m_dup.AcquireInto(m_bgra_pool.At(next), timeout_ms, present_qpc);
+                HRESULT hr;
+                if (m_cfg.zero_copy && !m_conv.UsingVideoProcessorFallback() && m_dup.CanAcquireDirect()) {
+                    hr = m_dup.AcquireDirect(timeout_ms, direct_src, direct_box, present_qpc);
+                    if (hr != S_OK) direct_src = nullptr;
+                } else {
+                    const uint32_t next = (cur + 1) % m_bgra_pool.Count();
+                    hr = m_dup.AcquireInto(m_bgra_pool.At(next), timeout_ms, present_qpc);
+                    if (hr == S_OK) {
+                        cur = next;
+                        bgra_pending = true;
+                    }
+                }
                 if (hr == S_OK) {
-                    m_stats.acquire.AddUs(Clock::QpcToUs(Clock::QpcNow(), t0));
-                    cur = next;
-                    have_frame = got = true;
+                    // Time from the later of "call" and "desktop presented" to return: the cost of acquiring, not the
+                    // wait for the desktop to change.
+                    const int64_t t1 = Clock::QpcNow();
+                    m_stats.acquire.AddUs(Clock::QpcToUs(t1, std::max(t0, std::min(present_qpc, t1))));
+                    got = true;
                     m_stats.new_frames.fetch_add(1, std::memory_order_relaxed);
-                    m_stats.last_new_frame_qpc.store(Clock::QpcNow(), std::memory_order_relaxed);
+                    m_stats.last_new_frame_qpc.store(t1, std::memory_order_relaxed);
+                } else if (hr == E_NOTIMPL) {
+                    // The direct path stopped being possible (mode change, no SRV binding); AcquireInto from now on.
                 } else if (hr == DXGI_ERROR_ACCESS_LOST) [[unlikely]] {
                     m_stats.access_lost.fetch_add(1, std::memory_order_relaxed);
                     lost = true;
@@ -181,9 +202,9 @@ void ScreenCapturer::Run() {
                     fatal = hr;
                 }
             }
-            if (!got && have_frame && SUCCEEDED(fatal)) m_stats.repeats.fetch_add(1, std::memory_order_relaxed);
 
-            if (have_frame && SUCCEEDED(fatal)) {
+            if (SUCCEEDED(fatal) && (got || bgra_pending)) {
+                // A new image (or one the copy path could not convert last tick): convert it into a fresh pool texture.
                 uint32_t idx = 0;
                 ID3D11Texture2D* nv12 = m_nv12_pool.Acquire(idx);
                 if (!nv12) [[unlikely]] {
@@ -191,13 +212,17 @@ void ScreenCapturer::Run() {
                 } else {
                     const int64_t c0 = Clock::QpcNow();
                     m_gpu_timer.Begin(ctx);
-                    const HRESULT hr = m_conv.Convert(ctx, m_bgra_pool.At(cur), nv12);
+                    const HRESULT hr = direct_src ? m_conv.ConvertRegion(ctx, direct_src, direct_box, nv12)
+                                                  : m_conv.Convert(ctx, m_bgra_pool.At(cur), nv12);
                     m_gpu_timer.End(ctx);
                     m_stats.convert.AddUs(Clock::QpcToUs(Clock::QpcNow(), c0));
                     if (FAILED(hr)) [[unlikely]] {
                         m_nv12_pool.Release(idx);
                         fatal = hr;
                     } else {
+                        bgra_pending = false;
+                        has_last = true;
+                        last_idx = idx;
                         int64_t expected = -1;
                         m_stats.first_frame_us.compare_exchange_strong(expected, t_us, std::memory_order_relaxed);
                         if (!m_sink->OnFrame(nv12, idx, t_us)) {
@@ -206,7 +231,17 @@ void ScreenCapturer::Run() {
                         }
                     }
                 }
+            } else if (SUCCEEDED(fatal) && has_last) {
+                // No new image: re-send the previous NV12 texture (no GPU work, no extra pool texture). Only this
+                // thread writes pool textures, so last_idx still holds that frame even if the sink released it.
+                m_stats.repeats.fetch_add(1, std::memory_order_relaxed);
+                m_nv12_pool.AddRef(last_idx);
+                if (!m_sink->OnFrame(m_nv12_pool.At(last_idx), last_idx, t_us)) {
+                    m_nv12_pool.Release(last_idx);
+                    m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);
+                }
             }
+            if (direct_src) m_dup.ReleaseDirect();
             double gpu_ms = 0;
             if (m_gpu_timer.Resolve(ctx, gpu_ms)) m_stats.gpu.AddUs(static_cast<int64_t>(gpu_ms * 1000.0));
         }

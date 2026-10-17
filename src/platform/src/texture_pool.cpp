@@ -17,9 +17,9 @@ HRESULT TexturePool::Init(D3DDevice& dev, const D3D11_TEXTURE2D_DESC& desc, uint
     m_desc = desc;
     m_textures.resize(count);
     m_user.assign(count, nullptr);
-    m_in_use = std::make_unique<std::atomic<bool>[]>(count);
+    m_refs = std::make_unique<std::atomic<uint32_t>[]>(count);
     for (uint32_t i = 0; i < count; ++i) {
-        m_in_use[i].store(false, std::memory_order_relaxed);
+        m_refs[i].store(0, std::memory_order_relaxed);
         const HRESULT hr = dev.Device()->CreateTexture2D(&desc, nullptr, m_textures[i].GetAddressOf());
         if (FAILED(hr)) {
             CT_LOG_ERROR("TexturePool %s: CreateTexture2D(%ux%u, format %d) failed: %s", debug_name ? debug_name : "",
@@ -41,7 +41,7 @@ HRESULT TexturePool::Init(D3DDevice& dev, const D3D11_TEXTURE2D_DESC& desc, uint
 void TexturePool::Shutdown() {
     m_textures.clear();
     m_user.clear();
-    m_in_use.reset();
+    m_refs.reset();
     m_in_use_count.store(0, std::memory_order_release);
     m_next = 0;
 }
@@ -50,9 +50,10 @@ ID3D11Texture2D* TexturePool::Acquire(uint32_t& index) {
     const uint32_t n = Count();
     for (uint32_t k = 0; k < n; ++k) {
         const uint32_t i = (m_next + k) % n;
-        if (m_in_use[i].load(std::memory_order_acquire)) continue;
+        if (m_refs[i].load(std::memory_order_acquire) != 0) continue;
         if (m_can_reuse && !m_can_reuse(m_can_reuse_user, i)) continue;
-        m_in_use[i].store(true, std::memory_order_relaxed);
+        // Only this (producer) thread raises a count from 0, so nothing can race us here.
+        m_refs[i].store(1, std::memory_order_relaxed);
         m_in_use_count.fetch_add(1, std::memory_order_acq_rel);
         m_next = (i + 1) % n;
         index = i;
@@ -66,9 +67,22 @@ void TexturePool::Release(uint32_t index) {
         CT_ASSERT(index < Count());
         return;
     }
-    const bool was = m_in_use[index].exchange(false, std::memory_order_acq_rel);
-    CT_ASSERT(was);
-    if (was) m_in_use_count.fetch_sub(1, std::memory_order_acq_rel);
+    uint32_t refs = m_refs[index].load(std::memory_order_acquire);
+    do {
+        if (refs == 0) {
+            CT_ASSERT(refs != 0);   // released more often than handed out
+            return;
+        }
+    } while (!m_refs[index].compare_exchange_weak(refs, refs - 1, std::memory_order_acq_rel));
+    if (refs == 1) m_in_use_count.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+void TexturePool::AddRef(uint32_t index) {
+    if (index >= Count()) {
+        CT_ASSERT(index < Count());
+        return;
+    }
+    if (m_refs[index].fetch_add(1, std::memory_order_acq_rel) == 0) m_in_use_count.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void TexturePool::SetReusePredicate(ReusePredicate can_reuse, void* user) {
