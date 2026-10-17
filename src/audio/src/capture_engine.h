@@ -10,6 +10,7 @@
 #include <ct/audio/devices.h>
 #include <ct/audio/meter.h>
 #include <ct/audio/stream_aligner.h>
+#include <ct/audio/wasapi_render.h>
 #include <ct/core/object_pool.h>
 #include <ct/core/stats.h>
 #include <ct/core/sync.h>
@@ -69,6 +70,8 @@ private:
     TimeUs MediaUsFromAbsUs(int64_t abs_us) const;
     TimeUs MediaNowUs() const;
     void SetError(HRESULT hr);
+    void StartKeepAlive();
+    void StopKeepAlive();
 
     const EngineMode m_mode;
     CaptureConfig m_config;
@@ -84,6 +87,13 @@ private:
     uint32_t m_dev_block_align = 0;
     SampleType m_dev_type = SampleType::Unsupported;
     bool m_logged_fallback = false;
+
+    // Loopback only: a silent render stream on the captured endpoint keeps loopback packets flowing.
+    struct SilenceCallback final : WasapiRender::Callback {
+        void Render(float* interleaved, uint32_t frames, int channels, int64_t) override;
+    };
+    SilenceCallback m_silence;
+    WasapiRender m_keepalive;
 
     // Scratch (allocated in Init, sized for the largest packet we convert at once).
     static constexpr uint32_t kScratchFrames = 19200;   // 100 ms at 192 kHz; longer packets are split

@@ -61,6 +61,24 @@ CaptureStats CaptureEngine::Stats() const {
 
 void CaptureEngine::SetError(HRESULT hr) { m_last_error.store(hr, std::memory_order_relaxed); }
 
+void CaptureEngine::SilenceCallback::Render(float* interleaved, uint32_t frames, int channels, int64_t) {
+    std::memset(interleaved, 0, sizeof(float) * frames * static_cast<size_t>(channels));
+}
+
+void CaptureEngine::StartKeepAlive() {
+    if (IsMic() || m_open_id.empty()) return;
+    // Started before the loopback client: on some drivers an endpoint with no active render stream delivers no
+    // loopback packets at all.
+    HRESULT hr = m_keepalive.Init(m_open_id, 50, "ct-audio-sys-keepalive");
+    if (SUCCEEDED(hr) && !m_keepalive.Start(m_silence)) {
+        hr = m_keepalive.LastError();
+        if (SUCCEEDED(hr)) hr = E_FAIL;
+    }
+    if (FAILED(hr)) CT_LOG_WARN("audio.sys: keep-alive render stream failed: %s", HrToString(hr).c_str());
+}
+
+void CaptureEngine::StopKeepAlive() { m_keepalive.Stop(); }
+
 HRESULT CaptureEngine::Init(const CaptureConfig& config, AudioDevices& devices) {
     if (m_running.load()) return E_ILLEGAL_METHOD_CALL;
     dsp::Init();
@@ -186,6 +204,7 @@ bool CaptureEngine::Start(int64_t epoch_qpc, AudioSink& sink) {
     m_stop.Reset();
     m_meter.Reset();
     m_running.store(true);
+    StartKeepAlive();
     Thread::Options opt;
     opt.name = IsMic() ? "ct-audio-mic" : "ct-audio-sys";
     opt.priority = THREAD_PRIORITY_TIME_CRITICAL;
@@ -202,6 +221,7 @@ void CaptureEngine::Stop() {
     if (!m_running.load()) return;
     m_stop.Set();
     if (!m_thread.Join(5000)) CT_FATAL("audio capture thread did not stop within 5 s");
+    StopKeepAlive();
     m_running.store(false);
 }
 
@@ -449,9 +469,13 @@ void CaptureEngine::Reopen() {
         m_reinit_requested.store(false, std::memory_order_relaxed);
     }
     Close();
+    StopKeepAlive();
     m_st_reinits.fetch_add(1, std::memory_order_relaxed);
     HRESULT hr = Open(id);
-    if (SUCCEEDED(hr)) hr = m_client->Start();
+    if (SUCCEEDED(hr)) {
+        StartKeepAlive();
+        hr = m_client->Start();
+    }
     if (FAILED(hr)) {
         SetError(hr);
         Close();
