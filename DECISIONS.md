@@ -301,3 +301,22 @@ Done instead (additions only):
 Measured: `CaptureShape` ~0.16 ms per call (2,000 captures in 314 ms, Debug), 0 GDI objects leaked.
 Why: robustness; the spec leaves these open.
 Impact: P05's EventRecorder writes `shape_id 0` as "default arrow".
+
+## 2026-10-17 · P02 task 2.6 · ScreenCapturer / FrameSink details
+Spec said: the `FrameSink`, `CaptureStats` and `ScreenCapturer` declarations and the pacer loop in section 2.6.
+Done instead (additions only; specified members unchanged):
+- `FrameSink::OnError(HRESULT)` (the loop sketch says "add to FrameSink") is virtual with an empty default, called once on the
+  capture thread before it exits on a fatal error. `OnFrame` returning true transfers `pool_index` to the sink, which releases it.
+- `CaptureStats` gained `gpu` (GpuTimer around the conversion passes), `first_frame_us` and `last_new_frame_qpc` (the bench and
+  P05 use it to see "capture resumed"). `acquire` is timed only for calls that returned S_OK and includes the wait inside
+  `AcquireNextFrame` (at most until tick + 2 ms); `repeats` counts ticks that re-sent the previous image (also while access is lost).
+- `Config` gained `force_video_processor`; `Init` clamps `region` with `ClampRegionToDisplay` (an empty region = whole display).
+  `Region()` and `IsRunning()` getters added.
+- The HighResTimer is created inside the capture thread (it holds `timeBeginPeriod(1)` only while capturing).
+- Reinit is retried every 250 ms on any failure except device loss (`DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG`,
+  `DRIVER_INTERNAL_ERROR`), which is fatal. `reinits` counts successful re-creations. The first retry happens on the next tick.
+- Pausing while the pacer waits for a tick discards that tick (no frame, no tick count).
+- The BGRA pool rotates through its 3 textures: each acquire writes the next slot, so a failed or timed-out acquire leaves the
+  last image intact for repeats.
+Why: needed by the bench, tests and P05; the rest are the conservative readings of the sketch.
+Impact: P04's Mp4Writer implements `OnFrame` (and may override `OnError`).
