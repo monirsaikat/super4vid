@@ -137,3 +137,16 @@ Done instead (additions only): `AudioRing::CapacityFrames()/Channels()`, `Arena:
 `ObjectPool::Release` of an index that is not acquired asserts in Debug and is ignored in Release.
 Why: keep `<windows.h>` out of public core headers; make misuse loud.
 Impact: none for callers of the specified API.
+
+## 2026-10-17 · P01 task 1.4 · Thread/sync/async details
+Spec said: the `Thread`, `Event`, `SrwLock`, guard and `Async` declarations in P01 section 1.4.
+Done instead (additions only):
+- `Thread::MmcssApplied()` (the test needs to see that `AvSetMmThreadCharacteristicsW` returned a handle). Join after a finished
+  thread closes the handle, so a `Thread` can be started again. The destructor joins a still-running thread without timeout.
+- `SrwLock::TryLockExclusive()`. The guards' constructors are public (the spec's `class` sketch left them private).
+  `Event`/`SrwLock` bodies live in `thread.cpp` (no `sync.cpp` in the deliverables).
+- `Async`: `Run()` before `Init()` starts 2 workers; `Shutdown()` drains the queue, then joins; `Run()` after `Shutdown()` runs
+  inline; `PostToUi()` without a poster runs inline. Workers are named `ct-io-pool-0`, `ct-io-pool-1`, ...
+Why: testability and no lost jobs at exit.
+Impact: the app (P05/P09) defines `WM_CT_INVOKE`, installs the poster after creating its main window, and in the handler does
+`auto* fn = (std::function<void()>*)lparam; (*fn)(); delete fn;`. Call `Async::Shutdown()` before `Log::Shutdown()`.
