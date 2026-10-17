@@ -155,6 +155,52 @@ CT_TEST(log_live_file_cannot_be_deleted) {
     CT_CHECK_EQ(CountLines(session.dir, "still here"), size_t(1));
 }
 
+// Review fix: when rotation cannot create the next file, logging continues into the current one (it used to close
+// it first and then drop every later line). Read-only files occupy every name rotation may try in the next 30 s.
+CT_TEST(log_failed_rotation_keeps_old_file) {
+    LogSession session(ct::LogLevel::Info);
+    struct Blockers {
+        std::vector<std::wstring> paths;
+        ~Blockers() {
+            for (const auto& p : paths) {
+                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(p.c_str());
+            }
+        }
+    } blockers;
+    const std::wstring dir = ct::Utf8ToWide(session.dir);
+    FILETIME now_ft;
+    GetSystemTimeAsFileTime(&now_ft);
+    const uint64_t now = (static_cast<uint64_t>(now_ft.dwHighDateTime) << 32) | now_ft.dwLowDateTime;
+    for (int s = 0; s <= 30; ++s) {
+        const uint64_t t = now + static_cast<uint64_t>(s) * 10'000'000ull;
+        FILETIME utc{static_cast<DWORD>(t), static_cast<DWORD>(t >> 32)}, local;
+        SYSTEMTIME st;
+        FileTimeToLocalFileTime(&utc, &local);
+        FileTimeToSystemTime(&local, &st);
+        wchar_t base[64];
+        swprintf(base, 64, L"camtesia-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                 st.wSecond);
+        for (int n = 1; n <= 20; ++n) {
+            std::wstring path = dir + L"\\" + base + (n > 1 ? L"-" + std::to_wstring(n) : std::wstring()) + L".log";
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_READONLY, nullptr);
+            if (h == INVALID_HANDLE_VALUE) continue;   // the live log already has this name
+            CloseHandle(h);
+            blockers.paths.push_back(path);
+        }
+    }
+    const std::string payload(1000, 'x');
+    for (int i = 0; i < 11'000; ++i) {   // ~11 MB: crosses the 10 MB rotation mark
+        CT_LOG_INFO("rot %d %s", i, payload.c_str());
+        if (i % 400 == 399) ct::Log::Flush();
+    }
+    ct::Log::Flush();
+    CT_LOG_INFO("after failed rotation");
+    ct::Log::Flush();
+    CT_CHECK_EQ(CountLines(session.dir, "after failed rotation"), size_t(1));
+    CT_CHECK_EQ(CountLines(session.dir, "rot "), size_t(11'000));
+}
+
 CT_TEST(stats_counters_gauges_timings) {
     ct::Stats::Counter& c = ct::Stats::C("test.frames");
     CT_CHECK_EQ(&c, &ct::Stats::C("test.frames"));   // interned
