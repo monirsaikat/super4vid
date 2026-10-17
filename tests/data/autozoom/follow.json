@@ -1,0 +1,179 @@
+{
+  "description": "Auto-Follow: two nearby clicks hold a zoom from 1.85 s to 4.7 s; meanwhile the cursor drifts right and down beyond the dead zone, so the centre follows it in 300 ms pans at most every 400 ms, then the camera zooms out from the last centre. Cursor samples are region pixels (1920x1080).",
+  "duration_us": 10000000,
+  "params": {
+    "zoom": 2,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": true,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 2000000,
+      "x": 0.5,
+      "y": 0.5,
+      "kind": "click"
+    },
+    {
+      "t_us": 3500000,
+      "x": 0.55,
+      "y": 0.5,
+      "kind": "click"
+    }
+  ],
+  "cursor": {
+    "region": [
+      1920,
+      1080
+    ],
+    "samples": [
+      [
+        0,
+        960,
+        540
+      ],
+      [
+        2000000,
+        960,
+        540
+      ],
+      [
+        2200000,
+        1100,
+        600
+      ],
+      [
+        2600000,
+        1400,
+        750
+      ],
+      [
+        3000000,
+        1700,
+        900
+      ],
+      [
+        3400000,
+        1100,
+        560
+      ],
+      [
+        3500000,
+        1056,
+        540
+      ],
+      [
+        4000000,
+        1000,
+        500
+      ],
+      [
+        9000000,
+        1000,
+        500
+      ]
+    ]
+  },
+  "expected_keys": [
+    {
+      "t_us": 1200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 1850000,
+      "zoom": 2,
+      "cx": 0.525,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 2350000,
+      "zoom": 2,
+      "cx": 0.525,
+      "cy": 0.5,
+      "ease": "out"
+    },
+    {
+      "t_us": 2650000,
+      "zoom": 2,
+      "cx": 0.55651,
+      "cy": 0.532639,
+      "ease": "hold"
+    },
+    {
+      "t_us": 2750000,
+      "zoom": 2,
+      "cx": 0.55651,
+      "cy": 0.532639,
+      "ease": "out"
+    },
+    {
+      "t_us": 3050000,
+      "zoom": 2,
+      "cx": 0.71276,
+      "cy": 0.671528,
+      "ease": "hold"
+    },
+    {
+      "t_us": 3350000,
+      "zoom": 2,
+      "cx": 0.71276,
+      "cy": 0.671528,
+      "ease": "out"
+    },
+    {
+      "t_us": 3650000,
+      "zoom": 2,
+      "cx": 0.686979,
+      "cy": 0.63287,
+      "ease": "hold"
+    },
+    {
+      "t_us": 3750000,
+      "zoom": 2,
+      "cx": 0.686979,
+      "cy": 0.63287,
+      "ease": "out"
+    },
+    {
+      "t_us": 4050000,
+      "zoom": 2,
+      "cx": 0.610417,
+      "cy": 0.556481,
+      "ease": "hold"
+    },
+    {
+      "t_us": 4150000,
+      "zoom": 2,
+      "cx": 0.610417,
+      "cy": 0.556481,
+      "ease": "out"
+    },
+    {
+      "t_us": 4450000,
+      "zoom": 2,
+      "cx": 0.595833,
+      "cy": 0.537963,
+      "ease": "hold"
+    },
+    {
+      "t_us": 4700000,
+      "zoom": 2,
+      "cx": 0.595833,
+      "cy": 0.537963,
+      "ease": "inout"
+    },
+    {
+      "t_us": 5350000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

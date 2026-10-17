@@ -1,0 +1,17 @@
+{
+  "id": "0b5c1d2e-0000-4000-8000-0000000000a0",
+  "name": "Old draft",
+  "canvas": { "width": 1280, "height": 720, "fps_num": 30, "fps_den": 1, "background": "#202020" },
+  "media": [
+    { "id": "m1", "kind": "video", "path": "C:/old/a.mp4", "duration_us": 20000000,
+      "video": { "width": 1280, "height": 720, "fps_num": 30, "fps_den": 1 }, "audio_streams": [ "default" ] }
+  ],
+  "tracks": [ { "id": "t1", "kind": "video", "name": "Video" } ],
+  "clips": [
+    { "id": "c1", "track": "t1", "media": "m1", "start_us": 0, "in_us": 0, "duration_us": 10000000 },
+    { "id": "c2", "track": "t1", "media": "m1", "start_us": 10000000, "in_us": 2000000, "duration_us": 4000000, "speed": 2.0 }
+  ],
+  "camera": { "mode": "manual",
+              "keys": [ { "t_us": 0, "zoom": 1, "cx": 0.5, "cy": 0.5, "ease": "linear" },
+                        { "t_us": 1000000, "zoom": 2, "cx": 0.4, "cy": 0.4, "ease": "hold" } ] }
+}

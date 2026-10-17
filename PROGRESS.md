@@ -96,13 +96,14 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 6.7 Acceptance: `player_demo file.mp4` plays 4K60 H.264 in sync; seek-to-frame < 150 ms; CPU < 10 %
 
 ## P07 Project model
-- [ ] 7.1 Types (`Project`, `Media`, `Track`, `Clip`, `Keyframe<T>`, `Annotation`, `Transition`, `Camera`, `CursorStyle`)
-- [ ] 7.2 JSON (de)serialization with versioning + defaults + unknown-key tolerance
-- [ ] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
-- [ ] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
-- [ ] 7.5 `.ctrec` import -> project (tracks, cursor track from `.ctev`, keystrokes)
-- [ ] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
-- [ ] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical
+- [x] 7.0 ct_events module (`.ctev` writer/reader, `EventLog` time queries; created here because P05 is not built yet)
+- [x] 7.1 Types (`Project`, `Media`, `Track`, `Clip`, `Keyframe<T>`, `Annotation`, `Transition`, `Camera`, `CursorStyle`)
+- [x] 7.2 JSON (de)serialization with versioning + defaults + unknown-key tolerance
+- [x] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
+- [x] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
+- [x] 7.5 `.ctrec` import -> project (tracks, cursor track from `.ctev`, keystrokes)
+- [x] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
+- [x] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical — ct_project_tests 49/49 and ct_events_tests 19/19 pass in Debug and Release with `--repeat 3` (2026-10-17); fuzz 10,000 ops in Release (Validate after each, undo of each applied op restores the JSON, redo checked every 10th) 5.3-6.8 s over 4 runs (budget < 10 s; Debug runs 2,000 ops in ~27 s); full/minimal/sample.ctproj round-trip byte-identical, v0 migrates, docs/04 sample re-serializes stably; ToJson 22-33 us and FromJson 105 us for the 8-clip fixture (Release)
 
 ## P08 Compositor
 - [ ] 8.1 Render target management, canvas/background pass, color space utilities

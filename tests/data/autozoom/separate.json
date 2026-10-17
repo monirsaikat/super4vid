@@ -1,0 +1,84 @@
+{
+  "description": "Two clicks far apart in time: two independent zoom segments (8 keys), at zoom 2.5.",
+  "duration_us": 30000000,
+  "params": {
+    "zoom": 2.5,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 3000000,
+      "x": 0.6,
+      "y": 0.5,
+      "kind": "click"
+    },
+    {
+      "t_us": 12000000,
+      "x": 0.1,
+      "y": 0.9,
+      "kind": "click"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 2200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 2850000,
+      "zoom": 2.5,
+      "cx": 0.6,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 4200000,
+      "zoom": 2.5,
+      "cx": 0.6,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 4850000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 11200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 11850000,
+      "zoom": 2.5,
+      "cx": 0.2,
+      "cy": 0.8,
+      "ease": "hold"
+    },
+    {
+      "t_us": 13200000,
+      "zoom": 2.5,
+      "cx": 0.2,
+      "cy": 0.8,
+      "ease": "inout"
+    },
+    {
+      "t_us": 13850000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

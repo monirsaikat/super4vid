@@ -1,0 +1,110 @@
+{
+  "description": "A typing burst start and clicks with a 3x zoom and a short ease: the typing segment pans to a far click, then a separate segment later.",
+  "duration_us": 25000000,
+  "params": {
+    "zoom": 3,
+    "min_hold_us": 1500000,
+    "lead_us": 200000,
+    "ease_ms": 400,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 2000000,
+      "x": 0.45,
+      "y": 0.55,
+      "kind": "typing"
+    },
+    {
+      "t_us": 3000000,
+      "x": 0.5,
+      "y": 0.6,
+      "kind": "click"
+    },
+    {
+      "t_us": 4500000,
+      "x": 0.95,
+      "y": 0.05,
+      "kind": "click"
+    },
+    {
+      "t_us": 15000000,
+      "x": 0.5,
+      "y": 0.5,
+      "kind": "typing"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 1400000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 1800000,
+      "zoom": 3,
+      "cx": 0.475,
+      "cy": 0.575,
+      "ease": "hold"
+    },
+    {
+      "t_us": 3900000,
+      "zoom": 3,
+      "cx": 0.475,
+      "cy": 0.575,
+      "ease": "inout"
+    },
+    {
+      "t_us": 4300000,
+      "zoom": 3,
+      "cx": 0.833333,
+      "cy": 0.166667,
+      "ease": "hold"
+    },
+    {
+      "t_us": 6000000,
+      "zoom": 3,
+      "cx": 0.833333,
+      "cy": 0.166667,
+      "ease": "inout"
+    },
+    {
+      "t_us": 6400000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 14400000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 14800000,
+      "zoom": 3,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 16500000,
+      "zoom": 3,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 16900000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

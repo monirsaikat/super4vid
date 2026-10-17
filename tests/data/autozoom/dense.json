@@ -1,0 +1,200 @@
+{
+  "description": "A busy minute: a dozen clicks in three areas with mixed gaps, exercising absorb, merge, pan and separate segments together.",
+  "duration_us": 60000000,
+  "params": {
+    "zoom": 1.8,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 4000000,
+      "x": 0.2,
+      "y": 0.2,
+      "kind": "click"
+    },
+    {
+      "t_us": 4400000,
+      "x": 0.22,
+      "y": 0.18,
+      "kind": "click"
+    },
+    {
+      "t_us": 5300000,
+      "x": 0.25,
+      "y": 0.24,
+      "kind": "click"
+    },
+    {
+      "t_us": 7400000,
+      "x": 0.7,
+      "y": 0.3,
+      "kind": "click"
+    },
+    {
+      "t_us": 8100000,
+      "x": 0.72,
+      "y": 0.33,
+      "kind": "click"
+    },
+    {
+      "t_us": 9900000,
+      "x": 0.7,
+      "y": 0.8,
+      "kind": "click"
+    },
+    {
+      "t_us": 20000000,
+      "x": 0.5,
+      "y": 0.5,
+      "kind": "click"
+    },
+    {
+      "t_us": 21000000,
+      "x": 0.55,
+      "y": 0.55,
+      "kind": "click"
+    },
+    {
+      "t_us": 23500000,
+      "x": 0.58,
+      "y": 0.52,
+      "kind": "click"
+    },
+    {
+      "t_us": 40000000,
+      "x": 0.05,
+      "y": 0.95,
+      "kind": "click"
+    },
+    {
+      "t_us": 40100000,
+      "x": 0.95,
+      "y": 0.05,
+      "kind": "click"
+    },
+    {
+      "t_us": 59500000,
+      "x": 0.5,
+      "y": 0.5,
+      "kind": "click"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 3200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 3850000,
+      "zoom": 1.8,
+      "cx": 0.277778,
+      "cy": 0.277778,
+      "ease": "hold"
+    },
+    {
+      "t_us": 6600000,
+      "zoom": 1.8,
+      "cx": 0.277778,
+      "cy": 0.277778,
+      "ease": "inout"
+    },
+    {
+      "t_us": 7250000,
+      "zoom": 1.8,
+      "cx": 0.71,
+      "cy": 0.315,
+      "ease": "hold"
+    },
+    {
+      "t_us": 9100000,
+      "zoom": 1.8,
+      "cx": 0.71,
+      "cy": 0.315,
+      "ease": "inout"
+    },
+    {
+      "t_us": 9750000,
+      "zoom": 1.8,
+      "cx": 0.7,
+      "cy": 0.722222,
+      "ease": "hold"
+    },
+    {
+      "t_us": 11100000,
+      "zoom": 1.8,
+      "cx": 0.7,
+      "cy": 0.722222,
+      "ease": "inout"
+    },
+    {
+      "t_us": 11750000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 19200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 19850000,
+      "zoom": 1.8,
+      "cx": 0.543333,
+      "cy": 0.523333,
+      "ease": "hold"
+    },
+    {
+      "t_us": 24700000,
+      "zoom": 1.8,
+      "cx": 0.543333,
+      "cy": 0.523333,
+      "ease": "inout"
+    },
+    {
+      "t_us": 25350000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 39200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 39850000,
+      "zoom": 1.8,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 41300000,
+      "zoom": 1.8,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 41950000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

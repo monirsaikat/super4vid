@@ -62,6 +62,8 @@ include(cmake/CtModule.cmake)
 # One line per module, in dependency order. Phases append their module here and nothing else.
 add_subdirectory(third_party/imgui)
 add_subdirectory(src/core)
+add_subdirectory(src/events)
+add_subdirectory(src/project)
 add_subdirectory(src/platform)
 add_subdirectory(src/audio)
 add_subdirectory(src/capture)

@@ -435,3 +435,159 @@ Seen once during development (older build, user working on the machine): 3 late 
 Impact: P04 — the NV12 pool textures carry `D3D11_BIND_UNORDERED_ACCESS` when the compute path is active (check the MF
 encoder accepts them; if not, set `ScreenCapturer::Config::allow_compute = false`), and the same `pool_index` can arrive in
 consecutive `OnFrame` calls (one Release per call). The reuse predicate is consulted only by `Acquire`, never by `AddRef`.
+## 2026-10-17 · P07 task 7.0 · ct_events created in P07; header is 44 bytes; writer/reader API
+Spec said: `ct_events` is created in P05 (P07 creates it only if it runs first). docs/04 section 2: `header_size u16 = 40`;
+the reader API is called `ct::project::EventLog`.
+Done instead:
+- P07 created `src/events` (`ct::events`, depends on ct_core only) because P05 has not been built. P05's recorder uses
+  `EventWriter` directly: packed payload structs (`CursorMovePayload`, `KeyPayload`, ...), typed `Write` helpers, buffered
+  in memory, `Flush()` = fwrite + fflush (call it every second from ct-events-io), auto-flush past a threshold (256 KB default).
+  The file is opened with `_SH_DENYWR`, so readers can open it while it is being recorded.
+- The header fields listed in docs/04 take 44 bytes, not 40 (4+2+2+8+8+16+4). The writer stores `header_size = 44`.
+  The reader accepts any `header_size >= 40` (multiple of 4) and skips to it, so a 40-byte header without `flags`
+  (flags = 0) also loads.
+- `EventLog` lives in `ct::events` (not `ct::project`): it is shared by recorder, project and render.
+  It adds derived data: `Strokes()` (key-downs of non-modifier keys as "Ctrl+Shift+S"; auto-repeat ignored) and
+  `TypingBursts()` (from TYPING records, else derived from key-downs closer than 1 s).
+- `CursorAt` interpolates position linearly but not across a hide/show; shape and visibility come from the earlier sample.
+- A truncated last record (crash while writing) ends reading and sets `Truncated()`; short payloads of known types are skipped.
+Why: docs/04 internal inconsistency; P05/P08 need the queries; crash tolerance.
+Impact: P05 links `ct_events` and writes with `EventWriter`; P08 reads with `EventLog`.
+
+## 2026-10-17 · P07 tasks 7.1-7.2 · Model header split, `extra` everywhere, canonical .ctproj layout
+Spec said: all model types in `types.h` (plus `project.h`, `camera.h`, `easing.h` in the deliverables); only `Project::extra`
+holds unknown keys; "every sample in docs/04 round-trips byte-identically"; Validate checks `out_us <= duration_us * speed`.
+Done instead:
+- `easing.h` (Ease, ApplyEase, EaseName/ParseEase), `types.h` (everything else from the spec block), `camera.h` (CameraKey,
+  AutoZoomParams, Camera), `project.h` (Project). Names and members are as specified. `PointF` is defined in `ct::project`
+  (ct_core has none). Additions: `Json extra` on every struct that is a JSON object (not on keyframe/camera-key entries, rect,
+  pointer, media.video); `KeyTrack::IsSorted`, `Clip::IsAnnotation`, `IsKeyframeProp`, `Camera::SetKey/RemoveKey/
+  ReplaceGenerated/IsSorted`, `ClampCentre`, `Project::TrackIndex/ClipFits/MaxOutUs/RecomputeNextId`, `kMinSpeed/kMaxSpeed` (0.1..16).
+- `tracks[0]` is the bottom layer. `ClipsAt` skips hidden tracks. Keyframe times are relative to the clip start.
+- Validate: `out_us <= media.duration_us` (in/out are media time, so speed does not enter); images, annotation clips and media
+  with unknown duration are unbounded. Track kinds: video tracks take recording (screen/camera), video and image media; audio
+  tracks take recording (mic/system, stream must exist), video and audio media; annotation tracks take annotation clips only.
+- `next_id` is not serialized (docs/04 has no key for it); FromJson recomputes it from the largest id counter.
+- Canonical layout = `Json::Dump(2)` (one key per line) + trailing newline. The docs/04 sample uses a condensed layout and
+  placeholder values ("video|audio|image"), so it cannot round-trip byte for byte: the test loads it, checks its values and
+  checks that its re-serialization is stable. Byte identity is asserted on `tests/data/projects/*.ctproj` (written by this
+  version via `--update-golden`; the test substitutes the current `app_version`).
+- Floats: `%.6g` (C locale), `-0` -> 0. Doubles (`speed`, `ui.zoom`) are written exactly (shortest round-trip), because
+  rounding a speed would change `Duration()` and could create overlaps after reload. Integral numbers print as `1`, not `1.0`.
+- Emission rules (deterministic): `cursor`/`keystrokes` only on screen clips, `pip`/`annotation` only when set, `media: null` on
+  annotation clips, `color: null` for a clip without color (alpha 0), `video` omitted for audio media, camera key `generated`
+  only when true, `transform.anchor` always `"center"` (read but not stored). Cursor style also writes `shadow`; annotations
+  also write `arrow_head_px`, `blur_px`, `pixelate`.
+- Paths: relative paths are written with `/`; "same volume" means `fs::Relative` can express the path (same drive/share).
+  Load also looks for a missing file next to the project before marking it `missing`.
+- Version 0 (no format/version keys; clip `duration_us`; string background; camera `keys`) is defined by `Migrate` since no
+  earlier format existed; fixture `tests/data/projects/v0.ctproj`. A newer version loads best-effort and keeps its number.
+- `Load` returns false (with the Validate reason) for a timeline that breaks the invariants; `FromJson` alone does not validate.
+Why: the spec text conflicts with itself (docs sample layout vs byte identity) or is silent; these keep files stable.
+Impact: P08/P09 include `<ct/project/project.h>` (pulls in all model headers).
+
+## 2026-10-17 · P07 review fix · Damaged .ctev records fail the load; media rates/sizes validated
+Spec said: docs/04 section 2 only says readers skip unknown record types by size. The 7.0 entry above said short payloads of
+known types are skipped.
+Done instead: `EventLog::Load*` now returns false (with an Err) when a record of a known type is too short or a CURSOR_SHAPE
+has impossible sizes (w or h 0 or > `kMaxShapeSize` = 1024, raw `data_size != w*h*4`, RLE that cannot encode `w*h` pixels in
+`data_size` bytes, `data_size` past the record, unknown compression/format). Every size is checked before allocating;
+`RleDecode` resizes once and fills runs. `EventWriter::CursorShape` refuses shapes it could not read back (returns 0).
+A torn last record is still tolerated (`Truncated()`), unknown types are still skipped.
+`Project::Validate` also rejects media with `fps_den <= 0`, `fps_num < 0`, negative size or duration, video/recording
+media without a positive frame rate and size, and images without a size (canvas fps was already checked).
+Why: independent review: a corrupt shape record (65535x65535 RLE) requested ~17 GB and terminated the process (no
+exceptions); a zero fps_den would divide by zero in frame-time math.
+Impact: P05 must not write shapes larger than 1024 px (CursorTracker already caps them); P08 can trust EventLog sizes.
+
+## 2026-10-17 · P07 task 7.3 · Edit-op semantics; streaming .ctproj writer; <charconv>
+Spec said: the op list in P07 7.3; `SetCrop(...)` etc. without full signatures; serialization through the Json DOM.
+Done instead:
+- Setter signatures are `(Project&, const Id& clip, const T&)`; `SetPip` takes `std::optional<Pip>` (nullopt removes the PIP).
+  Clip-mutating ops refuse locked tracks. A failed op leaves the project byte-identical (the fuzz test checks this).
+- Transitions that an edit makes invalid (no longer adjacent, or longer than half the shorter clip) are removed by the op.
+  Split keeps the incoming transition on the left part and moves the outgoing one to the right part (the spec's
+  "transitions touching the split point" cannot exist: a split is strictly inside a clip).
+- TrimIn shifts the clip's keyframes so they stay with the content; Slip and SetSpeed leave them alone. Split inserts a key
+  at the split on each side only where the track has keys beyond it, so values at the split are kept exactly.
+- Split trims the right part's `out_us` by the 1-2 us that truncation can add at speeds < 1, so it never grows into the next clip.
+- `ToJson`/`Save` write with a streaming writer that reproduces `Json::Dump(2)` byte for byte (extras are dumped with
+  `Json::Dump` and re-indented). The DOM version took 169 us for the 8-clip fixture (undo snapshots serialize on every edit);
+  the writer takes 22 us. `ToJsonValue` is now `Json::Parse(ToJson(p))`.
+- Number formatting uses `<charconv>` (`std::to_chars`/`from_chars`, locale-independent) - not in the docs/02 header list,
+  but it is part of the standard library, allocation-free, and faster than `_snprintf_l` + `_strtod_l`.
+- The fuzz test runs 10,000 ops in Release and 2,000 in Debug (/Od + checked iterators are ~10x slower).
+Why: completeness of the API, speed of undo snapshots, determinism.
+Impact: P09 calls these ops; selection lists may reference clips removed by ripple/remove ops (UI prunes them).
+
+## 2026-10-17 · P07 task 7.4 · Undo restore rules, dirty flag, autosave lock by share mode
+Spec said: `UndoStack` with Push/Undo/Redo/labels/coalescing/Entries/Bytes/Clear (cap 200 entries / 64 MB); `Autosave` with
+Init/NotifyChanged/Tick/Clear/FindRecoverable; the lock holds the owning PID and "a lock whose PID is dead" triggers recovery.
+Done instead:
+- Undo/Redo restore the snapshot but keep the current `path`, `ui` (playhead, selection, zoom) and media `missing` flags:
+  they are not document history. Additions: `PushJson` (caller already has the JSON), optional `current_json` on
+  Undo/Redo, `UndoEntries`, `Coalescing`, and the dirty flag (`MarkSaved`/`IsDirty`, state serials, so undoing back to
+  the saved state is clean). Coalesced pushes after the first record nothing but still make the document dirty.
+  `BeginCoalesce` with the same key while active is a no-op; another key starts a new group; Undo/Redo end a group.
+  The entry cap counts undo + redo entries; the oldest undo entries are dropped first.
+- Autosave additions: `SetDirectory`/`Directory` (ct_project cannot use ct::platform::Paths; the app sets it at startup,
+  default `%LOCALAPPDATA%\Camtesia\autosave`), `Tick(p, now_us)`, `SaveNow`, `SetSynchronous` (tests), `Saves`, `Dirty`,
+  `AutosavePath`/`LockPath`, `Discard`, `kEditsPerSave = 20`. `interval_s <= 0` disables time-based saves.
+- Liveness is decided by the lock file's share mode, not by PID lookup: the owner keeps `<id>.lock` open with `_SH_DENYWR`
+  for its lifetime; a lock that can be opened for writing has no live owner (the OS closes handles when a process dies,
+  so PID reuse cannot fool it, and ct_project stays free of process APIs). The lock still records
+  `{"pid", "original_path", "name"}` as JSON. An autosave without a lock is also recoverable.
+- Tick serializes on the UI thread (fast writer, see 7.3) and writes on the ct::Async pool; a newer snapshot supersedes
+  queued older ones; Clear() waits for an in-flight write and deletes both files. Autosaves keep absolute media paths.
+- The fuzz test checks undo after every applied op and redo after every 10th (the others restore the edited state from a
+  copy): two JSON parses per op would take ~10 s in Release (Json::Parse is ~5 ns/byte), over the 10 s budget.
+  Bias towards Delete above 30 clips keeps the timeline bounded.
+Why: robustness and testability; budget.
+Impact: P09 owns an UndoStack + Autosave per document, calls `Autosave::SetDirectory(Paths...)` at startup, `MarkSaved`
+after Save/Load, and `Clear()` on save/close.
+
+## 2026-10-17 · P07 task 7.5 · Importer details; synthetic bundles instead of tests/data/sample.ctrec
+Spec said: `ImportRecording(Project&, bundle_path, Err*, ImportOptions)`; tests import `tests/data/sample.ctrec`.
+Done instead:
+- No real recording exists before P05, so the tests build bundles at run time (`tests/project/bundle_util.h`): meta.json
+  is the docs/04 section 1 sample (adjusted per test) and events.ctev is written with `EventWriter`. screen.mp4/cam.mp4
+  are absent: the importer reads only meta.json and events.ctev; the media files are referenced by the bundle path and
+  opened later by playback (P06), which reports them offline if they are missing.
+- Added `RecordingMeta` + `ReadRecordingMeta` (the editor needs the same fields for the media panel). meta.json is
+  rejected when `format != "ctrec"`, duration <= 0, or the screen size/frame rate is not positive.
+- Existing tracks are reused by (kind, name); missing ones are appended on top in the order Screen, Camera, Mic, System,
+  Callouts. A new project also gets `name` = bundle stem and a UUID `id` when it has none. Odd recording sizes become
+  the next lower even canvas size. The import is all-or-nothing (works on a copy; e.g. a locked Screen track fails it).
+- `ImportOptions::auto_zoom` is honoured from task 7.6 on (the generator lands there).
+Why: no sample recording yet; keep the project consistent on failure.
+Impact: P05 must write meta.json exactly as docs/04 section 1 (format, duration_us, screen.width/height/fps, audio.*.stream_index, events.file).
+
+## 2026-10-17 · P07 task 7.6 · Auto-Zoom interpretation: ramp room, merge vs pan, two-key follow moves
+Spec said: free functions `ExtractInterest` / `Generate`; step 2 "merge consecutive segments with gap < 2 * ease_ms; drop
+segments shorter than min_hold; clamp to [0, duration]"; step 3 "adjacent segments share the transition (pan c1 -> c2 over
+ease_ms) if the gap is < 2 * ease_ms"; step 4 "emit a key moving centre toward the cursor ... with Ease::Out".
+Done instead:
+- The functions are static members of `struct AutoZoom` (the importer spec calls `AutoZoom::Generate`), plus `ForClip`
+  (events inside a clip's in/out, mapped to timeline time) and `AppendKeys` (adds without replacing keys at equal times).
+- Steps 2/3 conflict as written (after merging every gap < 2 * ease, there is nothing left to pan between). Resolution:
+  neighbours closer than 2 * ease are merged when their centres are within 0.25 (or a pan cannot fit after the previous
+  zoom-in), otherwise both are kept and the camera pans from c1 to c2 over exactly ease_ms, ending at t_in2.
+- Clamping is to [ease, duration - ease] so both ramps fit inside the recording (a ramp cut short would be a jump); it runs
+  before the "drop shorter than min_hold" step, so clicks in the first/last ~0.8 s may produce no zoom (fixture edges.json).
+- Keys use Hold for the zoomed hold and the zoomed-out rest, so every follow move is two keys: (t, current centre, Out) and
+  (t + 300 ms, new centre, Hold); a single Out key after a Hold key would jump. "At most one key per 400 ms" became at most
+  one follow move per 400 ms. Follow normalizes the cursor by the events region size.
+- `Camera::At` continuity: fixtures with the default ease meet the spec bound (0.02 zoom / 0.01 centre per ms). The random
+  property test scales the bound with the parameters (a 100 ms ease at zoom 4 legitimately moves faster than 0.02/ms).
+- Fixtures `tests/data/autozoom/*.json` (8 files: one_click, cluster_merge, far_pan, separate, edges, typing, follow, dense)
+  were written by this implementation with `--update-golden` and reviewed against the descriptions in each file.
+Why: the spec text is internally inconsistent; these choices keep the camera continuous.
+Impact: P08 plays the keys with Camera::At; P09's "Regenerate" = `Camera::ReplaceGenerated(AutoZoom::ForClip(...))`.
+
+## 2026-10-17 · P07 task 7.7 · Autosave retries failed writes
+Spec said: autosave writes when dirty and the interval elapsed.
+Done instead: a failed write (the atomic replace failed, e.g. while another process had the autosave open) is retried
+3 times 50 ms apart on the IO thread; if it still fails the document stays dirty and the next Tick writes again.
+Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
+stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
+Impact: none for callers.

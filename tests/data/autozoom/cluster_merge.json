@@ -1,0 +1,68 @@
+{
+  "description": "Three clicks close together form one segment (running-mean centre); a fourth nearby click 2 s later is a new segment that is merged because the gap is shorter than 2 * ease and the centres are close.",
+  "duration_us": 20000000,
+  "params": {
+    "zoom": 2,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 5000000,
+      "x": 0.3,
+      "y": 0.4,
+      "kind": "click"
+    },
+    {
+      "t_us": 5500000,
+      "x": 0.35,
+      "y": 0.42,
+      "kind": "click"
+    },
+    {
+      "t_us": 6000000,
+      "x": 0.32,
+      "y": 0.45,
+      "kind": "click"
+    },
+    {
+      "t_us": 8000000,
+      "x": 0.36,
+      "y": 0.4,
+      "kind": "click"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 4200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 4850000,
+      "zoom": 2,
+      "cx": 0.3325,
+      "cy": 0.4175,
+      "ease": "hold"
+    },
+    {
+      "t_us": 9200000,
+      "zoom": 2,
+      "cx": 0.3325,
+      "cy": 0.4175,
+      "ease": "inout"
+    },
+    {
+      "t_us": 9850000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}
