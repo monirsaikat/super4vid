@@ -1,10 +1,12 @@
 // Random edit sequences on a seeded project: after every operation Project::Validate() holds, a failed operation
-// leaves the project untouched (byte-identical JSON), and the JSON round-trips.
+// leaves the project untouched (byte-identical JSON), undo of every successful one restores the previous JSON exactly,
+// redo (checked on every 10th op) restores the edit, and the JSON round-trips.
 #include "test_util.h"
 
 #include <ct/core/time.h>
 #include <ct/project/edit_ops.h>
 #include <ct/project/serialize.h>
+#include <ct/project/undo.h>
 #include <ct/test/ct_test.h>
 
 #include <cstdio>
@@ -72,7 +74,7 @@ Clip RandomNewClip(const Project& p, Rng& r) {
 // One random operation. Returns whether it reported success.
 bool RandomOp(Project& p, Rng& r, int* kind_out) {
     Err err;
-    const int kind = p.clips.size() > 40 ? 6 : r.Int(0, 19);
+    const int kind = p.clips.size() > 30 ? 6 : r.Int(0, 19);   // keep the timeline busy but bounded
     *kind_out = kind;
     switch (kind) {
     case 0: return ops::AddClip(p, RandomNewClip(p, r), nullptr, &err);
@@ -226,10 +228,12 @@ CT_TEST(fuzz_random_edits_keep_invariants) {
 #endif
     int ok_count = 0, fail_count = 0;
     int kind = 0;
+    UndoStack undo;
     Stopwatch sw;
     sw.Start();
+    std::string current = ToJson(p);   // JSON of p, carried across iterations
     for (int i = 0; i < kOps; ++i) {
-        const std::string before = ToJson(p);
+        const std::string before = current;
         const bool ok = RandomOp(p, rng, &kind);
         if (ok) {
             ++ok_count;
@@ -237,16 +241,46 @@ CT_TEST(fuzz_random_edits_keep_invariants) {
                 CT_FAIL("op " + std::to_string(i) + " kind " + std::to_string(kind) + " broke an invariant: " + why);
                 return;
             }
+            // Undo of the op restores the previous JSON exactly; redo brings the edit back.
+            undo.PushJson(before, "op");
+            const std::string after = ToJson(p);
+            Project edited = p;
+            if (!undo.Undo(p, &after)) {
+                CT_FAIL("undo failed");
+                return;
+            }
+            const std::string undone = ToJson(p);
+            if (undone != before) {
+                CT_FAIL("undo of op " + std::to_string(i) + " kind " + std::to_string(kind) + " did not restore the JSON");
+                return;
+            }
+            if (i % 10 == 0) {
+                // Redo is checked on every 10th op; the others restore the edited state from a copy (one parse less).
+                if (!undo.Redo(p, &undone)) {
+                    CT_FAIL("redo failed");
+                    return;
+                }
+                current = ToJson(p);
+                if (current != after) {
+                    CT_FAIL("redo of op " + std::to_string(i) + " kind " + std::to_string(kind) + " did not restore the JSON");
+                    return;
+                }
+            } else {
+                p = std::move(edited);
+                undo.Clear();
+                current = after;
+            }
         } else {
             ++fail_count;
-            if (ToJson(p) != before) {
+            current = ToJson(p);
+            if (current != before) {
                 CT_FAIL("op " + std::to_string(i) + " kind " + std::to_string(kind) + " failed but changed the project");
                 return;
             }
         }
     }
     const double ms = sw.ElapsedMs();
-    std::printf("  fuzz: %d ops (%d applied, %d refused) in %.0f ms, %zu clips at the end\n", kOps, ok_count, fail_count,
+    std::printf("  fuzz: %d ops (%d applied, undone, redone; %d refused) in %.0f ms, %zu clips at the end\n", kOps, ok_count, fail_count,
                 ms, p.clips.size());
     CT_CHECK(ok_count > kOps / 5);
     // The final state still round-trips.

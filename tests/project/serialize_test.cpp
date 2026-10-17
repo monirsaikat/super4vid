@@ -357,3 +357,25 @@ CT_BENCH(serialize_to_json_full, 2000) {
     for (int64_t i = 0; i < CT_BENCH_N; ++i) n += ToJson(p).size();
     if (n == 0) CT_FAIL("empty");
 }
+
+CT_BENCH(serialize_from_json_full, 2000) {
+    const std::string text = ToJson(BuildFullProject());
+    size_t n = 0;
+    for (int64_t i = 0; i < CT_BENCH_N; ++i) {
+        Project p;
+        FromJson(text, p, nullptr);
+        n += p.clips.size();
+    }
+    if (n == 0) CT_FAIL("empty");
+}
+
+CT_BENCH(serialize_json_parse_only, 2000) {
+    const std::string text = ToJson(BuildFullProject());
+    size_t n = 0;
+    for (int64_t i = 0; i < CT_BENCH_N; ++i) {
+        Json j;
+        Json::Parse(text, j);
+        n += j.Size();
+    }
+    if (n == 0) CT_FAIL("empty");
+}

@@ -91,7 +91,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 7.1 Types (`Project`, `Media`, `Track`, `Clip`, `Keyframe<T>`, `Annotation`, `Transition`, `Camera`, `CursorStyle`)
 - [x] 7.2 JSON (de)serialization with versioning + defaults + unknown-key tolerance
 - [x] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
-- [ ] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
+- [x] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
 - [ ] 7.5 `.ctrec` import -> project (tracks, cursor track from `.ctev`, keystrokes)
 - [ ] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
 - [ ] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical

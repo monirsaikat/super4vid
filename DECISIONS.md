@@ -303,3 +303,29 @@ Done instead:
 - The fuzz test runs 10,000 ops in Release and 2,000 in Debug (/Od + checked iterators are ~10x slower).
 Why: completeness of the API, speed of undo snapshots, determinism.
 Impact: P09 calls these ops; selection lists may reference clips removed by ripple/remove ops (UI prunes them).
+
+## 2026-10-17 · P07 task 7.4 · Undo restore rules, dirty flag, autosave lock by share mode
+Spec said: `UndoStack` with Push/Undo/Redo/labels/coalescing/Entries/Bytes/Clear (cap 200 entries / 64 MB); `Autosave` with
+Init/NotifyChanged/Tick/Clear/FindRecoverable; the lock holds the owning PID and "a lock whose PID is dead" triggers recovery.
+Done instead:
+- Undo/Redo restore the snapshot but keep the current `path`, `ui` (playhead, selection, zoom) and media `missing` flags:
+  they are not document history. Additions: `PushJson` (caller already has the JSON), optional `current_json` on
+  Undo/Redo, `UndoEntries`, `Coalescing`, and the dirty flag (`MarkSaved`/`IsDirty`, state serials, so undoing back to
+  the saved state is clean). Coalesced pushes after the first record nothing but still make the document dirty.
+  `BeginCoalesce` with the same key while active is a no-op; another key starts a new group; Undo/Redo end a group.
+  The entry cap counts undo + redo entries; the oldest undo entries are dropped first.
+- Autosave additions: `SetDirectory`/`Directory` (ct_project cannot use ct::platform::Paths; the app sets it at startup,
+  default `%LOCALAPPDATA%\Camtesia\autosave`), `Tick(p, now_us)`, `SaveNow`, `SetSynchronous` (tests), `Saves`, `Dirty`,
+  `AutosavePath`/`LockPath`, `Discard`, `kEditsPerSave = 20`. `interval_s <= 0` disables time-based saves.
+- Liveness is decided by the lock file's share mode, not by PID lookup: the owner keeps `<id>.lock` open with `_SH_DENYWR`
+  for its lifetime; a lock that can be opened for writing has no live owner (the OS closes handles when a process dies,
+  so PID reuse cannot fool it, and ct_project stays free of process APIs). The lock still records
+  `{"pid", "original_path", "name"}` as JSON. An autosave without a lock is also recoverable.
+- Tick serializes on the UI thread (fast writer, see 7.3) and writes on the ct::Async pool; a newer snapshot supersedes
+  queued older ones; Clear() waits for an in-flight write and deletes both files. Autosaves keep absolute media paths.
+- The fuzz test checks undo after every applied op and redo after every 10th (the others restore the edited state from a
+  copy): two JSON parses per op would take ~10 s in Release (Json::Parse is ~5 ns/byte), over the 10 s budget.
+  Bias towards Delete above 30 clips keeps the timeline bounded.
+Why: robustness and testability; budget.
+Impact: P09 owns an UndoStack + Autosave per document, calls `Autosave::SetDirectory(Paths...)` at startup, `MarkSaved`
+after Save/Load, and `Clear()` on save/close.
