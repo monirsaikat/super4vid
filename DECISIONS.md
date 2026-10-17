@@ -1357,3 +1357,40 @@ call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shut
   the identical segment centres, as did the private reader in tests/media/test_data_test.cpp (now uses frame_index.h);
   when that branch merges it should become a thin include of frame_index.h, with
   `ReadPatternCounterWith/Y/Rgba` forwarding to `ReadFrameIndexWith/Y/ReadFrameIndex`.
+
+## 2026-10-17 · P09 tasks 9.1-9.7 (second half) · Editor window, preview, file ops, app mode
+Spec said: a MediaCache-backed TimelineMediaProvider, a preview panel with gizmos/overlays/transport, IFileDialog file
+ops, recent files, autosave recovery, unsaved prompt, layout ini, media probing/relink, Regenerate, error banners and
+`Camtesia.exe --editor [file]`.
+Done / interpreted:
+- Player: the editor uses `render::TimelinePlayer` directly (`detail::PlayerTransport` adapts it to `PlaybackControl`;
+  Tick() once per frame gives the playhead; loop wraps in the adapter). `PlaybackControl` gained `Volume/SetVolume/
+  Muted/SetMuted` virtuals with no-op defaults so SimplePlayback and test fakes are unchanged.
+- `TimelinePlayer::Cache(id)` now opens the media's slot lazily (`GetSlot(m, false)`) instead of returning null for
+  media not yet touched by Resolve; otherwise bin cards and off-screen timeline clips never got thumbnails/peaks.
+- Provider (`detail::CacheMediaProvider`, private): thumbnails are ComPtr-pinned until the next frame's BeginFrame so
+  ImGui never draws a released SRV; peaks are cached per `path#stream` as min/max pairs; a clip still loading shimmers
+  for at most 30 s, then draws flat.
+- Preview: the compositor renders into a canvas-size B8G8R8A8 target owned by the window, only when the revision,
+  playhead, view or "inexact frame" state changed (idle = 0 GPU work). While a camera key is selected the camera is
+  disabled and the key's window is drawn as a dashed rect with the rest dimmed. Scale is uniform (Alt = about the
+  opposite handle), Shift snaps rotation to 15 degrees, Space/middle drag pans the view. Each gizmo drag is one undo entry.
+- Linked audio: since only clips on audio tracks sound (TimelinePlayer rule), dropping/adding/importing a video that
+  has audio also adds a Source::Default clip with the same start/in/out/speed on the first unlocked audio track with
+  room, else a new "Audio" track (`cmd::AddLinkedAudioClip`, same as RecImporter). Opening a media file into an empty,
+  clean project sets the canvas from the video and creates the video + audio tracks.
+- Recent files: `%APPDATA%\Camtesia\recent.json` (max 10; an entry whose file fails to open is removed). Layout:
+  `%APPDATA%\Camtesia\editor_layout.ini`; screenshot/bench runs use the built-in layout and write nothing.
+- Banners: `BannerStack` is one P11a `ErrorBanner` per panel (Media/Preview/Properties/Timeline); a new error on a
+  panel replaces the old one.
+- App: `RunEditorApp` (src/ui) owns its own window (class "CamtesiaMain", so SingleInstance forwarding reaches it),
+  D3D device, AudioDevices and Async UI poster; main.cpp only dispatches. A forwarded command line opens its paths
+  (through the unsaved prompt). The loop renders only after input or while something animates; a 1 Hz waitable timer
+  drives autosave.
+- Bench flags (`--bench-drag N`, `--bench-scrub N`, `--bench-play N`, `--stats`, `--size WxH`) inject synthetic
+  mouse input after the Win32 backend's NewFrame and print results; they are used for the 9.7 numbers.
+- Review fixes: ##camkey/##camsec ID scopes; group move sorted by shift direction; autosave notified on every commit;
+  PropTime coalesces before returning; marker and dragged clip/selection excluded from snapping (allocation-free
+  SnapIgnore); trims clamp analytically (no Project copies); marker label typing is one undo entry.
+Impact: P10's export dialog plugs into `EditorShell::on_export` (currently a toast); P05b's recorder can open the
+editor in-process later by calling `RunEditorApp`-equivalent pieces or by launching `--editor folder.ctrec`.
