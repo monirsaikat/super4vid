@@ -1,0 +1,57 @@
+{
+  "format": "ctproj",
+  "version": 1,
+  "app_version": "0.1.0",
+  "id": "00000000-0000-4000-8000-000000000000",
+  "name": "Empty",
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps_num": 60,
+    "fps_den": 1,
+    "background": {
+      "kind": "gradient",
+      "color_a": "#1B2735",
+      "color_b": "#090A0F",
+      "angle_deg": 135,
+      "image": null,
+      "blur": 0
+    },
+    "padding_px": 96,
+    "corner_radius_px": 18,
+    "shadow": {
+      "enabled": true,
+      "blur_px": 48,
+      "offset_y_px": 24,
+      "opacity": 0.45
+    }
+  },
+  "media": [],
+  "tracks": [],
+  "clips": [],
+  "transitions": [],
+  "camera": {
+    "mode": "auto",
+    "keyframes": [],
+    "auto": {
+      "zoom": 2,
+      "min_hold_us": 1200000,
+      "lead_us": 150000,
+      "ease_ms": 650,
+      "follow": true,
+      "follow_deadzone": 0.15,
+      "trigger_on": [
+        "click",
+        "typing"
+      ]
+    }
+  },
+  "markers": [],
+  "ui": {
+    "playhead_us": 0,
+    "zoom": 1,
+    "scroll_us": 0,
+    "selected": [],
+    "loop": null
+  }
+}

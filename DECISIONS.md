@@ -237,3 +237,35 @@ Done instead:
 - A truncated last record (crash while writing) ends reading and sets `Truncated()`; short payloads of known types are skipped.
 Why: docs/04 internal inconsistency; P05/P08 need the queries; crash tolerance.
 Impact: P05 links `ct_events` and writes with `EventWriter`; P08 reads with `EventLog`.
+
+## 2026-10-17 · P07 tasks 7.1-7.2 · Model header split, `extra` everywhere, canonical .ctproj layout
+Spec said: all model types in `types.h` (plus `project.h`, `camera.h`, `easing.h` in the deliverables); only `Project::extra`
+holds unknown keys; "every sample in docs/04 round-trips byte-identically"; Validate checks `out_us <= duration_us * speed`.
+Done instead:
+- `easing.h` (Ease, ApplyEase, EaseName/ParseEase), `types.h` (everything else from the spec block), `camera.h` (CameraKey,
+  AutoZoomParams, Camera), `project.h` (Project). Names and members are as specified. `PointF` is defined in `ct::project`
+  (ct_core has none). Additions: `Json extra` on every struct that is a JSON object (not on keyframe/camera-key entries, rect,
+  pointer, media.video); `KeyTrack::IsSorted`, `Clip::IsAnnotation`, `IsKeyframeProp`, `Camera::SetKey/RemoveKey/
+  ReplaceGenerated/IsSorted`, `ClampCentre`, `Project::TrackIndex/ClipFits/MaxOutUs/RecomputeNextId`, `kMinSpeed/kMaxSpeed` (0.1..16).
+- `tracks[0]` is the bottom layer. `ClipsAt` skips hidden tracks. Keyframe times are relative to the clip start.
+- Validate: `out_us <= media.duration_us` (in/out are media time, so speed does not enter); images, annotation clips and media
+  with unknown duration are unbounded. Track kinds: video tracks take recording (screen/camera), video and image media; audio
+  tracks take recording (mic/system, stream must exist), video and audio media; annotation tracks take annotation clips only.
+- `next_id` is not serialized (docs/04 has no key for it); FromJson recomputes it from the largest id counter.
+- Canonical layout = `Json::Dump(2)` (one key per line) + trailing newline. The docs/04 sample uses a condensed layout and
+  placeholder values ("video|audio|image"), so it cannot round-trip byte for byte: the test loads it, checks its values and
+  checks that its re-serialization is stable. Byte identity is asserted on `tests/data/projects/*.ctproj` (written by this
+  version via `--update-golden`; the test substitutes the current `app_version`).
+- Floats: `%.6g` (C locale), `-0` -> 0. Doubles (`speed`, `ui.zoom`) are written exactly (shortest round-trip), because
+  rounding a speed would change `Duration()` and could create overlaps after reload. Integral numbers print as `1`, not `1.0`.
+- Emission rules (deterministic): `cursor`/`keystrokes` only on screen clips, `pip`/`annotation` only when set, `media: null` on
+  annotation clips, `color: null` for a clip without color (alpha 0), `video` omitted for audio media, camera key `generated`
+  only when true, `transform.anchor` always `"center"` (read but not stored). Cursor style also writes `shadow`; annotations
+  also write `arrow_head_px`, `blur_px`, `pixelate`.
+- Paths: relative paths are written with `/`; "same volume" means `fs::Relative` can express the path (same drive/share).
+  Load also looks for a missing file next to the project before marking it `missing`.
+- Version 0 (no format/version keys; clip `duration_us`; string background; camera `keys`) is defined by `Migrate` since no
+  earlier format existed; fixture `tests/data/projects/v0.ctproj`. A newer version loads best-effort and keeps its number.
+- `Load` returns false (with the Validate reason) for a timeline that breaks the invariants; `FromJson` alone does not validate.
+Why: the spec text conflicts with itself (docs sample layout vs byte identity) or is silent; these keep files stable.
+Impact: P08/P09 include `<ct/project/project.h>` (pulls in all model headers).
