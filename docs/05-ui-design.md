@@ -81,7 +81,7 @@ Behaviour:
 - Mic / system toggles: click toggles, chevron opens device list. Meter is a 3-segment bar updated at 30 Hz from `Meters` atomics (green < -18 dBFS, amber < -6, red above).
 - Camera toggle: chevron lists devices + resolution; when on, a 160x90 live preview popover appears on hover.
 - REC: starts the countdown (3-2-1 overlay in the capture region, excluded from capture, 1 s steps, Esc cancels). Hotkey F9 does the same from anywhere.
-- Settings gear: opens the settings window (P11). Close hides to tray (tray menu: Record / Open editor / Settings / Quit).
+- Settings gear: opens the settings window (P11). Close hides to tray (tray menu: Record / Pause / Stop / Open editor / Settings / Quit; Pause and Stop are enabled only while recording).
 - During recording the bar can be hidden entirely (setting), the tray icon turns red, hotkeys still work.
 - After stop: a toast "Saved · 2026-10-17 12-03-44.ctrec" with buttons **Open in editor** · **Show in folder** · **Delete**. Default action after 8 s: none.
 
@@ -99,7 +99,7 @@ Full virtual-screen layered window (`WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLW
 Dockable layout (ImGui docking, no multi-viewports), default arrangement and sizes at 1600x900:
 
 ```
-┌ Menu: File Edit View Timeline Export Help ──────────────────────────────── ⏺ Record │ Export ▾ ┐
+┌ Menu: File Edit View Timeline Camera Export Help ───────────────────────── ⏺ Record │ Export ▾ ┐
 ├──────────────┬──────────────────────────────────────────────────┬──────────────────────────────┤
 │ Media  (260) │ Preview                                          │ Properties (320)             │
 │ ┌──────────┐ │   ┌────────────────────────────────────────┐     │ ▸ Clip   Screen 00:00-03:05  │
@@ -166,6 +166,8 @@ Grid of cards (thumbnail 160x90, name, duration, badges `REC` `CAM` `EVT`), `Imp
 |---|---|
 | `Space` | Play / pause |
 | `J` / `K` / `L` | Reverse / stop / forward; repeated `L` 2x, 4x; repeated `J` same backwards |
+| `Shift+J` / `Shift+L` | Reverse / forward at 0.5x |
+| `,` / `.` | Nudge selected clips one frame left / right (`Shift` = 10 frames) |
 | `←` / `→` | Previous / next frame (`Shift` = 1 s) |
 | `Home` / `End` | Start / end |
 | `I` / `O` | Set loop in / out; `Alt+I`/`Alt+O` clear |
@@ -183,6 +185,7 @@ Grid of cards (thumbnail 160x90, name, duration, badges `REC` `CAM` `EVT`), `Imp
 | `Ctrl+R` | Open recorder bar |
 | `Ctrl+Shift+R` | Toggle ripple mode |
 | `N` | Toggle snapping |
+| `Ctrl`+click on a number field | Type a value (`Alt`+click resets it) |
 | `Ctrl+1..4` | Focus Media / Preview / Properties / Timeline |
 | `F11` | Toggle stats overlay (frame time, GPU time, cache, queue depths) |
 | `?` / `F1` | Shortcut cheat sheet |

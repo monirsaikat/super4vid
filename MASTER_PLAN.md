@@ -56,7 +56,7 @@ namespace `ct` and prefix `CT_`, so renaming before a public release touches onl
 - Annotations: text, callout, arrow, rectangle, ellipse, highlight, blur/pixelate region, keystroke badges. All keyframeable opacity/position.
 - Webcam PIP: corner presets, size, circle/rounded mask, shadow.
 - Transitions: cut, crossfade, dip to color, slide.
-- Preview: 1080p60 real time, scrub, J/K/L, loop region. Undo/redo unlimited, autosave, crash recovery.
+- Preview: 1080p60 real time, scrub, J/K/L, loop region. Undo/redo up to 200 steps (64 MB cap), autosave, crash recovery.
 
 **Export**
 - MP4 H.264 / HEVC (hardware), presets 720p/1080p/1440p/4K, CBR/VBR/quality, AAC 128-320 kbps.
@@ -124,7 +124,7 @@ camtesia/
 |  |- export/     ct_export     export jobs (mp4/gif/png/m4a), presets
 |  |- ui/         ct_ui         imgui shell, theme, widgets, timeline widget, panels, recorder bar, overlay
 |  '- app/        camtesia.exe  main, modes, single instance, resources, manifest
-|- shaders/        *.hlsl -> compiled by fxc into headers at build time
+|  (shaders live in src/<module>/shaders/*.hlsl, compiled by fxc into headers at build time)
 |- third_party/imgui/
 |- assets/         icon.ico, presets/*.json, test media
 |- tests/          one test exe per module + tests/data

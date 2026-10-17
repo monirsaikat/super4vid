@@ -47,7 +47,7 @@ struct Settings {
         std::string keystrokes = "shortcuts";
         int cursor_hz = 120;               // 30..1000
         std::string output_dir;            // empty = %USERPROFILE%\Videos\Camtesia
-        bool hide_bar_while_recording = true;
+        bool hide_bar_while_recording = false;
     } recording;
     struct Hotkeys {
         Hotkey toggle{0, 0x78};            // F9

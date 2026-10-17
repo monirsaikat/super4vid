@@ -136,6 +136,7 @@ Rules:
 ```
 
 Conventions:
+- `pip.size` is the webcam width as a fraction of the canvas width (0.22 = 22 %); height follows the camera aspect.
 - Normalized coordinates (`0..1` of the canvas) for transforms, annotations and camera center; pixels only where suffixed `_px`.
 - `keyframes` is a map from property path to an array sorted by `t_us`; a property without keyframes uses its static value. Easings: `linear`, `in`, `out`, `inout`, `hold`.
 - Clips on `video` tracks with `source: "screen"` carry `cursor` and `keystrokes` settings; the compositor reads events from the media's `.ctrec`.
@@ -150,7 +151,7 @@ Conventions:
   "version": 1,
   "recording": { "fps": 60, "codec": "h264", "quality": 70, "mic_device": null, "system_audio": true, "mic": true,
                  "webcam_device": null, "webcam_resolution": "1280x720", "countdown_s": 3, "keystrokes": "shortcuts",
-                 "cursor_hz": 120, "output_dir": null, "hide_bar_while_recording": true },
+                 "cursor_hz": 120, "output_dir": null, "hide_bar_while_recording": false },
   "hotkeys": { "toggle": "F9", "pause": "F10", "marker": "F8", "cancel": "Ctrl+Shift+F9" },
   "editor": { "theme": "dark", "autosave_s": 60, "frame_cache_mb": 256, "snap": true, "ripple": false, "preview_quality": "full|half" },
   "export": { "last_preset": "mp4-1080p", "last_dir": null },

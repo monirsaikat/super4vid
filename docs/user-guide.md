@@ -158,8 +158,8 @@ name and keeps running without it.
 1. Press **REC** or `F9`. A 3-2-1 countdown appears in the middle of the capture area. Press `Esc` to cancel it.
    The countdown is not recorded.
 2. Recording starts. The bar shrinks to a timer with pause, stop and marker buttons and a microphone meter, and the
-   tray icon turns red. By default the bar hides itself during recording (setting **Hide bar while recording**);
-   the hotkeys and tray menu still work.
+   tray icon turns red. You can hide the bar completely during recording with the setting **Hide bar while recording**
+   (off by default); the hotkeys and tray menu still work when it is hidden.
 3. Pause as often as you like. The saved video has no gaps; pauses are listed in the recording's metadata.
 4. Press `F9` again to stop. Camtesia shows "Finalizing..." for a moment and then a notification:
    "Saved · 2026-10-17 12-03-44.ctrec" with **Open in editor**, **Show in folder** and **Delete**.

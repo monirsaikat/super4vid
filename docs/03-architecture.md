@@ -170,7 +170,7 @@ ct-export: for n in frames: t = n*1e6/fps
 
 ## 11. Settings and paths
 
-- Settings file: `%APPDATA%\Camtesia\settings.json` (schema in `docs/04`). Loaded at start, saved on change (debounced 500 ms), atomic write (temp + `ReplaceFileW`).
+- Settings file: `%APPDATA%\Camtesia\settings.json` (schema in `docs/04`). Loaded at start, saved on change (debounced 500 ms; the settings window calls Save on every change and the debounce coalesces them), atomic write (temp + `ReplaceFileW`).
 - Recordings: `%USERPROFILE%\Videos\Camtesia\<yyyy-MM-dd HH-mm-ss>.ctrec\`. Project autosave: `%LOCALAPPDATA%\Camtesia\autosave\<project-id>.ctproj`.
 - Logs: `%LOCALAPPDATA%\Camtesia\logs\`. Crash dumps: `%LOCALAPPDATA%\Camtesia\crashes\`.
-- Portable mode: if `portable.txt` exists next to the exe, all of the above move under `<exe dir>\data\`.
+- Portable mode: if `portable.txt` exists next to the exe, all of the above move under `<exe dir>\data\` (including user presets and `editor_layout.ini`).

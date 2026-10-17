@@ -26,7 +26,12 @@ int main(int argc, char** argv) { return ct::test::RunAll(argc, argv); }
 Macros: `CT_CHECK(expr)`, `CT_CHECK_EQ(a,b)`, `CT_CHECK_NEAR(a,b,eps)`, `CT_CHECK_HR(hr)`, `CT_REQUIRE(expr)` (aborts the test),
 `CT_SKIP("reason")`, `CT_FAIL("msg")`. Runner flags: `--filter <substr>`, `--list`, `--bench`, `--repeat N`, `--update-golden`,
 `--verbose`. Output: `[PASS] name (1.2 ms)`, `[SKIP] name: reason`, `[FAIL] file(line): expr  left=.. right=..`. Exit code = number of failures.
-Golden comparison: pass when max absolute channel difference <= 2 **and** PSNR >= 45 dB; on failure write `<name>.actual.png` and `<name>.diff.png` next to the golden.
+Golden comparison: pass when max absolute channel difference <= 2 **and** PSNR >= 45 dB (goldens that contain text: PSNR >= 35 dB, because glyph rasterization varies slightly between driver versions); on failure write `<name>.actual.png` and `<name>.diff.png` next to the golden.
+
+Timing budgets inside tests (timer lateness, logger cost, frame times) are enforced only when the environment variable
+`CT_STRICT_TIMING=1` is set, which is how acceptance runs on an idle machine are done. Without it the tests print the
+numbers, warn above budget and fail only on gross regressions, so parallel builds and loaded CI machines stay green.
+Correctness checks (ordering, no early wake-ups, frame counts) are always enforced.
 
 Test executables, one per module (`tests/<module>/CMakeLists.txt` via `ct_add_test`): `ct_core_tests`, `ct_platform_tests`,
 `ct_capture_tests`, `ct_audio_tests`, `ct_media_tests`, `ct_recorder_tests`, `ct_project_tests`, `ct_playback_tests`,
