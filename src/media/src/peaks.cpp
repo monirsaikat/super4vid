@@ -55,7 +55,7 @@ std::string Peaks::CachePath(std::string_view media_path, int stream) {
     return PathJoin(dir, Format("%016llx.peaks", static_cast<unsigned long long>(Fnv1a64(key.data(), key.size()))));
 }
 
-HRESULT Peaks::Build(std::string_view path, int stream, Peaks& out) {
+HRESULT Peaks::Build(std::string_view path, int stream, Peaks& out, const std::atomic<bool>* stop) {
     out = Peaks{};
     AudioDecoder dec;
     AudioDecoder::Config cfg;
@@ -73,6 +73,7 @@ HRESULT Peaks::Build(std::string_view path, int stream, Peaks& out) {
     float lo = 0, hi = 0;
     uint64_t total = 0;
     for (;;) {
+        if (stop && stop->load(std::memory_order_relaxed)) return E_ABORT;
         uint32_t n = 0;
         TimeUs pts = 0;
         const HRESULT hr = dec.Read(buf.data(), window * 16, n, pts);

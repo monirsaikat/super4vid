@@ -1182,3 +1182,12 @@ inside it is dropped. Sub-frame overlaps (rounding) only snap the timestamp. Tri
 `Stats::audio_overlap_frames[stream]` (not in `audio_written`). Test `mp4_writer_audio_overlap_trimmed`.
 Why: the item was written as-is, so the file's audio timestamps went backwards.
 Impact: none for callers; P05 may log `audio_overlap_frames` next to the other writer stats.
+
+## 2026-10-17 · Review fix (P06) · Peaks::Build is cancellable; MediaCache::Close cancels it
+Spec said: `Peaks::Build(path, stream, Peaks&)` (P06 header).
+Done instead: `Build(path, stream, Peaks&, const std::atomic<bool>* stop = nullptr)`; the flag is checked before each
+decode step (~160 ms of audio) and Build returns `E_ABORT` once it is set. MediaCache's peaks job passes its stop flag,
+so `Close` (which sets it first) no longer waits for a full decode pass of a long file (10 min WAV: 4.5 s build, Close
+during it 3 ms in Debug). Existing callers are unchanged (default argument).
+Why: Close blocked the owner thread for the whole build.
+Impact: none for callers.

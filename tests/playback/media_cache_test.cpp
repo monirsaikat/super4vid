@@ -13,7 +13,11 @@
 #include <ct/platform/win.h>
 #include <ct/test/ct_test.h>
 
+#include <atomic>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 using namespace ct;
@@ -31,6 +35,37 @@ int64_t IndexOf(platform::D3DDevice& dev, const FrameRef& f) {
     test::Nv12Image img;
     if (!test::ReadbackNv12(dev, f.nv12, img)) return -2;
     return test::ReadFrameIndexY(img.y.data(), img.width, img.height, img.width);
+}
+
+// 48 kHz stereo 16-bit PCM WAV with a 440 Hz tone (decodes fast but long enough for a slow peaks build).
+bool WriteToneWav(const std::string& path, int seconds) {
+    const uint32_t frames = static_cast<uint32_t>(seconds) * 48000;
+    const uint32_t data_bytes = frames * 4;
+    std::vector<uint8_t> hdr(44);
+    auto put32 = [&](size_t at, uint32_t v) { std::memcpy(&hdr[at], &v, 4); };
+    auto put16 = [&](size_t at, uint16_t v) { std::memcpy(&hdr[at], &v, 2); };
+    std::memcpy(&hdr[0], "RIFF", 4);
+    put32(4, 36 + data_bytes);
+    std::memcpy(&hdr[8], "WAVEfmt ", 8);
+    put32(16, 16);
+    put16(20, 1);
+    put16(22, 2);
+    put32(24, 48000);
+    put32(28, 48000 * 4);
+    put16(32, 4);
+    put16(34, 16);
+    std::memcpy(&hdr[36], "data", 4);
+    put32(40, data_bytes);
+    HANDLE f = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD w = 0;
+    bool ok = WriteFile(f, hdr.data(), 44, &w, nullptr) != 0;
+    std::vector<int16_t> chunk(48000 * 2);
+    for (uint32_t i = 0; i < 48000; ++i)
+        chunk[2 * i] = chunk[2 * i + 1] = static_cast<int16_t>(8000 * std::sin(2 * 3.14159265358979 * 440 * i / 48000.0));
+    for (int s = 0; s < seconds && ok; ++s) ok = WriteFile(f, chunk.data(), static_cast<DWORD>(chunk.size() * 2), &w, nullptr) != 0;
+    CloseHandle(f);
+    return ok;
 }
 
 } // namespace
@@ -237,4 +272,46 @@ CT_TEST_DEVICE(media_cache_image_and_audio_only) {
     bool exact = false;
     CT_CHECK(!cache.GetVideoFrame(0, f, exact));
     CT_CHECK(cache.OpenAudio(-1) != nullptr);
+}
+
+// Review fix: Peaks::Build is cancellable and MediaCache::Close cancels a running build instead of waiting for the full
+// decode pass of a long file.
+CT_TEST_DEVICE(media_cache_close_cancels_peaks_build) {
+    CT_REQUIRE_DEVICE(dev);
+    const std::string wav = fs::TempPath(".wav");
+    CT_REQUIRE(WriteToneWav(wav, 600));   // 10 min, 115 MB
+    const bool strict = std::getenv("CT_STRICT_TIMING") != nullptr;
+    // A stop flag that is already set: Build returns E_ABORT without decoding everything.
+    {
+        std::atomic<bool> stop{true};
+        media::Peaks p;
+        CT_CHECK_EQ(media::Peaks::Build(wav, -1, p, &stop), E_ABORT);
+        CT_CHECK(p.min.empty());
+    }
+    // Full build time, for reference (non-strict runs compare against it).
+    Stopwatch sw;
+    sw.Start();
+    {
+        media::Peaks p;
+        CT_REQUIRE(SUCCEEDED(media::Peaks::Build(wav, -1, p)));
+        CT_CHECK(p.min.size() >= 60'000);
+    }
+    const double full_ms = sw.ElapsedMs();
+    double close_ms = 0;
+    {
+        MediaCache cache;
+        CT_REQUIRE(SUCCEEDED(cache.Open(*dev, wav)));
+        CT_REQUIRE(!cache.Info().AudioStreams().empty());
+        fs::Delete(media::Peaks::CachePath(wav, cache.Info().AudioStreams()[0]));
+        CT_CHECK(cache.GetPeaks(-1) == nullptr);   // starts the build on the IO pool
+        Sleep(static_cast<DWORD>(std::min(200.0, full_ms / 4)));   // let it get into the decode loop
+        sw.Start();
+        cache.Close();
+        close_ms = sw.ElapsedMs();
+        CT_CHECK(cache.GetPeaks(-1) == nullptr);
+    }
+    std::printf("    full peaks build %.0f ms, Close during the build %.1f ms\n", full_ms, close_ms);
+    if (strict) CT_CHECK(close_ms < 100.0);
+    else CT_CHECK(close_ms < full_ms / 2);
+    fs::Delete(wav);
 }

@@ -638,7 +638,8 @@ void MediaCache::PeaksJob(int stream) {
     if (m_stop.load()) return;
     auto p = std::make_unique<media::Peaks>();
     if (!media::Peaks::LoadCache(m_path, stream, *p)) {
-        const HRESULT hr = media::Peaks::Build(m_path, stream, *p);
+        const HRESULT hr = media::Peaks::Build(m_path, stream, *p, &m_stop);   // Close cancels a long build
+        if (hr == E_ABORT) return;
         if (FAILED(hr)) {
             CT_LOG_WARN("MediaCache: peaks for %s stream %d: %s", m_path.c_str(), stream, HrToString(hr).c_str());
             return;

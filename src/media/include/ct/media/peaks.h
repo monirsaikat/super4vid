@@ -7,6 +7,7 @@
 
 #include <ct/core/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -21,7 +22,9 @@ struct Peaks {
     std::vector<float> min, max;   // one value per window, in [-1, 1]
     TimeUs duration_us = 0;        // decoded length
 
-    static HRESULT Build(std::string_view path, int stream, Peaks&);                 // stream -1 = first audio stream
+    // stream -1 = first audio stream. `stop` (optional) is checked between decode steps (~160 ms of audio each);
+    // once it reads true, Build returns E_ABORT with `out` partial.
+    static HRESULT Build(std::string_view path, int stream, Peaks&, const std::atomic<bool>* stop = nullptr);
     static bool LoadCache(std::string_view media_path, int stream, Peaks&);          // false when absent/stale/corrupt
     static void SaveCache(std::string_view media_path, int stream, const Peaks&);    // best effort (logged)
     static std::string CachePath(std::string_view media_path, int stream);           // empty when the file is missing
