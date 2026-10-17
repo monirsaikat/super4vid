@@ -19,6 +19,15 @@ bool FillNv12(platform::D3DDevice& dev, ID3D11Texture2D* tex, uint8_t y, uint8_t
 // hw: decode with the hardware decoder through this DXGI device manager (frames are copied back for the check).
 bool DecodeLumaMeans(const std::string& path, int max_frames, std::vector<double>& means, IMFDXGIDeviceManager* hw = nullptr);
 
+// Decodes up to max_frames video frames (software decoder) and calls fn(frame, y_plane, pitch, width, height) for each;
+// fn returns false to stop.
+using LumaFn = bool (*)(void* user, int frame, const uint8_t* y, int pitch, int width, int height);
+bool DecodeLuma(const std::string& path, int max_frames, LumaFn fn, void* user);
+
+// Decodes the n-th audio track (file order: 0 = first audio track) to interleaved float at the file's rate; returns the
+// first sample's time in first_us.
+bool DecodeAudio(const std::string& path, int audio_track, std::vector<float>& pcm, int& channels, int64_t& first_us);
+
 std::string TempPath(const char* name);   // <test exe dir>\media_test_tmp\<name>, folder created
 uint64_t FileSize(const std::string& path);
 // Interleaved stereo sine at `hz`, amplitude `amp`, starting at frame `start_frame` (phase continuous).

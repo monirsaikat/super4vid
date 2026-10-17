@@ -13,6 +13,7 @@
 #include <mferror.h>
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdio>
 #include <vector>
@@ -253,4 +254,112 @@ CT_TEST_DEVICE(mp4_writer_software_encoder) {
     CT_REQUIRE(DecodeLumaMeans(path, 4, means));
     CT_REQUIRE(means.size() == 4);
     for (size_t i = 0; i < means.size(); ++i) CT_CHECK_NEAR(means[i], 16 + (static_cast<int>(i) * 7) % 220, 3.0);
+}
+
+namespace {
+// First frame index whose |sample| exceeds `thr` (channel 0), or -1.
+int64_t Onset(const std::vector<float>& pcm, int ch, float thr) {
+    for (size_t i = 0; i < pcm.size(); i += static_cast<size_t>(ch))
+        if (std::fabs(pcm[i]) > thr) return static_cast<int64_t>(i / static_cast<size_t>(ch));
+    return -1;
+}
+double RmsDb(const std::vector<float>& pcm, int ch, int64_t from, int64_t to) {
+    double s = 0;
+    int64_t n = 0;
+    for (int64_t f = from; f < to && static_cast<size_t>(f * ch) < pcm.size(); ++f, ++n) s += double(pcm[static_cast<size_t>(f * ch)]) * pcm[static_cast<size_t>(f * ch)];
+    return n ? 10.0 * std::log10(std::max(s / static_cast<double>(n), 1e-12)) : -120.0;
+}
+} // namespace
+
+// Audio starts at 300 ms, video at 500 ms: audio is padded with silence from 0, the video keeps its offset, and the
+// decoded tone starts where it was captured.
+CT_TEST_DEVICE(mp4_writer_audio_lead_pad_and_video_offset) {
+    MfScope mf;
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(true)));
+    TexturePool pool;
+    CT_REQUIRE(MakeNv12Pool(dev, pool, 1280, 720, 8, false, nullptr));
+    const std::string path = TempPath("writer_offsets.mp4");
+    {
+        Mp4Writer w;
+        CT_REQUIRE(SUCCEEDED(w.Init(dev, BaseConfig(path, 1280, 720, 60, 2), &pool)));
+        CT_REQUIRE(w.Start());
+        const SyntheticRun r = Feed(dev, w, &pool, 60, 60, 1, 30, 2, 300'000);   // video ticks 30..89 = 0.5..1.5 s
+        CT_CHECK_HR(w.Finalize());
+        CT_CHECK_EQ(r.audio_rejected, 0);
+        const auto& st = w.GetStats();
+        std::printf("  lead pad %llu / %llu frames, audio written %llu frames\n",
+                    static_cast<unsigned long long>(st.audio_lead_pad_frames[0].load()),
+                    static_cast<unsigned long long>(st.audio_lead_pad_frames[1].load()),
+                    static_cast<unsigned long long>(st.audio_written[0].load()));
+        CT_CHECK_EQ(st.audio_lead_pad_frames[0].load(), 14'400ull);
+        CT_CHECK_EQ(st.audio_lead_pad_frames[1].load(), 14'400ull);
+        CT_CHECK_EQ(st.audio_written[0].load(), 57'600ull);   // 0.3 .. 1.5 s
+    }
+    StreamScan v, a;
+    CT_REQUIRE(SUCCEEDED(ScanStream(path, 0, v)));
+    CT_REQUIRE(SUCCEEDED(ScanStream(path, 1, a)));
+    std::printf("  video %llu frames first %lld us end %lld us; audio first %lld us end %lld us\n",
+                static_cast<unsigned long long>(v.samples), static_cast<long long>(v.first_us), static_cast<long long>(v.end_us),
+                static_cast<long long>(a.first_us), static_cast<long long>(a.end_us));
+    CT_CHECK_EQ(v.samples, 60ull);
+    CT_CHECK_NEAR(v.first_us, 500'000, 1'000);   // the video's start offset survives in the file
+    CT_CHECK_NEAR(a.first_us, 0, 1'000);
+    std::vector<float> pcm;
+    int ch = 0;
+    int64_t first = 0;
+    CT_REQUIRE(DecodeAudio(path, 0, pcm, ch, first));
+    CT_REQUIRE(ch == 2);
+    const int64_t onset = Onset(pcm, ch, 0.05f);
+    const double tone_db = RmsDb(pcm, ch, 24'000, 48'000);   // 0.5 .. 1.0 s
+    const double quiet_db = RmsDb(pcm, ch, 0, 13'000);
+    std::printf("  decoded %zu frames from %lld us; tone onset at %.2f ms; tone %.2f dB RMS (expect -15.05), lead %.1f dB\n",
+                pcm.size() / 2, static_cast<long long>(first), onset * 1000.0 / 48000, tone_db, quiet_db);
+    CT_CHECK_NEAR(static_cast<double>(onset) + static_cast<double>(first) * 0.048, 14'400, 48);   // within 1 ms
+    CT_CHECK_NEAR(tone_db, -15.05, 0.5);   // -12 dBFS sine = -15.05 dB RMS
+    CT_CHECK(quiet_db < -80);
+}
+
+// Audio-only file with a 50 ms hole in the packets (a producer that dropped data): the gap becomes silence at the
+// right position and nothing after it shifts.
+CT_TEST_DEVICE(mp4_writer_audio_only_gap_fill) {
+    MfScope mf;
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(false)));
+    const std::string path = TempPath("audio_gap.m4a");
+    Mp4Writer::Config c;
+    c.path = path;
+    c.has_video = false;
+    c.audio.push_back(AudioEncodeConfig{});
+    Mp4Writer w;
+    CT_REQUIRE(SUCCEEDED(w.Init(dev, c, nullptr)));
+    CT_REQUIRE(w.Start());
+    std::vector<float> pcm(480 * 2);
+    for (int k = 0; k < 100; ++k) {   // 1 s of 10 ms packets, packets 40..44 missing
+        if (k >= 40 && k < 45) continue;
+        Sine(pcm.data(), 480, 1000.0, 0.25f, k * 480ll);
+        audio::AudioPacket p;
+        p.t_us = k * 10'000;
+        p.frames = 480;
+        p.data = pcm.data();
+        CT_CHECK(w.OnAudio(0, p));
+        if (k % 10 == 9) Sleep(5);
+    }
+    CT_CHECK_HR(w.Finalize());
+    CT_CHECK_EQ(w.GetStats().audio_written[0].load(), 45'600ull);
+    ProbeResult p;
+    CT_REQUIRE(SUCCEEDED(Probe(path, p)));
+    CT_CHECK_EQ(p.video_streams, 0);
+    CT_CHECK_EQ(p.audio_streams, 1);
+    std::vector<float> dec;
+    int ch = 0;
+    int64_t first = 0;
+    CT_REQUIRE(DecodeAudio(path, 0, dec, ch, first));
+    const double before = RmsDb(dec, ch, 9'600, 19'000), gap = RmsDb(dec, ch, 19'700, 21'300), after = RmsDb(dec, ch, 22'000, 40'000);
+    std::printf("  %zu frames decoded (first %lld us); RMS before %.1f, gap %.1f, after %.1f dB; duration %lld us\n", dec.size() / 2,
+                static_cast<long long>(first), before, gap, after, static_cast<long long>(p.duration_us));
+    CT_CHECK_NEAR(before, -15.05, 0.5);
+    CT_CHECK(gap < -40);
+    CT_CHECK_NEAR(after, -15.05, 0.5);
+    CT_CHECK_NEAR(p.duration_us, 1'000'000, 25'000);
 }

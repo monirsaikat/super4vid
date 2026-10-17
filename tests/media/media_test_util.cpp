@@ -55,14 +55,14 @@ bool FillNv12(platform::D3DDevice& dev, ID3D11Texture2D* tex, uint8_t y, uint8_t
     return true;
 }
 
-bool DecodeLumaMeans(const std::string& path, int max_frames, std::vector<double>& means, IMFDXGIDeviceManager* hw) {
-    means.clear();
+namespace {
+bool DecodeLumaImpl(const std::string& path, int max_frames, IMFDXGIDeviceManager* hw, LumaFn fn, void* user) {
     ComPtr<IMFAttributes> attr;
-    if (FAILED(MFCreateAttributes(attr.GetAddressOf(), 2))) { std::printf("decode fail line %d\n", __LINE__); return false; }
+    if (FAILED(MFCreateAttributes(attr.GetAddressOf(), 2))) return false;
     if (hw) attr->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, hw);
     ComPtr<IMFSourceReader> r;
     const std::wstring w = Utf8ToWide(path);
-    if (FAILED(MFCreateSourceReaderFromURL(w.c_str(), attr.Get(), r.GetAddressOf()))) { std::printf("decode fail line %d\n", __LINE__); return false; }
+    if (FAILED(MFCreateSourceReaderFromURL(w.c_str(), attr.Get(), r.GetAddressOf()))) return false;
     const DWORD vs = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
     r->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
     r->SetStreamSelection(vs, TRUE);
@@ -70,38 +70,99 @@ bool DecodeLumaMeans(const std::string& path, int max_frames, std::vector<double
     MFCreateMediaType(t.GetAddressOf());
     t->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     t->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    if (FAILED(r->SetCurrentMediaType(vs, nullptr, t.Get()))) { std::printf("decode fail line %d\n", __LINE__); return false; }
+    if (FAILED(r->SetCurrentMediaType(vs, nullptr, t.Get()))) return false;
     ComPtr<IMFMediaType> cur;
     r->GetCurrentMediaType(vs, cur.GetAddressOf());
     UINT32 width = 0, height = 0;
     MFGetAttributeSize(cur.Get(), MF_MT_FRAME_SIZE, &width, &height);
     const LONG stride = static_cast<LONG>(MFGetAttributeUINT32(cur.Get(), MF_MT_DEFAULT_STRIDE, width));
-    while (static_cast<int>(means.size()) < max_frames) {
+    const LONG pitch = stride > 0 ? stride : static_cast<LONG>(width);
+    for (int frame = 0; frame < max_frames;) {
         DWORD flags = 0;
         LONGLONG ts = 0;
         ComPtr<IMFSample> s;
-        if (FAILED(r->ReadSample(vs, 0, nullptr, &flags, &ts, s.GetAddressOf()))) { std::printf("decode fail line %d\n", __LINE__); return false; }
+        if (FAILED(r->ReadSample(vs, 0, nullptr, &flags, &ts, s.GetAddressOf()))) return false;
         if (ct::test::Verbose()) std::printf("    decode: flags 0x%lx sample %p t %lld\n", flags, static_cast<void*>(s.Get()), ts);
         if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
         if (!s) continue;
         ComPtr<IMFMediaBuffer> b;
-        if (FAILED(s->ConvertToContiguousBuffer(b.GetAddressOf()))) { std::printf("decode fail line %d\n", __LINE__); return false; }
+        if (FAILED(s->ConvertToContiguousBuffer(b.GetAddressOf()))) return false;
         BYTE* p = nullptr;
         DWORD len = 0;
-        if (FAILED(b->Lock(&p, nullptr, &len))) { std::printf("decode fail line %d\n", __LINE__); return false; }
-        const LONG pitch = stride > 0 ? stride : static_cast<LONG>(width);
+        if (FAILED(b->Lock(&p, nullptr, &len))) return false;
+        const bool more = len >= static_cast<DWORD>(pitch) * height &&
+                          fn(user, frame, p, static_cast<int>(pitch), static_cast<int>(width), static_cast<int>(height));
+        b->Unlock();
+        ++frame;
+        if (!more) break;
+    }
+    return true;
+}
+} // namespace
+
+bool DecodeLuma(const std::string& path, int max_frames, LumaFn fn, void* user) {
+    return DecodeLumaImpl(path, max_frames, nullptr, fn, user);
+}
+
+bool DecodeLumaMeans(const std::string& path, int max_frames, std::vector<double>& means, IMFDXGIDeviceManager* hw) {
+    means.clear();
+    return DecodeLumaImpl(path, max_frames, hw, [](void* u, int, const uint8_t* y, int pitch, int w, int h) {
         double sum = 0;
         uint64_t n = 0;
-        for (UINT32 yy = 0; yy < height; yy += 4) {
-            if (static_cast<DWORD>((yy + 1) * pitch) > len) break;
-            const BYTE* row = p + static_cast<size_t>(yy) * pitch;
-            for (UINT32 xx = 0; xx < width; xx += 4) {
-                sum += row[xx];
+        for (int yy = 0; yy < h; yy += 4)
+            for (int xx = 0; xx < w; xx += 4) {
+                sum += y[static_cast<size_t>(yy) * pitch + xx];
                 ++n;
             }
-        }
+        static_cast<std::vector<double>*>(u)->push_back(n ? sum / static_cast<double>(n) : 0.0);
+        return true;
+    }, &means);
+}
+
+bool DecodeAudio(const std::string& path, int audio_track, std::vector<float>& pcm, int& channels, int64_t& first_us) {
+    pcm.clear();
+    channels = 0;
+    first_us = -1;
+    ComPtr<IMFSourceReader> r;
+    const std::wstring w = Utf8ToWide(path);
+    if (FAILED(MFCreateSourceReaderFromURL(w.c_str(), nullptr, r.GetAddressOf()))) return false;
+    // The MPEG-4 source lists tracks in reverse file order: collect the audio streams and reverse them.
+    std::vector<DWORD> audio;
+    for (DWORD i = 0;; ++i) {
+        ComPtr<IMFMediaType> t;
+        if (FAILED(r->GetNativeMediaType(i, 0, t.GetAddressOf()))) break;
+        GUID major{};
+        t->GetGUID(MF_MT_MAJOR_TYPE, &major);
+        if (major == MFMediaType_Audio) audio.insert(audio.begin(), i);
+    }
+    if (audio_track < 0 || audio_track >= static_cast<int>(audio.size())) return false;
+    const DWORD s = audio[static_cast<size_t>(audio_track)];
+    r->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
+    r->SetStreamSelection(s, TRUE);
+    ComPtr<IMFMediaType> t;
+    MFCreateMediaType(t.GetAddressOf());
+    t->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    t->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+    if (FAILED(r->SetCurrentMediaType(s, nullptr, t.Get()))) return false;
+    ComPtr<IMFMediaType> cur;
+    r->GetCurrentMediaType(s, cur.GetAddressOf());
+    channels = static_cast<int>(MFGetAttributeUINT32(cur.Get(), MF_MT_AUDIO_NUM_CHANNELS, 0));
+    for (;;) {
+        DWORD flags = 0;
+        LONGLONG ts = 0;
+        ComPtr<IMFSample> smp;
+        if (FAILED(r->ReadSample(s, 0, nullptr, &flags, &ts, smp.GetAddressOf()))) return false;
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+        if (!smp) continue;
+        if (first_us < 0) first_us = ts / 10;
+        ComPtr<IMFMediaBuffer> b;
+        if (FAILED(smp->ConvertToContiguousBuffer(b.GetAddressOf()))) return false;
+        BYTE* p = nullptr;
+        DWORD len = 0;
+        if (FAILED(b->Lock(&p, nullptr, &len))) return false;
+        const auto* f = reinterpret_cast<const float*>(p);
+        pcm.insert(pcm.end(), f, f + len / sizeof(float));
         b->Unlock();
-        means.push_back(n ? sum / static_cast<double>(n) : 0.0);
     }
     return true;
 }
