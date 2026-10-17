@@ -39,6 +39,7 @@ public:
     bool Start(int64_t epoch_qpc, AudioSink& sink);
     void SetPaused(bool paused, int64_t at_qpc);
     void Stop();
+    void SwitchDevice(const std::wstring& id);
 
     const Meter& Levels() const { return m_meter; }
     std::string DeviceName() const;
@@ -146,6 +147,7 @@ private:
     SrwLock m_request_lock;
     std::wstring m_requested_id;   // guarded by m_request_lock; empty = default endpoint
     std::wstring m_watched_id;     // guarded by m_request_lock; endpoint id whose removal triggers a reopen
+    std::wstring m_target_id;      // guarded by m_request_lock; the endpoint the owner asked for (empty = default)
 
     mutable SrwLock m_name_lock;
     std::string m_name;   // guarded by m_name_lock
@@ -156,6 +158,7 @@ private:
     std::atomic<double> m_st_drift_ms{0};
     std::atomic<int64_t> m_st_last_end_us{0};
     std::atomic<bool> m_st_open{false};
+    std::atomic<double> m_st_reopen_ms{0};
     ct::Stats::Counter* m_pool_dropped = nullptr;
 };
 

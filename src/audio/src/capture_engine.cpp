@@ -57,6 +57,7 @@ CaptureStats CaptureEngine::Stats() const {
     s.drift_ms = m_st_drift_ms.load(std::memory_order_relaxed);
     s.last_device_end_us = m_st_last_end_us.load(std::memory_order_relaxed);
     s.device_open = m_st_open.load(std::memory_order_relaxed);
+    s.last_reopen_ms = m_st_reopen_ms.load(std::memory_order_relaxed);
     return s;
 }
 
@@ -84,6 +85,11 @@ HRESULT CaptureEngine::Init(const CaptureConfig& config, AudioDevices& devices) 
     if (m_running.load()) return E_ILLEGAL_METHOD_CALL;
     dsp::Init();
     m_config = config;
+    {
+        ExclusiveGuard guard(m_request_lock);
+        m_target_id = config.device_id;
+        m_requested_id = config.device_id;
+    }
     m_packet_frames = std::clamp<uint32_t>(config.packet_frames, 48, kPoolFrames);
     m_devices = &devices;
     if (!m_stereo) m_stereo = std::make_unique<float[]>(static_cast<size_t>(kScratchFrames) * 2);
@@ -256,9 +262,10 @@ TimeUs CaptureEngine::MediaUsFromAbsUs(int64_t abs_us) const {
 TimeUs CaptureEngine::MediaNowUs() const { return MediaUsFromAbsUs(QpcToAbsUs(Clock::QpcNow())); }
 
 void CaptureEngine::OnDefaultDeviceChanged(bool capture, const std::wstring& new_id) {
-    if (capture != IsMic() || !m_config.follow_default_device || !m_config.device_id.empty()) return;
+    if (capture != IsMic() || !m_config.follow_default_device) return;
     {
         ExclusiveGuard guard(m_request_lock);
+        if (!m_target_id.empty()) return;   // pinned to an explicit endpoint
         m_requested_id = new_id;
     }
     m_reinit_requested.store(true, std::memory_order_release);
@@ -269,7 +276,17 @@ void CaptureEngine::OnDeviceRemoved(const std::wstring& id) {
     {
         ExclusiveGuard guard(m_request_lock);
         if (id != m_watched_id) return;
-        m_requested_id = m_config.follow_default_device ? std::wstring() : m_config.device_id;
+        m_requested_id = m_target_id;   // Reopen falls back to the default when following and the target is gone
+    }
+    m_reinit_requested.store(true, std::memory_order_release);
+    m_wake.Set();
+}
+
+void CaptureEngine::SwitchDevice(const std::wstring& id) {
+    {
+        ExclusiveGuard guard(m_request_lock);
+        m_target_id = id;
+        m_requested_id = id;
     }
     m_reinit_requested.store(true, std::memory_order_release);
     m_wake.Set();
@@ -340,7 +357,7 @@ void CaptureEngine::ReadPackets() {
         {
             ExclusiveGuard guard(m_request_lock);
             if (!m_reinit_requested.load(std::memory_order_relaxed))
-                m_requested_id = m_config.follow_default_device ? std::wstring() : m_config.device_id;
+                m_requested_id = m_target_id;
         }
     }
 }
@@ -506,7 +523,10 @@ void CaptureEngine::Reopen() {
     Close();
     StopKeepAlive();
     m_st_reinits.fetch_add(1, std::memory_order_relaxed);
+    Stopwatch sw;
+    sw.Start();
     HRESULT hr = Open(id);
+    if (FAILED(hr) && !id.empty() && m_config.follow_default_device) hr = Open(std::wstring());   // target gone
     if (SUCCEEDED(hr)) {
         StartKeepAlive();
         hr = m_client->Start();
@@ -529,6 +549,8 @@ void CaptureEngine::Reopen() {
     m_error_reported = false;
     m_force_resync = true;   // the switch gap becomes silence at the correct position
     m_last_packet_qpc = Clock::QpcNow();
+    m_st_reopen_ms.store(sw.ElapsedMs(), std::memory_order_relaxed);
+    CT_LOG_INFO("%s: switched to \"%s\" in %.1f ms", StatsPrefix(), DeviceName().c_str(), sw.ElapsedMs());
 }
 
 void CaptureEngine::CheckStarvation() {

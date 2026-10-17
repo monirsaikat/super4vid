@@ -56,6 +56,7 @@ struct CaptureStats {
     uint64_t reinits = 0;             // device switches (default change, removal, invalidation)
     double drift_ms = 0;              // device timestamp minus aligned stream position at the last packet
     TimeUs last_device_end_us = 0;    // media time just after the last device frame received
+    double last_reopen_ms = 0;        // duration of the last successful device switch (close + open + start)
     bool device_open = false;
 };
 

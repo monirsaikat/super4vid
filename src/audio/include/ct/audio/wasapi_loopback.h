@@ -29,6 +29,9 @@ public:
     bool Start(int64_t epoch_qpc, AudioSink& sink);
     void SetPaused(bool paused, int64_t at_qpc = 0);
     void Stop();
+    // Moves the running stream to another endpoint (empty = the default, then following default changes) on the
+    // capture thread. The switch time becomes silence at the correct position; timestamps never shift.
+    void SwitchDevice(const std::wstring& device_id);
 
     const Meter& Levels() const;
     std::string DeviceName() const;

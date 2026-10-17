@@ -11,6 +11,7 @@ HRESULT WasapiCapture::Init(const CaptureConfig& config, AudioDevices& devices) 
 bool WasapiCapture::Start(int64_t epoch_qpc, AudioSink& sink) { return m_engine->Start(epoch_qpc, sink); }
 void WasapiCapture::SetPaused(bool paused, int64_t at_qpc) { m_engine->SetPaused(paused, at_qpc); }
 void WasapiCapture::Stop() { m_engine->Stop(); }
+void WasapiCapture::SwitchDevice(const std::wstring& device_id) { m_engine->SwitchDevice(device_id); }
 const Meter& WasapiCapture::Levels() const { return m_engine->Levels(); }
 std::string WasapiCapture::DeviceName() const { return m_engine->DeviceName(); }
 HRESULT WasapiCapture::LastError() const { return m_engine->LastError(); }

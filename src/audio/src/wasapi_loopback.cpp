@@ -14,6 +14,7 @@ HRESULT WasapiLoopback::Init(const CaptureConfig& config, AudioDevices& devices)
 bool WasapiLoopback::Start(int64_t epoch_qpc, AudioSink& sink) { return m_engine->Start(epoch_qpc, sink); }
 void WasapiLoopback::SetPaused(bool paused, int64_t at_qpc) { m_engine->SetPaused(paused, at_qpc); }
 void WasapiLoopback::Stop() { m_engine->Stop(); }
+void WasapiLoopback::SwitchDevice(const std::wstring& device_id) { m_engine->SwitchDevice(device_id); }
 const Meter& WasapiLoopback::Levels() const { return m_engine->Levels(); }
 std::string WasapiLoopback::DeviceName() const { return m_engine->DeviceName(); }
 HRESULT WasapiLoopback::LastError() const { return m_engine->LastError(); }
