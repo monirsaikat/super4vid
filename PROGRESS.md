@@ -69,7 +69,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 3.6 Acceptance: `audio_bench` records 60 s of a 1 kHz test tone through loopback: no gaps, drift < 5 ms, CPU < 1 % — `audio_bench --seconds 60 --tone` (Release, 2026-10-17): gaps 0 (longest quiet run 0.02 ms), frequency 999.9899 Hz, stream end vs last device frame (QPC) -0.993 ms, max |drift| 1.003 ms (device clock ~25 ppm slow: 29 single frames inserted, 0 dropped, 0 ring overflows), process CPU 0.055 % of the machine (16 logical CPUs) = 0.885 % of one core, peak -12.00 dBFS; 2,882,506 frames for a 60.037 s run (the +15.6 ms vs the stop time is the loopback presentation offset, see DECISIONS); rerun after the pause/resume review fix: gaps 0, 999.9899 Hz, -0.981 ms, max |drift| 1.003 ms, 29 inserted, CPU 0.081 % of the machine = 1.30 % of one core (machine busy with other agents' builds; one run with another app playing showed peak -7.34 dBFS / 1000.107 Hz and was discarded)
 
 ## P04 Encode & mux
-- [ ] 4.1 MF lifetime (`MfRuntime`), encoder enumeration (HW first), capability report
+- [x] 4.1 MF lifetime (`MfRuntime`), encoder enumeration (HW first), capability report — reference machine: H.264 `AMDh264Encoder` (hardware, D3D11-aware) then `H264 Encoder MFT` (software); HEVC `AMDh265Encoder` (hardware, D3D11-aware), no software HEVC; first enumeration 1.2 s (Debug, activates each MFT), cached afterwards
 - [ ] 4.2 `Mp4Writer` (sink writer, D3D manager, video stream config, ICodecAPI settings)
 - [ ] 4.3 Video texture pool with safe-reuse check; `WriteVideoFrame(texture, t_us)`
 - [ ] 4.4 AAC audio streams (mic + system), PCM16 conversion, `WriteAudio(stream, samples, t_us)`
