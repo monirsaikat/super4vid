@@ -54,6 +54,10 @@ public:
     // Whether `clip` gets the canvas padding/radius/shadow defaults: a Source::Screen clip on the track of
     // Project::PrimaryScreenClip().
     static bool IsPrimaryScreen(const project::Project&, const project::Clip&);
+    // Opacity of the keystroke overlay badge at media time t (strokes held for hold_us): fades in over 120 ms from the
+    // start of the continuous run of visible strokes and out over 200 ms before the newest stroke expires; 0 when no
+    // stroke is visible.
+    static float KeystrokeBadgeAlpha(const events::EventLog&, TimeUs t_us, TimeUs hold_us);
 
     TextRenderer& Text() { return m_text; }
     CursorRenderer& Cursor() { return m_cursor; }
@@ -98,9 +102,10 @@ private:
     std::vector<std::string> m_keys;          // scratch for the badge
     size_t m_key_count = 0;
     std::vector<const project::Clip*> m_done;   // clips already drawn by a transition this frame
-    // Blurred wallpaper (Background::Kind::Image with blur > 0), cached by (srv, size, blur).
+    // Blurred wallpaper (Background::Kind::Image with blur > 0), cached by (srv, size, blur). The key holds a reference:
+    // a raw pointer could be freed and its address reused by a different wallpaper (stale blur).
     RenderContext::TempRT m_bg_blur;
-    const void* m_bg_key_srv = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_bg_key_srv;
     float m_bg_key_blur = 0;
 };
 

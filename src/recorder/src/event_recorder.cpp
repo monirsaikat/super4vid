@@ -174,8 +174,11 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     }
 
     // ---- controlling thread ----
+    // The record's time is taken under control_lock: Drain reads its cutoff under the same lock, so a control that is
+    // not in `controls` yet always gets a later time than the cutoff (and is never written after later hook events).
     void PushControl(Control c) {
         ExclusiveGuard g(control_lock);
+        c.ev.t_us = clock->NowMediaUs();
         controls.push_back(std::move(c));
     }
 
@@ -317,36 +320,55 @@ struct EventRecorder::Impl final : platform::HooksHandler {
         Note(c.ev.t_us);
     }
 
-    // Moves everything queued so far into the writer, merged by time (each source is already in time order).
-    void Drain() {
+    // Moves what was queued into the writer, merged by time (each source is already in time order). Only records up
+    // to a cutoff are written; later ones wait in the batch vectors for the next drain, because a record with an
+    // earlier time may still be on its way: a control is stamped under control_lock (the cutoff is read under it too),
+    // and a hook event is stamped just before its push (kHoldBackUs covers that gap on periodic drains).
+    // Periodic: cutoff = now - kHoldBackUs; Flush: cutoff = now (everything recorded before Flush() was called);
+    // Final: everything (the producers have stopped).
+    enum class DrainMode { Periodic, Flush, Final };
+    static constexpr TimeUs kHoldBackUs = 5'000;
+    TimeUs drained_to = INT64_MIN;   // every record with t_us <= drained_to has been written
+
+    void Drain(DrainMode mode) {
+        TimeUs cutoff = INT64_MAX;
+        {
+            ExclusiveGuard g(control_lock);
+            // Periodic: kHoldBackUs of wall time before now (inside a pause that maps to the pause start, so the
+            // PAUSE record is not held back while paused).
+            if (mode == DrainMode::Periodic)
+                cutoff = clock->QpcToMediaUs(Clock::QpcNow() - Clock::QpcFrequency() * kHoldBackUs / 1'000'000);
+            else if (mode == DrainMode::Flush)
+                cutoff = clock->NowMediaUs();
+            for (auto& c : controls) batch_controls.push_back(std::move(c));
+            controls.clear();
+        }
         capture::CursorShape sh;
         while (shapes.Pop(sh)) pending_shapes.push_back(std::move(sh));
         RawEvent e;
         while (ring.Pop(e)) batch_raw.push_back(e);
         capture::CursorSample s;
         while (samples.Pop(s)) batch_samples.push_back(s);
-        {
-            ExclusiveGuard g(control_lock);
-            for (auto& c : controls) batch_controls.push_back(std::move(c));
-            controls.clear();
-        }
         size_t ir = 0, is = 0, ic = 0;
         constexpr TimeUs kEnd = INT64_MAX;
         for (;;) {
             const TimeUs tr = ir < batch_raw.size() ? batch_raw[ir].t_us : kEnd;
             const TimeUs ts = is < batch_samples.size() ? batch_samples[is].t_us : kEnd;
             const TimeUs tc = ic < batch_controls.size() ? batch_controls[ic].ev.t_us : kEnd;
-            if (tr == kEnd && ts == kEnd && tc == kEnd) break;
+            const TimeUs t = std::min(tr, std::min(ts, tc));
+            if (t == kEnd || (cutoff != kEnd && t > cutoff)) break;
             if (tc <= tr && tc <= ts) WriteControl(batch_controls[ic++]);
             else if (ts <= tr) WriteSample(batch_samples[is++]);
             else WriteRaw(batch_raw[ir++]);
         }
-        // Shapes not referenced yet (a sample still in flight) are written now; the move that uses them comes later.
+        if (cutoff > drained_to) drained_to = cutoff;
+        // Shapes not referenced yet (a sample still in flight or held back) are written now; the move that uses them
+        // comes later.
         for (auto& p : pending_shapes) WriteShape(p, last_t);
         pending_shapes.clear();
-        batch_raw.clear();
-        batch_samples.clear();
-        batch_controls.clear();
+        batch_raw.erase(batch_raw.begin(), batch_raw.begin() + static_cast<ptrdiff_t>(ir));
+        batch_samples.erase(batch_samples.begin(), batch_samples.begin() + static_cast<ptrdiff_t>(is));
+        batch_controls.erase(batch_controls.begin(), batch_controls.begin() + static_cast<ptrdiff_t>(ic));
     }
 
     void DoFlush() {
@@ -364,12 +386,13 @@ struct EventRecorder::Impl final : platform::HooksHandler {
         for (;;) {
             const DWORD r = WaitForMultipleObjects(2, handles, FALSE, 100);
             const bool stopping = r == WAIT_OBJECT_0;
-            Drain();
-            if (active.load(std::memory_order_acquire)) {
-                TypingDetector::Edge edge[1];
-                WriteTypingEdges(edge, typing.Tick(clock->NowMediaUs(), edge));
-            }
             const bool requested = flush_requested.exchange(false);
+            Drain(stopping ? DrainMode::Final : requested ? DrainMode::Flush : DrainMode::Periodic);
+            if (active.load(std::memory_order_acquire) && drained_to != INT64_MIN && drained_to != INT64_MAX) {
+                // Up to drained_to only: a key-down held back for the next drain may still extend the burst.
+                TypingDetector::Edge edge[1];
+                WriteTypingEdges(edge, typing.Tick(drained_to, edge));
+            }
             const int64_t now = Clock::QpcNow();
             if (requested || now >= next_flush || stopping) {
                 DoFlush();
@@ -441,8 +464,7 @@ bool EventRecorder::Start(const Config& config, std::string_view events_path, co
             Control c;
             c.ev.kind = Kind::Focus;
             c.ev.hwnd = reinterpret_cast<uint64_t>(fg);
-            c.ev.t_us = clock.NowMediaUs();
-            s.PushControl(std::move(c));
+            s.PushControl(std::move(c));   // stamps the time
         }
     }
     CT_LOG_INFO("event recorder started: region %dx%d at (%d,%d), keys %d, cursor %d Hz", config.region.w,
@@ -456,7 +478,6 @@ void EventRecorder::SetPaused(bool paused) {
     Control c;
     c.ev.kind = Kind::Pause;
     c.ev.paused = paused ? 1 : 0;
-    c.ev.t_us = m->clock->NowMediaUs();
     // Stop producing before the PAUSE record is queued, start again after the resume record.
     if (paused) m->active.store(false, std::memory_order_release);
     m->PushControl(std::move(c));
@@ -468,10 +489,9 @@ void EventRecorder::Marker(std::string_view label, uint32_t kind) {
     if (!m->running.load()) return;
     Control c;
     c.ev.kind = Kind::Marker;
-    c.ev.t_us = m->clock->NowMediaUs();
     c.marker_kind = kind;
     c.label.assign(label);
-    m->PushControl(std::move(c));
+    m->PushControl(std::move(c));   // stamps the time
     m->wake.Set();
 }
 

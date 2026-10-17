@@ -90,33 +90,41 @@ HRESULT TextRenderer::Init(RenderContext& rc) {
 
 void TextRenderer::Shutdown() {
     m_entries.clear();
+    m_bytes = 0;
     m_params.Reset();
     m_rc = nullptr;
 }
 
-size_t TextRenderer::CachedBytes() const {
-    size_t b = 0;
-    for (const auto& e : m_entries) b += static_cast<size_t>(e->layer.size.w) * static_cast<size_t>(e->layer.size.h) * 4;
-    return b;
-}
-
 void TextRenderer::Trim(size_t max_bytes) {
-    size_t total = CachedBytes();
-    while (total > max_bytes && !m_entries.empty()) {
-        auto oldest = std::min_element(m_entries.begin(), m_entries.end(),
-                                       [](const auto& a, const auto& b) { return a->last_use < b->last_use; });
-        total -= static_cast<size_t>((*oldest)->layer.size.w) * static_cast<size_t>((*oldest)->layer.size.h) * 4;
+    while (m_bytes > max_bytes && !m_entries.empty()) {
+        auto oldest = m_entries.begin();
+        for (auto it = m_entries.begin(); it != m_entries.end(); ++it)
+            if (it->second->last_use < oldest->second->last_use) oldest = it;
+        m_bytes -= Bytes(*oldest->second);
         m_entries.erase(oldest);
     }
 }
 
-TextRenderer::Entry* TextRenderer::Find(uint64_t key) {
-    for (auto& e : m_entries)
-        if (e->key == key) {
-            e->last_use = ++m_tick;
-            return e.get();
+void TextRenderer::EndFrame(uint32_t max_idle_frames, size_t max_bytes) {
+    for (auto it = m_entries.begin(); it != m_entries.end();) {
+        if (m_frame - it->second->last_frame > max_idle_frames) {
+            m_bytes -= Bytes(*it->second);
+            it = m_entries.erase(it);
+        } else {
+            ++it;
         }
-    return nullptr;
+    }
+    Trim(max_bytes);
+    ++m_frame;
+}
+
+TextRenderer::Entry* TextRenderer::Find(uint64_t key) {
+    const auto it = m_entries.find(key);
+    if (it == m_entries.end()) return nullptr;
+    Entry* e = it->second.get();
+    e->last_use = ++m_tick;
+    e->last_frame = m_frame;
+    return e;
 }
 
 HRESULT TextRenderer::NewEntry(uint64_t key, SizeI size, Entry*& out) {
@@ -143,10 +151,19 @@ HRESULT TextRenderer::NewEntry(uint64_t key, SizeI size, Entry*& out) {
     e->key = key;
     e->layer.size = size;
     e->last_use = ++m_tick;
-    m_entries.push_back(std::move(e));
-    out = m_entries.back().get();
+    e->last_frame = m_frame;
+    out = e.get();
+    m_bytes += Bytes(*e);
+    m_entries[key] = std::move(e);
     ++m_rasterizations;
     return S_OK;
+}
+
+void TextRenderer::Drop(uint64_t key) {
+    const auto it = m_entries.find(key);
+    if (it == m_entries.end()) return;
+    m_bytes -= Bytes(*it->second);
+    m_entries.erase(it);
 }
 
 HRESULT TextRenderer::BeginDraw(Entry& e) {
@@ -367,7 +384,7 @@ HRESULT TextRenderer::Annotation(const project::Annotation& a, SizeI canvas, flo
     }
     const HRESULT hr = EndDraw();
     if (FAILED(hr)) {
-        m_entries.pop_back();
+        Drop(hs.h);
         return hr;
     }
     out = &e->layer;
@@ -489,7 +506,7 @@ HRESULT TextRenderer::KeystrokeBadge(const std::vector<std::string>& keys, const
     }
     const HRESULT hr = EndDraw();
     if (FAILED(hr)) {
-        m_entries.pop_back();
+        Drop(hs.h);
         return hr;
     }
     out = &e->layer;

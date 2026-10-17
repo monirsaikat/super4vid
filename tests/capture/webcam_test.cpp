@@ -1,5 +1,6 @@
 // ct/capture/webcam_source.h
 #include "test_util.h"
+#include "../../src/capture/src/webcam_internal.h"
 
 #include <ct/capture/webcam_source.h>
 #include <ct/core/strings.h>
@@ -589,4 +590,48 @@ CT_TEST_DEVICE(webcam_init_without_camera) {
     QpcMediaTimeSource clock(Clock::QpcNow());
     CT_CHECK(!cam.Start(clock, sink));
     cam.Stop();
+}
+
+// Review fix: a memory buffer whose media type frame is padded (here 30 visible rows in a 32-row frame, like 1080 in
+// 1088) has its UV plane after the padded height; the upload must read chroma from there, not from pitch * 30.
+CT_TEST_DEVICE(webcam_upload_nv12_padded_frame_height) {
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(true)));
+    const SizeI size{64, 30};
+    const int frame_rows = 32;
+    const size_t pitch = 80;
+    std::vector<uint8_t> buf(pitch * frame_rows * 3 / 2, 0);
+    for (int r = 0; r < frame_rows; ++r) std::memset(&buf[r * pitch], r < size.h ? 100 : 16, pitch);   // padding rows = 16
+    for (int r = 0; r < frame_rows / 2; ++r)
+        for (size_t x = 0; x + 1 < pitch; x += 2) {
+            buf[pitch * frame_rows + r * pitch + x] = 60;
+            buf[pitch * frame_rows + r * pitch + x + 1] = 200;
+        }
+    D3D11_TEXTURE2D_DESC d{};
+    d.Width = static_cast<UINT>(size.w);
+    d.Height = static_cast<UINT>(size.h);
+    d.MipLevels = d.ArraySize = 1;
+    d.Format = DXGI_FORMAT_NV12;
+    d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_STAGING;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ComPtr<ID3D11Texture2D> staging, dst;
+    CT_REQUIRE(SUCCEEDED(dev.Device()->CreateTexture2D(&d, nullptr, staging.GetAddressOf())));
+    d.Usage = D3D11_USAGE_DEFAULT;
+    d.CPUAccessFlags = 0;
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    CT_REQUIRE(SUCCEEDED(dev.Device()->CreateTexture2D(&d, nullptr, dst.GetAddressOf())));
+    {
+        platform::D3DDevice::Lock lock(dev);
+        CT_REQUIRE(SUCCEEDED(capture::internal::UploadNv12(dev, staging.Get(), dst.Get(), buf.data(), pitch, size, frame_rows)));
+    }
+    std::vector<uint8_t> px;
+    UINT w = 0, h = 0;
+    CT_REQUIRE(test_util::ReadbackTexture(dev, dst.Get(), px, w, h));
+    CT_REQUIRE(w == 64u && h == 30u);
+    int bad_y = 0, bad_uv = 0;
+    for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) bad_y += px[i] != 100 ? 1 : 0;
+    for (size_t i = static_cast<size_t>(w) * h; i < px.size(); i += 2) bad_uv += (px[i] != 60 || px[i + 1] != 200) ? 1 : 0;
+    CT_CHECK_EQ(bad_y, 0);
+    CT_CHECK_EQ(bad_uv, 0);
 }

@@ -1161,6 +1161,94 @@ Why: dithering noise defeated index-level differencing; the rest are spec gaps o
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
 
+## 2026-10-17 · Review fix (P04) · Mp4Writer never frees its state under a live ct-encode thread
+Spec said: `Abort()` returns after at most 3 s and does not join; the destructor finalizes and releases the writer.
+Done instead: the destructor joins ct-encode (no timeout) before releasing anything when `Finalize`'s 60 s join timed out.
+After `Abort()`, if ct-encode is still running (stuck in `IMFSinkWriter::Finalize`), the destructor logs a warning and
+deliberately leaks the internal state (sink writer, buffers, events, thread) instead of freeing it under the thread or
+blocking the crash path. To make that safe, the state ct-encode publishes (`Stats`, last error, accepting flag) moved from
+`Mp4Writer` into its Impl (`GetStats`/`LastError`/`Accepting` are no longer inline; same signatures), `Impl::thread` is
+declared last (destroyed, i.e. joined, first), and the listener is not called once Abort was requested.
+Added `SetFinalizeDelayForTest(ms)` (test `mp4_writer_abort_during_slow_finalize_then_destroy`).
+Why: the old destructor reset the sink writer while ct-encode could still be inside Finalize (use-after-free), and the
+events/atomics were destroyed before `~Thread` joined.
+Impact: P05 can destroy the writer right after `Abort()` on the crash path; the NV12 pool must still outlive the writer.
+
+## 2026-10-17 · Review fix (P04) · Mp4Writer trims audio that overlaps what was already written
+Spec said: audio items are written at their `t_us`; gaps > 2 ms become silence.
+Done instead: an item that starts before the end of the stream's written data (an overlapping/late producer, or a
+negative first time) loses its overlapping frames and is written at the end of the written data; an item entirely
+inside it is dropped. Sub-frame overlaps (rounding) only snap the timestamp. Trimmed frames are counted in the new
+`Stats::audio_overlap_frames[stream]` (not in `audio_written`). Test `mp4_writer_audio_overlap_trimmed`.
+Why: the item was written as-is, so the file's audio timestamps went backwards.
+Impact: none for callers; P05 may log `audio_overlap_frames` next to the other writer stats.
+
+## 2026-10-17 · Review fix (P06) · Peaks::Build is cancellable; MediaCache::Close cancels it
+Spec said: `Peaks::Build(path, stream, Peaks&)` (P06 header).
+Done instead: `Build(path, stream, Peaks&, const std::atomic<bool>* stop = nullptr)`; the flag is checked before each
+decode step (~160 ms of audio) and Build returns `E_ABORT` once it is set. MediaCache's peaks job passes its stop flag,
+so `Close` (which sets it first) no longer waits for a full decode pass of a long file (10 min WAV: 4.5 s build, Close
+during it 3 ms in Debug). Existing callers are unchanged (default argument).
+Why: Close blocked the owner thread for the whole build.
+Impact: none for callers.
+
+## 2026-10-17 · Review fix (P05 task 5.7) · Webcam memory buffers use the media type's frame height
+Spec said: (DECISIONS P05 5.7) memory-buffer samples are uploaded as NV12 with the UV plane after `height` luma rows.
+Done instead: like VideoDecoder (frame vs display size), `Init` delivers the reader output's
+`MF_MT_MINIMUM_DISPLAY_APERTURE` when it is a top-left sub-rectangle of the frame (e.g. 1920x1080 of a 1920x1088
+frame; `ActualSize()` and the pool are the aperture) and remembers the type's frame height (`m_frame_h`); the memory
+path reads the UV plane after `m_frame_h` rows (`internal::UploadNv12(..., src_rows)`). Without an aperture nothing
+changes. Test `webcam_upload_nv12_padded_frame_height` (the MF device path is still not verified on hardware here).
+Why: a padded height (1088) put the chroma read 8 rows early: corrupt colours.
+Impact: none for callers.
+## 2026-10-17 · P08 review fix · Text raster cache: per-frame eviction, O(1) lookup
+Spec said: `TextRenderer::Trim(max_bytes = 64 MB)` evicts least recently used layers (nothing called it).
+Done instead: `TextRenderer::EndFrame(max_idle_frames = kIdleFrames (60), max_bytes = kMaxBytes (64 MB))`, called at the end
+of `Compositor::RenderFrame` (no Layer* in use then), drops rasters not looked up for more than 60 frames, then Trims to
+64 MB. Entries live in an `unordered_map` by cache key; `CachedBytes` is a running total.
+Why: an animated annotation (rect/text/colour/scale) or a changing keystroke combo made a new texture + D2D bitmap every
+frame that was never freed.
+Impact: Layer pointers are valid until the end of the frame (EndFrame), not until the next Trim. Measured: 1000 frames of
+a moving annotation keep at most 61 layers (1.9 MB).
+
+## 2026-10-17 · P08 review fix · Temp render targets are bucketed to 64 px and evicted when idle
+Spec said: `AcquireTemp` pooled per size, reset each frame (exact sizes, never freed).
+Done instead: the texture is the request rounded up to 64 px per axis (`RenderContext::TempTextureSize`); `TempRT::size`
+is the requested (used) size, drawn with `SetFullscreen(rtv, size)` into the top-left sub-rect. Sampling goes through a
+per-texture source uv transform: `QuadCb` grew to 240 bytes with `src[2]` (xy scale = used / texture size, zw = half a used
+texel), `SetSourceUv` fills it from the SRV's texture desc, and blur/copy/pixelate/rgba/multiply/transition shaders sample
+`SrcUv0/SrcUv1(uv)` = clamp(uv, zw, 1 - zw) * xy (what clamp addressing gives an exactly sized texture; identity by
+default). `BeginFrame` frees entries not acquired for more than `kTempIdleFrames` (60) frames. `TempBytes()` added.
+Why: blur/highlight regions and Gaussian downsample levels request sizes that change every frame during a zoom or an
+animated region; the pool kept one texture per distinct size forever.
+Impact: goldens unchanged. Code sampling a pooled temp must call `SetSourceUv` (effects and transitions do). Measured: 500
+frames of animated regions under an animated zoom: at most 21 temps / 6.5 MB at 640x360.
+
+## 2026-10-17 · P08 review fix · Keystroke badge fades in from the start of the visible run
+Spec said: badge fade-in 120 ms / fade-out 200 ms (the code measured the fade-in from the oldest stroke shown).
+Done instead: `Compositor::KeystrokeBadgeAlpha(events, t, hold)` (public, tested) measures the fade-in from the start of
+the continuous run of visible strokes (a stroke shows during [t, t + hold); the run extends back while the previous stroke
+was still showing when the next one arrived). The fade-out is unchanged (200 ms before the newest stroke expires).
+Why: when the oldest stroke expired or a 4th stroke pushed it out of the badge, the opacity dropped mid-display.
+Impact: none for callers.
+
+## 2026-10-17 · P08 review fix · Wallpaper blur cache holds a reference to its source SRV
+Spec said: Image background with an optional cached blur.
+Done instead: the cache key is a `ComPtr<ID3D11ShaderResourceView>` (plus blur and size) instead of a raw pointer.
+Why: a freed wallpaper's address could be reused by the next one, which then showed the old blur.
+Impact: the compositor keeps the last blurred wallpaper's SRV alive until the wallpaper changes or Shutdown.
+
+## 2026-10-17 · P05 review fix · events.ctev records are written in time order across controls and hook events
+Spec said: ct-events-io drains every 100 ms, records merged in time order.
+Done instead: a control (MARKER, PAUSE, initial WINDOW_FOCUS) is stamped inside `PushControl` under the control lock, and
+each drain reads its cutoff under the same lock. Only records with t <= cutoff are written; later ones stay in the batch
+for the next drain. Cutoff: periodic drains `QpcToMediaUs(now - 5 ms)` (covers a hook event stamped just before its push;
+inside a pause it maps to the pause start, so the PAUSE record is not held back), `Flush()` = now, stop = everything.
+TYPING Tick runs up to the cutoff.
+Why: a control's time was read before it was queued; a drain in between wrote later hook events first.
+Impact: records of the last 5 ms before a periodic drain wait for the next drain (100 ms); `Flush()` still writes
+everything recorded before the call.
+
 ## 2026-10-17 · P10 task 10.2 (prerequisite) · render::TimelinePlayer details
 Spec said: P09 "Core structures" `TimelinePlayer { Init(RenderContext&, AudioDevices&); SetProject; Cache(media); Resolve;
 ResolveExact; Clock; Audio; Play/Pause/Seek/SetRate/StepFrames; HintScrub; RenderAudio }`, mixing "active audio-bearing clips".

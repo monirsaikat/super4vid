@@ -21,8 +21,11 @@ struct QuadCb {
     float color[4];
     float p0[4];
     float p1[4];
+    // Source uv transform of t0/t1 (SrcUv0/SrcUv1 in common.hlsli): uv is clamped to [zw, 1 - zw] and scaled by xy.
+    // Identity (1, 1, 0, 0) from ZeroCb; SetSourceUv fills it for a texture larger than its used area (pooled temps).
+    float src[2][4];
 };
-static_assert(sizeof(QuadCb) == 208, "must match cbuffer QuadCb in shaders/common.hlsli");
+static_assert(sizeof(QuadCb) == 240, "must match cbuffer QuadCb in shaders/common.hlsli");
 
 enum class Ps : int {
     Nv12, Rgba, Solid,             // layer.hlsl
@@ -76,7 +79,10 @@ void BuildRectQuad(QuadCb& cb, const Mat3& m, const RectF& rect, float expand_px
 // Axis-aligned target-pixel rect with uv = position / uv_space (uv_space 0 -> uv 0..1 across the rect); local = rect-centred.
 void BuildScreenQuad(QuadCb& cb, const RectF& px, SizeI uv_space);
 void SetColor(float out[4], const ColorF& c);
-void ZeroCb(QuadCb& cb);
+void ZeroCb(QuadCb& cb);   // zeros, identity source uv transforms
+// Sets cb.src[slot] so that uv 0..1 covers the top-left `used` pixels of srv's texture, clamped half a texel inside
+// (what clamp addressing gives an exactly sized texture). No-op when the texture is exactly `used`.
+void SetSourceUv(QuadCb& cb, int slot, ID3D11ShaderResourceView* srv, SizeI used);
 
 // Uploads cb (target_size filled from the bound target), binds t0/t1 and draws: a 4-vertex quad (vs_quad) or the
 // fullscreen triangle (vs_full).

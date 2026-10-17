@@ -125,7 +125,6 @@ struct Mp4Writer::Impl {
     std::vector<std::unique_ptr<AudioStream>> audio;
     std::vector<int16_t> silence;
 
-    Thread thread;
     bool started = false;
     Event wake{false, false};
     Event progress{false, false};
@@ -138,6 +137,16 @@ struct Mp4Writer::Impl {
     uint64_t samples_written = 0;
     uint64_t inject_after = UINT64_MAX;
     HRESULT inject_hr = S_OK;
+    uint32_t finalize_delay_ms = 0;   // test hook: simulates a slow IMFSinkWriter::Finalize
+
+    // State ct-encode publishes. It lives here, not in Mp4Writer, so a leaked Impl (crash path, see ~Mp4Writer) never
+    // writes into a destroyed writer.
+    Stats stats;
+    std::atomic<HRESULT> last_error{0};
+    std::atomic<bool> accepting{false};
+
+    // Declared last: destroyed first, so ~Thread's join finishes before any state the thread uses is destroyed.
+    Thread thread;
 
     static bool CanReuse(void* user, uint32_t index) {
         auto* impl = static_cast<Impl*>(user);
@@ -398,7 +407,7 @@ struct Mp4Writer::Impl {
         }
         video_frontier_us.store(item.t_us + frame_dur_100ns / 10, std::memory_order_release);
         video_last_push_qpc.store(item.qpc, std::memory_order_release);
-        self->m_stats.queue_depth.store(vqueue.Size(), std::memory_order_relaxed);
+        stats.queue_depth.store(vqueue.Size(), std::memory_order_relaxed);
         wake.Set();
         return true;
     }
@@ -412,7 +421,7 @@ struct Mp4Writer::Impl {
         for (;;) {
             if (a.queue.Size() < a.limit && a.queue.Push(item)) break;
             if (!block || !WaitProgress(sw)) {
-                self->m_stats.audio_rejected_frames[stream].fetch_add(a.acc_frames, std::memory_order_relaxed);
+                stats.audio_rejected_frames[stream].fetch_add(a.acc_frames, std::memory_order_relaxed);
                 a.acc_frames = 0;
                 return false;
             }
@@ -441,7 +450,7 @@ struct Mp4Writer::Impl {
                 uint32_t idx = 0;
                 while (!a.pool.Acquire(&idx)) {
                     if (!block || !WaitProgress(sw)) {
-                        self->m_stats.audio_rejected_frames[stream].fetch_add(frames - done, std::memory_order_relaxed);
+                        stats.audio_rejected_frames[stream].fetch_add(frames - done, std::memory_order_relaxed);
                         return false;
                     }
                 }
@@ -456,7 +465,7 @@ struct Mp4Writer::Impl {
             a.acc_frames += n;
             done += n;
             if (a.acc_frames == kAudioItemFrames && !PushAccumulated(a, stream, block)) {
-                if (done < frames) self->m_stats.audio_rejected_frames[stream].fetch_add(frames - done, std::memory_order_relaxed);
+                if (done < frames) stats.audio_rejected_frames[stream].fetch_add(frames - done, std::memory_order_relaxed);
                 return false;
             }
         }
@@ -465,7 +474,7 @@ struct Mp4Writer::Impl {
 
     // Stop accepting and wait until no producer call is inside the writer.
     void StopAccepting() {
-        self->m_accepting.store(false, std::memory_order_seq_cst);
+        accepting.store(false, std::memory_order_seq_cst);
         for (int spins = 0;; ++spins) {
             bool busy = video_in_call.load(std::memory_order_seq_cst) != 0;
             for (auto& a : audio) busy = busy || a->in_call.load(std::memory_order_seq_cst) != 0;
@@ -494,9 +503,9 @@ struct Mp4Writer::Impl {
         if (SUCCEEDED(hr)) hr = s->SetSampleDuration(frame_dur_100ns);
         if (SUCCEEDED(hr)) {
             const int64_t t0 = Clock::QpcNow();
-            self->m_stats.video_latency.AddUs(Clock::QpcToUs(t0, it.qpc));
+            stats.video_latency.AddUs(Clock::QpcToUs(t0, it.qpc));
             hr = WriteSample(video_index, s.Get());
-            self->m_stats.video_write.AddUs(Clock::QpcToUs(Clock::QpcNow(), t0));
+            stats.video_write.AddUs(Clock::QpcToUs(Clock::QpcNow(), t0));
         }
         s.Reset();                 // drop our reference before the slot can be reused
         pool->Release(it.index);   // the reuse predicate still blocks the texture until MF released it
@@ -505,11 +514,11 @@ struct Mp4Writer::Impl {
             b->AddRef();
             held += b->Release() > 1 ? 1u : 0u;
         }
-        if (held > self->m_stats.max_textures_in_mf.load(std::memory_order_relaxed))
-            self->m_stats.max_textures_in_mf.store(held, std::memory_order_relaxed);
+        if (held > stats.max_textures_in_mf.load(std::memory_order_relaxed))
+            stats.max_textures_in_mf.store(held, std::memory_order_relaxed);
         if (SUCCEEDED(hr)) {
-            self->m_stats.video_written.fetch_add(1, std::memory_order_relaxed);
-            self->m_stats.last_video_us.store(it.t_us, std::memory_order_relaxed);
+            stats.video_written.fetch_add(1, std::memory_order_relaxed);
+            stats.last_video_us.store(it.t_us, std::memory_order_relaxed);
         }
         return hr;
     }
@@ -539,7 +548,7 @@ struct Mp4Writer::Impl {
             CT_RETURN_IF_FAILED(WritePcm(a, silence.data(), n, from_us + FramesToUs(written)));
             written += n;
         }
-        if (!a.started) self->m_stats.audio_lead_pad_frames[stream].fetch_add(static_cast<uint64_t>(frames), std::memory_order_relaxed);
+        if (!a.started) stats.audio_lead_pad_frames[stream].fetch_add(static_cast<uint64_t>(frames), std::memory_order_relaxed);
         a.next_us = from_us + FramesToUs(frames);
         return S_OK;
     }
@@ -547,16 +556,34 @@ struct Mp4Writer::Impl {
     HRESULT WriteAudio(uint32_t stream, const AudioItem& it) {
         AudioStream& a = *audio[stream];
         HRESULT hr = S_OK;
+        // Timestamps never go backwards: the part of an item that starts before the data written so far (an overlapping
+        // or late producer, or a negative start) is trimmed; an item entirely before it is dropped.
+        const int16_t* pcm = a.pool.At(it.buf);
+        uint32_t frames = it.frames;
+        TimeUs t_us = it.t_us;
+        if (t_us < a.next_us) {
+            const int64_t drop = std::min<int64_t>(UsToFrames(a.next_us - t_us), frames);
+            if (drop > 0) {
+                stats.audio_overlap_frames[stream].fetch_add(static_cast<uint64_t>(drop), std::memory_order_relaxed);
+                pcm += static_cast<size_t>(drop) * static_cast<size_t>(a.cfg.channels);
+                frames -= static_cast<uint32_t>(drop);
+            }
+            t_us = a.next_us;   // sub-frame overlaps (rounding) just snap to the end of the written data
+        }
+        if (frames == 0) {
+            a.pool.Release(it.buf);
+            return S_OK;
+        }
         // Streams begin at t = 0; gaps (frames the producer could not queue) become silence so nothing shifts.
-        if (!a.started && it.t_us > 0) hr = WriteSilence(a, stream, 0, it.t_us);
-        else if (a.started && it.t_us - a.next_us > kGapFillUs) hr = WriteSilence(a, stream, a.next_us, it.t_us);
+        if (!a.started && t_us > 0) hr = WriteSilence(a, stream, 0, t_us);
+        else if (a.started && t_us - a.next_us > kGapFillUs) hr = WriteSilence(a, stream, a.next_us, t_us);
         a.started = true;
-        if (SUCCEEDED(hr)) hr = WritePcm(a, a.pool.At(it.buf), it.frames, it.t_us);
+        if (SUCCEEDED(hr)) hr = WritePcm(a, pcm, frames, t_us);
         a.pool.Release(it.buf);
         if (SUCCEEDED(hr)) {
-            a.next_us = it.t_us + FramesToUs(it.frames);
-            self->m_stats.audio_written[stream].fetch_add(it.frames, std::memory_order_relaxed);
-            self->m_stats.last_audio_us[stream].store(it.t_us, std::memory_order_relaxed);
+            a.next_us = t_us + FramesToUs(frames);
+            stats.audio_written[stream].fetch_add(frames, std::memory_order_relaxed);
+            stats.last_audio_us[stream].store(t_us, std::memory_order_relaxed);
         }
         return hr;
     }
@@ -589,8 +616,8 @@ struct Mp4Writer::Impl {
         // to the end of the video.
         if (!failed.load(std::memory_order_acquire)) {
             TimeUs end = 100'000;
-            if (cfg.has_video && self->m_stats.video_written.load() > 0)
-                end = std::max(end, self->m_stats.last_video_us.load() + frame_dur_100ns / 10);
+            if (cfg.has_video && stats.video_written.load() > 0)
+                end = std::max(end, stats.last_video_us.load() + frame_dur_100ns / 10);
             for (size_t i = 0; i < audio.size(); ++i)
                 if (!audio[i]->started) {
                     CT_LOG_WARN("Mp4Writer: audio stream '%s' received no data; writing silence", audio[i]->cfg.label);
@@ -600,23 +627,24 @@ struct Mp4Writer::Impl {
         }
         Stopwatch sw;
         sw.Start();
+        if (finalize_delay_ms) Sleep(finalize_delay_ms);
         finalize_hr = writer->Finalize();
-        self->m_stats.finalize_ms.store(static_cast<int64_t>(sw.ElapsedMs()), std::memory_order_relaxed);
+        stats.finalize_ms.store(static_cast<int64_t>(sw.ElapsedMs()), std::memory_order_relaxed);
         if (FAILED(finalize_hr)) CT_LOG_ERROR("IMFSinkWriter::Finalize(%s) failed: %s", cfg.path.c_str(), HrToString(finalize_hr).c_str());
         else CT_LOG_INFO("Mp4Writer: finalized %s in %.0f ms (%llu video frames)", cfg.path.c_str(), sw.ElapsedMs(),
-                         static_cast<unsigned long long>(self->m_stats.video_written.load()));
+                         static_cast<unsigned long long>(stats.video_written.load()));
     }
 
     void Fail(HRESULT hr) {
         HRESULT expected = S_OK;
-        self->m_last_error.compare_exchange_strong(expected, hr, std::memory_order_acq_rel);
+        last_error.compare_exchange_strong(expected, hr, std::memory_order_acq_rel);
         failed.store(true, std::memory_order_release);
         CT_LOG_ERROR("Mp4Writer: writing %s failed: %s", cfg.path.c_str(), HrToString(hr).c_str());
         StopAccepting();
         DropQueued();
         FinalizeSink();   // a file with the data so far is usually playable
         progress.Set();
-        if (cfg.listener) cfg.listener->OnWriterError(hr);
+        if (cfg.listener && !abort.load(std::memory_order_acquire)) cfg.listener->OnWriterError(hr);   // owner may be gone after Abort
     }
 
     void Run() {
@@ -672,7 +700,7 @@ struct Mp4Writer::Impl {
         FinalizeSink();
         if (FAILED(finalize_hr)) {
             HRESULT expected = S_OK;
-            self->m_last_error.compare_exchange_strong(expected, finalize_hr, std::memory_order_acq_rel);
+            last_error.compare_exchange_strong(expected, finalize_hr, std::memory_order_acq_rel);
         }
         progress.Set();
     }
@@ -684,7 +712,23 @@ Mp4Writer::Mp4Writer() : m_impl(std::make_unique<Impl>()) { m_impl->self = this;
 
 Mp4Writer::~Mp4Writer() {
     Impl& m = *m_impl;
-    if (m.started && m.thread.Handle() && !m.abort.load()) Finalize();
+    if (m.started && m.thread.Handle()) {
+        if (!m.abort.load()) Finalize();
+        if (m.thread.IsRunning()) {
+            if (m.abort.load()) {
+                // Crash path: Abort returned while ct-encode is still inside IMFSinkWriter::Finalize (or about to call
+                // it). Freeing the sink writer, buffers or events under it would crash; joining could hang the dying
+                // process. Leak the Impl on purpose: the thread only touches Impl state (stats, events, writer) and
+                // the NV12 pool, which must outlive the writer anyway.
+                CT_LOG_WARN("Mp4Writer: ct-encode still finalizing %s after Abort; leaking the writer state", m.cfg.path.c_str());
+                (void)m_impl.release();
+                return;
+            }
+            // Finalize's 60 s join timed out: wait for the thread before releasing anything it uses.
+            CT_LOG_WARN("Mp4Writer: waiting for ct-encode to finish %s", m.cfg.path.c_str());
+            m.thread.Join();
+        }
+    }
     if (m.pool && m.external_pool) {
         m.pool->SetReusePredicate(nullptr, nullptr);
         for (uint32_t i = 0; i < m.pool->Count(); ++i) m.pool->SetUserData(i, nullptr);
@@ -698,7 +742,7 @@ Mp4Writer::~Mp4Writer() {
 HRESULT Mp4Writer::Init(platform::D3DDevice& dev, const Config& cfg, platform::TexturePool* nv12_pool) {
     Impl& m = *m_impl;
     auto fail = [&](HRESULT hr) {
-        m_last_error.store(hr, std::memory_order_release);
+        m_impl->last_error.store(hr, std::memory_order_release);
         return hr;
     };
     if (m.init_ok || m.started) return fail(E_UNEXPECTED);
@@ -778,13 +822,13 @@ bool Mp4Writer::Start() {
     Impl& m = *m_impl;
     if (!m.init_ok || m.started) return false;
     m.start_qpc = Clock::QpcNow();
-    m_accepting.store(true, std::memory_order_seq_cst);
+    m_impl->accepting.store(true, std::memory_order_seq_cst);
     Thread::Options opt;
     opt.name = "ct-encode";
     opt.priority = THREAD_PRIORITY_ABOVE_NORMAL;
     opt.mmcss_task = L"Playback";
     if (!m.thread.Start(opt, [&m] { m.Run(); })) {
-        m_accepting.store(false);
+        m_impl->accepting.store(false);
         return false;
     }
     m.started = true;
@@ -795,21 +839,21 @@ bool Mp4Writer::OnFrame(ID3D11Texture2D* nv12, uint32_t pool_index, TimeUs t_us)
     (void)nv12;
     Impl& m = *m_impl;
     if (!m.cfg.has_video || !m.external_pool || pool_index >= m.vbufs.size()) {
-        m_stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
+        m_impl->stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     m.video_in_call.fetch_add(1, std::memory_order_seq_cst);
-    bool ok = m_accepting.load(std::memory_order_seq_cst);
+    bool ok = m_impl->accepting.load(std::memory_order_seq_cst);
     if (ok) ok = m.PushVideo(VideoItem{pool_index, t_us, Clock::QpcNow()}, false);
     m.video_in_call.fetch_sub(1, std::memory_order_seq_cst);
-    if (!ok) m_stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
+    if (!ok) m_impl->stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
     return ok;
 }
 
 HRESULT Mp4Writer::WriteVideoSync(ID3D11Texture2D* nv12, TimeUs t_us) {
     Impl& m = *m_impl;
     if (!m.cfg.has_video || m.external_pool || !m.pool || !nv12) return E_INVALIDARG;
-    if (!m_accepting.load(std::memory_order_acquire)) return FAILED(LastError()) ? LastError() : MF_E_SHUTDOWN;
+    if (!m_impl->accepting.load(std::memory_order_acquire)) return FAILED(LastError()) ? LastError() : MF_E_SHUTDOWN;
     D3D11_TEXTURE2D_DESC d{};
     nv12->GetDesc(&d);
     const D3D11_TEXTURE2D_DESC& pd = m.pool->Desc();
@@ -827,7 +871,7 @@ HRESULT Mp4Writer::WriteVideoSync(ID3D11Texture2D* nv12, TimeUs t_us) {
     }
     if (!m.PushVideo(VideoItem{idx, t_us, Clock::QpcNow()}, true)) {
         m.pool->Release(idx);
-        m_stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
+        m_impl->stats.video_rejected.fetch_add(1, std::memory_order_relaxed);
         return FAILED(LastError()) ? LastError() : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     }
     return S_OK;
@@ -838,13 +882,13 @@ bool Mp4Writer::OnAudio(uint32_t stream, const audio::AudioPacket& p) {
     if (stream >= m.audio.size()) return false;
     Impl::AudioStream& a = *m.audio[stream];
     if (p.channels != a.cfg.channels) {
-        m_stats.audio_rejected_frames[stream].fetch_add(p.frames, std::memory_order_relaxed);
+        m_impl->stats.audio_rejected_frames[stream].fetch_add(p.frames, std::memory_order_relaxed);
         return false;
     }
     a.in_call.fetch_add(1, std::memory_order_seq_cst);
-    bool ok = m_accepting.load(std::memory_order_seq_cst);
+    bool ok = m_impl->accepting.load(std::memory_order_seq_cst);
     if (ok) ok = m.PushAudio(stream, p.silence_fill ? nullptr : p.data, p.frames, p.t_us, false);
-    else m_stats.audio_rejected_frames[stream].fetch_add(p.frames, std::memory_order_relaxed);
+    else m_impl->stats.audio_rejected_frames[stream].fetch_add(p.frames, std::memory_order_relaxed);
     a.in_call.fetch_sub(1, std::memory_order_seq_cst);
     return ok;
 }
@@ -852,7 +896,7 @@ bool Mp4Writer::OnAudio(uint32_t stream, const audio::AudioPacket& p) {
 HRESULT Mp4Writer::WriteAudioSync(uint32_t stream, const float* interleaved, uint32_t frames, TimeUs t_us) {
     Impl& m = *m_impl;
     if (stream >= m.audio.size() || (!interleaved && frames)) return E_INVALIDARG;
-    if (!m_accepting.load(std::memory_order_acquire)) return FAILED(LastError()) ? LastError() : MF_E_SHUTDOWN;
+    if (!m_impl->accepting.load(std::memory_order_acquire)) return FAILED(LastError()) ? LastError() : MF_E_SHUTDOWN;
     if (!m.PushAudio(stream, interleaved, frames, t_us, true)) return FAILED(LastError()) ? LastError() : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     return S_OK;
 }
@@ -886,7 +930,7 @@ HRESULT Mp4Writer::Finalize() {
 
 void Mp4Writer::Abort() {
     Impl& m = *m_impl;
-    m_accepting.store(false, std::memory_order_seq_cst);
+    m_impl->accepting.store(false, std::memory_order_seq_cst);
     if (!m.started || !m.thread.Handle()) return;
     m.abort.store(true, std::memory_order_release);
     m.wake.Set();
@@ -913,6 +957,14 @@ uint32_t Mp4Writer::VideoStreamIndex() const { return m_impl->cfg.has_video ? m_
 uint32_t Mp4Writer::AudioStreamIndex(uint32_t stream) const {
     return stream < m_impl->audio.size() ? m_impl->audio[stream]->index : UINT32_MAX;
 }
+
+HRESULT Mp4Writer::LastError() const { return m_impl->last_error.load(std::memory_order_acquire); }
+
+const Mp4Writer::Stats& Mp4Writer::GetStats() const { return m_impl->stats; }
+
+bool Mp4Writer::Accepting() const { return m_impl->accepting.load(std::memory_order_acquire); }
+
+void Mp4Writer::SetFinalizeDelayForTest(uint32_t ms) { m_impl->finalize_delay_ms = ms; }
 
 void Mp4Writer::InjectWriteErrorForTest(uint64_t after_samples, HRESULT hr) {
     m_impl->inject_after = after_samples;
