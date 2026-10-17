@@ -31,12 +31,17 @@ cmake --preset %PRESET% || exit /b 1
 cmake --build --preset %PRESET% || exit /b 1
 exit /b 0
 
+rem Explicit calls, not a for loop: `exit /b 1` inside a parenthesized for body did not reach the caller (a compile
+rem error left `build.cmd test` exiting 0).
 :test
-for %%p in (ninja-debug ninja-release) do (
-  cmake --preset %%p || exit /b 1
-  cmake --build --preset %%p || exit /b 1
-  ctest --preset %%p --output-on-failure || exit /b 1
-)
+call :test_preset ninja-debug || exit /b 1
+call :test_preset ninja-release || exit /b 1
+exit /b 0
+
+:test_preset
+cmake --preset %1 || exit /b 1
+cmake --build --preset %1 || exit /b 1
+ctest --preset %1 --output-on-failure || exit /b 1
 exit /b 0
 
 :package
