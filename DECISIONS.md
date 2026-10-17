@@ -591,3 +591,32 @@ Done instead: a failed write (the atomic replace failed, e.g. while another proc
 Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
 stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
 Impact: none for callers.
+
+## 2026-10-17 · P12 task 12.1 · Manifest version generated; `--tray` only hides the window
+Spec said: docs/01 section 7 embeds a literal `src/app/app.manifest` with `version="0.1.0.0"`; "everything else derives
+from" `project(Camtesia VERSION x.y.z)`; add `--tray` (start hidden to the tray).
+Done instead: the manifest is now `src/app/app.manifest.in`, configured into the build dir with
+`@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.0`. `version.h` also defines
+`CT_VERSION_MAJOR/MINOR/PATCH` (guarded by `#ifndef`, since `ct_options` passes them as `-D` too), as docs/01 section 8
+lists. `--tray` starts the main window with `SW_HIDE`; a second launch (forwarded via WM_COPYDATA) shows it.
+Why: the literal manifest version was the only place that would not follow a version bump. The tray icon belongs to P05
+(`TrayIcon`), which does not exist yet.
+Impact: P05 adds the tray icon for `--tray` (left click shows the bar). Edit `app.manifest.in`, not `app.manifest`.
+
+## 2026-10-17 · P12 task 12.2 · Installer/package deviations from the P12 listings
+Spec said: the `.iss` and `tools/package.ps1` listings in docs/phases/P12 sections 12.2/12.3; ISCC at
+`%ProgramFiles(x86)%\Inno Setup 6`.
+Done instead:
+- `.ctproj` key: `Flags: uninsdeletevalue uninsdeletekeyifempty`. With `uninsdeletevalue` alone the silent uninstall test
+  left an empty `HKCU\Software\Classes\.ctproj` key behind.
+- `PrivilegesRequiredOverridesAllowed=dialog commandline` so `/CURRENTUSER` / `/ALLUSERS` work for scripted installs.
+- `#define BinDir` (default `..\out\build\ninja-release\bin`), passed by `package.ps1 -Config`; setup VersionInfo
+  product name/description added.
+- `package.ps1` finds ISCC in Program Files (x86) (choco/CI), Program Files, or `%LOCALAPPDATA%\Programs\Inno Setup 6`
+  (where `winget install JRSoftware.InnoSetup` put it on the reference machine, per-user). The portable zip also holds
+  `licenses\imgui-LICENSE.txt`; the symbols zip holds the PDB plus the matching exe (dump debugging needs both).
+  `SHA256SUMS.txt` lists only this version's three artifacts, lower-case hex, LF endings (`sha256sum -c` compatible,
+  used by the CI release job). The budget check (exe < 20 MB, installer < 15 MB) fails the script when exceeded.
+Why: found while running `build.cmd package` and the silent install/uninstall test on this machine.
+Impact: `build.cmd doctor` still only checks `%ProgramFiles(x86)%` and prints Inno "MISSING" for a per-user install
+(doctor is outside this task's file ownership; fix when convenient).

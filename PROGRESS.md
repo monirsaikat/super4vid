@@ -141,8 +141,8 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 11.7 Acceptance: every section-8 number measured and recorded here
 
 ## P12 Installer & release
-- [ ] 12.1 Version stamping (`version.h` <- CMake), resource file, icon
-- [ ] 12.2 Inno Setup script, portable zip, file association, uninstall
-- [ ] 12.3 CI workflow (build, test, package, upload artifacts)
+- [x] 12.1 Version stamping (`version.h` <- CMake), resource file, icon — FileVersion/ProductVersion 0.1.0, manifest assemblyIdentity 0.1.0.0 (now generated from `app.manifest.in`), `--tray` starts hidden (tray icon itself is P05); final CompanyName/LegalCopyright owner strings still placeholders "Camtesia" / "Copyright (C) 2026"
+- [x] 12.2 Inno Setup script, portable zip, file association, uninstall — `build.cmd package` (0.1.0, d2c8e52+P12): CamtesiaSetup-0.1.0.exe 2.31 MB (budget 15), Camtesia.exe 1.79 MB (budget 20), portable zip 0.43 MB, symbols zip 2.55 MB, SHA256SUMS.txt verified with `sha256sum -c`; silent per-user install (`/VERYSILENT /CURRENTUSER /TASKS=desktopicon,startup /DIR=...`) exit 0, files + HKCU `.ctproj` -> `Camtesia.Project` (`--editor "%1"`) + Run `--tray` + Start menu/desktop shortcuts present, installed exe `--time-to-window` 189.5 ms exit 0; `unins000.exe /VERYSILENT` exit 0 removes dir, keys, shortcuts, Run value; `%LOCALAPPDATA%Camtesia` kept
+- [x] 12.3 CI workflow (build, test, package, upload artifacts) — `.github/workflows/build.yml` per docs/01 section 11 + `release` job on `v*` tags (softprops/action-gh-release@v2, verifies SHA256SUMS first); YAML parsed with PyYAML; not yet run on GitHub. Local `CT_CI=1 ctest --preset ninja-release`: 5/5 pass (core 53, events 19, project 49, audio 30 with 9 device tests skipped, capture 26 with 21 skipped)
 - [ ] 12.4 Release checklist executed on a clean Windows 10 VM and a Windows 11 machine
 - [ ] 12.5 Acceptance: fresh install -> record -> edit -> export -> uninstall leaves no files except user data
