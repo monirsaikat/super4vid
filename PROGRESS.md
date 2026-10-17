@@ -115,12 +115,12 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 8.7 Acceptance: golden-image tests pass; `RenderFrame` 1080p with 3 layers + cursor + 2 annotations < 4 ms GPU, < 1 ms CPU
 
 ## P09 Editor UI
-- [ ] 9.1 App shell: docking layout, theme, fonts, icons, DPI, menus, shortcuts table
-- [ ] 9.2 Media panel (import, thumbnails via WIC, drag to timeline)
+- [~] 9.1 App shell: docking layout, theme, fonts, icons, DPI, menus, shortcuts table — first half done: `ct_ui` is a module; `theme.h` (all docs/05 tokens, Theme::Apply), `fonts.h` (SegUIVar/seguisb/CascadiaMono + Segoe Fluent icons merged, FontScaleDpi), `icons.h`, `strings.h`, `widgets.h`, `shortcuts.h` (57 entries, parsed to ImGuiKeyChord, no duplicate chords), `EditorShell` (menus, DockBuilder layout 260/320/300, status bar, cheat sheet, F11 stats), `Camtesia.exe --editor-demo [--project p] [--screenshot out.png --frames N]`. Pending (second half): EditorWindow with file dialogs, layout ini under %APPDATA%, title/close prompts, Async::PostToUi plumbing
+- [~] 9.2 Media panel (import, thumbnails via WIC, drag to timeline) — shell done: cards with badges, CT_MEDIA/CT_ANNOTATION drag sources, Effects tab, context menu; import/reveal/relink are callbacks. Pending: IFileOpenDialog, MediaInfo probing on the IO pool, WIC/MediaCache thumbnails, WM_DROPFILES
 - [ ] 9.3 Preview panel (fit/zoom, safe areas, on-canvas handles for transform/annotation)
-- [ ] 9.4 Timeline widget (tracks, clips, waveforms, playhead, ruler, zoom, snap, selection, trim/split/ripple, markers, context menus)
-- [ ] 9.5 Properties panel (per-selection editors, keyframe toggles, camera/cursor/background/audio sections)
-- [ ] 9.6 Transport (J/K/L, loop, frame step, time display), status bar, toasts, error dialogs
+- [~] 9.4 Timeline widget (tracks, clips, waveforms, playhead, ruler, zoom, snap, selection, trim/split/ripple, markers, context menus) — done against `TimelineMediaProvider` (null/synthetic providers): full interaction state machine, culling, ruler ticks, markers, camera-key lane, context menus, drop targets; draw of `1000_clips.ctproj` (Release, 1600x300, machine under parallel-build load): fit 0.20-0.30 ms, fit+select-all 0.32-0.36 ms, 10 px/s 0.35-0.51 ms, 100 px/s 0.10-0.14 ms avg (< 1 ms). Pending: P06 thumbnails/peaks provider, TimelinePlayer HintScrub/auto-scroll wiring, 60 fps drag measurement in the real app
+- [~] 9.5 Properties panel (per-selection editors, keyframe toggles, camera/cursor/background/audio sections) — all docs/05 sections implemented with keyframe toggles, multi-selection, drag coalescing. Pending: "Regenerate" (needs event logs; `on_regenerate` callback) and debounced live regeneration
+- [~] 9.6 Transport (J/K/L, loop, frame step, time display), status bar, toasts, error dialogs — transport bar, J/K/L/frame-step/loop actions through `PlaybackControl` (SimplePlayback moves the playhead), status bar, toast stack done. Pending: TimelinePlayer, editable time display, volume, error banners, recovery prompt
 - [ ] 9.7 Acceptance: section-8 editor budgets met; every shortcut in `docs/05` works; no ImGui ID collisions in Debug
 
 ## P10 Export

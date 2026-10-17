@@ -591,3 +591,62 @@ Done instead: a failed write (the atomic replace failed, e.g. while another proc
 Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
 stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
 Impact: none for callers.
+
+## 2026-10-17 · P09 task 9.1 · ui module, fonts, icons, shortcut interpretations
+Spec said: docs/05 fonts "Segoe UI Variable Text 14 / Display 20 semibold", "rebuild the atlas on DPI change"; icons only from the
+docs/05 list; shortcut table per docs/05 section 5.
+Done instead:
+- `src/ui` is `ct_add_module(ui ...)` (target still `ct_ui`, `ct_imconfig.h` unchanged), DEPS ct_core ct_project ct_platform imgui
+  (ct_platform for `ImageIo` used by the screenshot helper).
+- Body/label = `SegUIVar.ttf` default instance (regular) at 14/12 px; titles/section headers use `seguisb.ttf` (Segoe UI Semibold):
+  ImGui's stb_truetype loader cannot select a weight instance of a variable font. Mono = CascadiaMono.ttf (fallback consola.ttf).
+  No atlas rebuild: ImGui 1.92+ rasterizes on demand, the app sets `style.FontScaleDpi` (see the P00 0.4 entry); `Dp(x)` scales
+  layout constants by `FontScaleDpi`. `Fonts::Unload()` exists so tests can destroy contexts.
+- Icons merged into body and semibold fonts (U+E700-F8FF, GlyphOffset y 2, square advance). Two codepoints beyond the docs/05 list:
+  ChevronLeft E76B and RepeatAll E8EE; `ct_ui_tests icons_present_in_icon_font` checks every ICON_* in SegoeIcons.ttf and segmdl2.ttf.
+- Shortcuts: "+" is the unshifted `=`/`+` key (ImGuiKey_Equal) plus `Keypad+`; "-" likewise with `Keypad-`; "?" is Shift+/; added P09's
+  Shift+J/Shift+L (0.5x) and `,`/`.` (Shift = 10 frames) nudges; Ctrl+S, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y fire while a text field has focus.
+  Dispatch uses `IsKeyChordPressed(chord, Repeat only for stepping/zoom/nudge)`.
+Why: font loader limits; codepoints verified by test instead of Character Map; keyboard layouts.
+Impact: second half of P09 and P05's recorder bar include `<ct/ui/theme.h>`, `<ct/ui/fonts.h>`, `<ct/ui/widgets.h>`.
+
+## 2026-10-17 · P09 tasks 9.1-9.6 (first half) · EditorState without player/compositor; provider and playback interfaces
+Spec said: `EditorState` owns `render::TimelinePlayer player`, `render::Compositor compositor`, the preview texture; the timeline
+draws thumbnails/peaks from `MediaCache`.
+Done instead (P06/P08 are built in parallel):
+- `ct/ui/editor_state.h`: `EditorState` has project, UndoStack, Autosave, Selection, view (pps in DIP px/s, scroll_us, scroll_y,
+  track_scale), `needs_render`, `revision` (cache key), `clipboard`, and `PlaybackControl* playback` (interface: Playing, Rate,
+  Play(rate), Pause, Seek, HintScrub, Tick). `SimplePlayback` (default) only moves `project.ui.playhead_us`. TimelinePlayer implements
+  PlaybackControl in the second half; preview/compositor members are added there.
+- `Edit(label, fn)`: fn must leave the project untouched when it returns false (true for any single ops call); the JSON snapshot is
+  taken before fn and pushed only on success, and skipped for the 2nd+ edit of a BeginDrag/EndDrag group (one undo entry per drag
+  labelled with the drag label). `EditCopy` runs multi-op edits on a copy and swaps it in on success.
+- `ct/ui/timeline_media.h`: `TimelineMediaProvider { Thumbnail(media, t, tex, uv0, uv1) -> Ready|Loading|Unavailable;
+  PeaksMinMax(media, stream, &pairs, &per_second, &status) }`, `NullMediaProvider`. Loading draws an animated shimmer and makes
+  `WantsRedraw()` true; Unavailable draws static frame placeholders / a flat line. The demo uses a synthetic peaks provider.
+- `ct/ui/editor_shell.h`: `EditorShell` (menus, DockBuilder layout, panels, status bar, toasts, shortcut dispatch, cheat sheet, F11
+  stats) with hooks `draw_preview(min, max)`, `on_action(Action) -> handled`, `status` (StatusInfo), `SetMediaProvider`. Without
+  `draw_preview` the preview shows a styled placeholder of the canvas (background gradient, padding, radius, shadow).
+- `--editor-demo` runs with `io.IniFilename = nullptr` (deterministic layout for screenshots); layout persistence in
+  `%APPDATA%\Camtesia\editor_layout.ini` belongs to the EditorWindow. `--screenshot out.png --frames N` uses
+  `ui::SaveWindowScreenshot` (PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT, BitBlt fallback -> ImageIo::WritePngRgba).
+Why: build the editor UI before playback/compositor exist without blocking on them.
+Impact: P09 second half: implement PlaybackControl in TimelinePlayer (or an adapter), a MediaCache-backed TimelineMediaProvider,
+set `draw_preview`, `on_action` (Save/Open/Import/Export/OpenRecorder), `m_media.on_import/on_reveal/on_relink`,
+`Properties().on_regenerate`, and fill `status` each frame.
+
+## 2026-10-17 · P09 task 9.4 · Timeline interpretations
+Spec said: lanes "in tracks order (annotations/camera lanes on top, video, audio bottom)"; `S` splits "the clip under the playhead
+on the focused track" without a selection; playhead "1 px record line with a 12 px triangle handle" (tokens: accent = playhead handle).
+Done instead:
+- Lane order: camera-keyframe lane pinned under the ruler (not scrolled); then non-audio tracks from the top layer down (highest
+  index first), then audio tracks in index order. Camera tracks (first clip Source::Camera) get 56 px, other video 72.
+- Split without a selection splits every clip under the playhead on unlocked tracks (there is no track focus yet).
+- Playhead line `record`, handle `accent` (token table). Narrow clips (< 10 px) draw as one flat rect; selection lookup uses a
+  per-frame sorted id list (Select All on 1,000 clips stays O(log n) per clip).
+- Trim past the media/neighbour limit clamps to the nearest valid time by bisection; multi-selection moves go through EditCopy
+  (cross-track moves only for single clips); Ctrl+drag adds the copy with AddClip on the first frame and moves it afterwards.
+- Header buttons: lock + (hide | mute for audio); dragging a header reorders tracks within the same group (video/annotation vs audio).
+- Empty space below the last lane starts a rubber band; Shift+click selects the range on the same track.
+Why: unspecified details; keeps drags one undo entry and the 1 ms budget.
+Impact: none for other phases.

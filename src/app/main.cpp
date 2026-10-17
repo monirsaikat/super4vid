@@ -3,12 +3,15 @@
 #define CT_LOG_CATEGORY "app"
 #include <ct/core/error.h>
 #include <ct/core/log.h>
+#include <ct/core/strings.h>
 #include <ct/platform/crash_handler.h>
 #include <ct/platform/d3d_device.h>
 #include <ct/platform/paths.h>
 #include <ct/platform/single_instance.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
+#include <ct/ui/editor_shell.h>
+#include <ct/ui/theme.h>
 #include <ct/version.h>
 
 #include "resource.h"
@@ -26,6 +29,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -41,6 +45,10 @@ struct Options {
     bool crash_test = false;
     bool time_to_window = false;
     bool stats = false;
+    bool editor_demo = false;     // --editor-demo [--project p.ctproj]: P09 editor shell on a sample project
+    std::string project;
+    std::string screenshot;       // --screenshot out.png --frames N: save the window after N frames and exit
+    int frames = 5;
 };
 
 struct App {
@@ -57,6 +65,7 @@ struct App {
     uint32_t messages_this_second = 0;      // --stats: what woke the loop
     UINT last_message = 0;
     bool quit = false;
+    ct::ui::EditorShell* editor = nullptr;
 };
 
 int64_t QpcNow() {
@@ -84,6 +93,10 @@ Options ParseArgs() {
         if (wcscmp(argv[i], L"--crash-test") == 0) opt.crash_test = true;
         else if (wcscmp(argv[i], L"--time-to-window") == 0) opt.time_to_window = true;
         else if (wcscmp(argv[i], L"--stats") == 0) opt.stats = true;
+        else if (wcscmp(argv[i], L"--editor-demo") == 0) opt.editor_demo = true;
+        else if (wcscmp(argv[i], L"--project") == 0 && i + 1 < argc) opt.project = ct::WideToUtf8(argv[++i]);
+        else if (wcscmp(argv[i], L"--screenshot") == 0 && i + 1 < argc) opt.screenshot = ct::WideToUtf8(argv[++i]);
+        else if (wcscmp(argv[i], L"--frames") == 0 && i + 1 < argc) opt.frames = _wtoi(argv[++i]);
     }
     if (argv) LocalFree(argv);
     return opt;
@@ -165,6 +178,11 @@ bool RenderOneFrame(App& app) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    if (app.editor) {
+        app.editor->status.frame_ms = app.last_frame_ms;
+        app.editor->Frame();
+        app.continuous = app.editor->WantsContinuousRedraw();
+    } else {
 #if defined(CT_DEBUG)
     ImGui::ShowDemoWindow();
 #endif
@@ -175,6 +193,7 @@ bool RenderOneFrame(App& app) {
     ImGui::Text("DPI: %u (%.0f%%)", app.win.Dpi(), app.win.DpiScale() * 100.0f);
     ImGui::Text("Frame time: %.2f ms (CPU)", app.last_frame_ms);
     ImGui::End();
+    }
 
     ImGui::Render();
     {
@@ -211,6 +230,7 @@ int RunUi(App& app, const Options& opt) {
     const DWORD handle_count = stats_timer ? 2 : 1;
 
     bool first_frame = true;
+    int screenshot_frames = opt.frames;
     int frames_requested = 2;   // ImGui needs a couple of frames after input to settle hover/active state
     while (!app.quit) {
         const DWORD timeout = frames_requested > 0 ? 0 : INFINITE;
@@ -245,6 +265,13 @@ int RunUi(App& app, const Options& opt) {
             if (app.win.ConsumeResize()) CT_LOG_IF_FAILED(app.sc.Resize(app.win.ClientSizePx()));
             if (!RenderOneFrame(app)) break;
             --frames_requested;
+            if (!opt.screenshot.empty()) {
+                frames_requested = 1;
+                if (--screenshot_frames <= 0) {
+                    ct::ui::SaveWindowScreenshot(app.win.Hwnd(), opt.screenshot.c_str());
+                    PostQuitMessage(0);
+                }
+            }
             if (app.continuous) frames_requested = 1;
             if (first_frame) {
                 first_frame = false;
@@ -316,8 +343,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         Window::Desc desc;
         desc.class_name = L"CamtesiaMain";
         desc.title = L"Camtesia";
-        desc.w_dip = 1280;
-        desc.h_dip = 800;
+        desc.w_dip = opt.editor_demo ? 1600 : 1280;
+        desc.h_dip = opt.editor_demo ? 900 : 800;
         desc.resizable = true;
         desc.icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
         desc.quit_on_destroy = true;
@@ -330,16 +357,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
             ImGuiIO& io = ImGui::GetIO();
             io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
             io.IniFilename = nullptr;   // layout persistence is decided in P09
-            ImGui::StyleColorsDark();
+            if (opt.editor_demo) ct::ui::EditorShell::SetupImGui();   // theme + system fonts + icons
+            else ImGui::StyleColorsDark();
             app.base_style = ImGui::GetStyle();
             ImGui_ImplWin32_Init(app.win.Hwnd());
             ImGui_ImplDX11_Init(app.dev.Device(), app.dev.Context());
-            LoadFonts();
+            if (!opt.editor_demo) LoadFonts();
+            if (opt.editor_demo) {
+                app.editor = new ct::ui::EditorShell();
+                app.editor->SetHostWindow(app.win.Hwnd());
+                std::string path = opt.project.empty() ? ct::platform::Paths::ExeDir() + "/../../../../tests/data/projects/sample.ctproj" : opt.project;
+                std::string err;
+                if (!app.editor->LoadProject(path.c_str(), &err)) CT_LOG_WARN("--editor-demo: %s", err.c_str());
+                app.editor->EnableDemo();
+            }
             ApplyDpi(app);
 
             app.win.Show(show_cmd);
             exit_code = RunUi(app, opt);
 
+            delete app.editor;
+            app.editor = nullptr;
             ImGui_ImplDX11_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
