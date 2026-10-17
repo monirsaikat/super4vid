@@ -5,4 +5,9 @@ ct_add_module(platform
           src/hotkeys.cpp
           src/tray_icon.cpp
           src/layered_window.cpp
+          src/nv12_blit.cpp
   DEPS ct_core)
+ct_compile_shaders(ct_platform SHADERS
+  shaders/nv12_blit.hlsl:vs_5_0:vs_main
+  shaders/nv12_blit.hlsl:ps_5_0:ps_main
+  shaders/nv12_blit.hlsl:ps_5_0:ps_box)

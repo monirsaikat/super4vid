@@ -968,3 +968,141 @@ Done instead:
 - Empty space below the last lane starts a rubber band; Shift+click selects the range on the same track.
 Why: unspecified details; keeps drags one undo entry and the 1 ms budget.
 Impact: none for other phases.
+## 2026-10-17 · P06 task 6.1 · Private MFStartup guard; MediaInfo additions; AAC-padded duration; local test patterns
+Spec said: `MFStartup` once per process in `ct::media::MfRuntime` (P04); `MediaInfo` as declared in P06; the pattern
+`MediaInfo` test expects duration 5 s +- 1 ms; test media comes from P04's `tools/gen_test_media`.
+- P04 and P06 were built in parallel, so `src/media/src/mf_startup_internal.h` holds `detail::EnsureMfStarted()` (a
+  function-local static `MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)`, never shut down). **After the merge replace every
+  call with `media::MfRuntime::Ensure()` and delete the file.** `src/media/CMakeLists.txt` was created by P06 with
+  `DEPS ct_platform ct_audio` (P04 adds its sources/deps).
+- `MediaInfo` additions: `IsImagePath()`, `Find(stream_index)`. Images get one `Video` stream (codec "PNG"/"JPEG"/...,
+  size, fps 0) so `FirstVideo()` works for them; `seekable = false` for images.
+- `MF_PD_DURATION` is the longest track: Media Foundation's AAC encoder pads the audio track to whole 1024-frame packets
+  (240000 -> 240640 frames), so a 5.000 s pattern reports 5.0133 s. The test accepts 5 s -1 ms / +22.3 ms.
+- Until P04's files exist, the test-only helper `ct_gen_test_media` (tests/media/gen_pattern_main.cpp, not shipped)
+  writes the same patterns with a CPU-drawn NV12 image into an `IMFSinkWriter` to `out/testmedia/` (git-ignored).
+  Tests look in `tests/data/` first, then `out/testmedia/`, and CT_SKIP when neither has the file.
+- The 7-segment counter layout is fixed in `tests/common/frame_index.h` (P04's spec only gives the box (32,32)-(432,96)):
+  box filled black (Y 16) and drawn *after* the flash; 12 digits, most significant first, cell x = 34 + 33 k, glyph
+  24 x 48 px at (cell + 4, 40), segments 6 px white (Y 235). The header also has `DrawFrameIndexY()`, which P04's
+  generator should call so both sides share one layout. Beep: 2 kHz at -12 dBFS *replacing* the 1 kHz tone for the
+  first 20 ms of every second (flash frames are 0, 60, 120, ...).
+Why: parallel phases; MF behaviour; the generator spec leaves the digit geometry open.
+Impact: P04 merge: swap the MFStartup guard, keep the counter layout (or update frame_index.h to match its generator).
+## 2026-10-17 · P06 task 6.2 · VideoDecoder: no advanced video processing, low latency on hardware, seek budget missed
+Spec said: reader attributes include `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = TRUE`; seek to an exact frame
+< 150 ms (p95 over 20 seeks); the interface in P06 section "Interfaces".
+- Hardware path: D3D manager + `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` + `MF_LOW_LATENCY = TRUE`, *without* advanced
+  video processing. The H.264/HEVC decoders output NV12 already; the extra video processor stage cost ~3x the CPU per frame
+  (156 ms vs 47 ms CPU for a 119-frame seek) and saved no wall time. Low latency makes a seek to a keyframe 2-4 ms instead
+  of ~8 ms. Software path (`allow_hardware = false`): no D3D manager, DXVA disabled, `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`
+  (software conversion to NV12), and *no* `MF_LOW_LATENCY`: with it the software decoder restarts output timestamps at 0
+  after a seek (Win11 26100).
+- Additions: `ReadFrame(out, skip_before_us)` decodes and drops frames ending at/before `skip_before_us` without the copy
+  (fast-forward after a seek); `ReadFrame` returns `E_PENDING` (nothing consumed) when every pool texture is held; `YSrv/UvSrv`
+  (R8 / R8G8 views per pool slot, created once), `FrameDurationUs`, `AtEnd`, `FramesCopied/Skipped`, `Shutdown`, and the pure
+  `ComputeApertureBox` (aperture clamped to the frame, origin rounded *up* and size *down* to even). The software path
+  rebuilds the aperture as contiguous NV12 in a scratch buffer before `UpdateSubresource` (the UV plane of an MF buffer
+  starts after the padded height, e.g. 1088, which `UpdateSubresource` cannot express).
+- Seek budget: on the reference machine (Ryzen 7 5700G iGPU, Win11 26100) Microsoft's DXVA H.264 decoder runs ~1.75 ms per
+  1080p frame regardless of bitrate (24 Mbps and 0.45 Mbps files decode equally fast; the video engine is only ~30 % busy;
+  an asynchronous Source Reader with 4 requests in flight and two decoders in parallel were tried and gave no or +25 %
+  aggregate). A seek to the last frame of a 2 s GOP (119 frames) therefore takes ~210 ms; 20 random seeks: p50 75-82 ms,
+  p95 205-220 ms. The decoder test reports the p95 and enforces < 400 ms; MediaCache hides most of it with its prefetch
+  window (see 6.4/6.7 for the cache-level numbers).
+Why: measured behaviour of the platform decoder; the budget is unreachable by sequential decode from the keyframe here.
+Impact: P05/P04 could shorten the recording GOP (1 s halves the worst case) if scrub latency matters more than size;
+P09 should keep scrubbing on cached frames (`exact = false`) while the exact frame decodes.
+## 2026-10-17 · P06 task 6.3 · AudioDecoder details
+Spec said: `AudioDecoder` as declared; total frames of the 1080p pattern 240000 +- 48.
+Done instead (additions only): `Shutdown()`, `UsingResampler()`, `Config::force_resampler` (tests run our conversion path on
+files the reader converts itself), constants `kRate`/`kChannels`. The reader's 48 kHz stereo float type is verified with
+`GetCurrentMediaType` after it is accepted. `Read` returns frames contiguous from the first packet after Init/Seek
+(pts = base + n * 1e6 / 48000), not each packet's own timestamp. A seek at or past the duration makes the next `Read`
+return `S_FALSE` (MF's `SetCurrentPosition` fails there). The pattern decodes to 240640 frames (MF's AAC encoder pads the
+track to whole packets, see 6.1); the test accepts 240000 - 48 .. 240640 + 48. Sample accuracy was checked on the beep:
+after `Seek(1.9 s)` the 2 kHz onset lands at frame 4792 (expected 4800, the detector's step is 4 frames).
+Why: testability; MF behaviour.
+## 2026-10-17 · P06 task 6.4 · Nv12Blit, MediaCache/FrameCache design choices
+Spec said: `platform::Nv12Blit { Init; ToRgba }` (P05 interface); `FrameRef`/`MediaCache`/`CacheBudget` as declared in P06;
+prefetch: seek when the decoder is outside `[window.start - 3 s, window.start]`; eviction outside the window first, then LRU;
+thumbnails via a software decoder; peaks cached as `<fnv64(path+size+mtime)>.peaks`.
+Done instead (additions only, specified members unchanged):
+- `Nv12Blit` (src/platform, shaders/nv12_blit.hlsl via ct_compile_shaders): adds `Draw(ctx, y, uv, src_size, rtv, viewport,
+  box_filter, alpha)` and static `CreatePlaneViews`; `ToRgba` caches views for the last 8 textures. The box filter is one
+  pass of ceil(scale/2)^2 bilinear taps (not the "2-pass box filter"). Measured max |dRGB| 1 against the BT.709 reference.
+- `FrameRef::rgba` (images are one BGRA texture; y/uv/nv12 null). `FrameRef`s stay valid until the 4th following
+  `GetVideoFrame` (last 4 returned slots are pinned against eviction). `MediaCache` adds `GetStats`, `FrameDurationUs`,
+  `FpsNum/Den`, `DurationUs`, `HasVideo`, `WaitForFrame` (tools/tests). `FrameCache` is a GPU-free bookkeeping class
+  (slot indices into MediaCache's texture store) so its logic is unit-tested; a frame lasts until the next cached one when
+  that starts within 1 ms (rounded MF durations leave 1 us holes).
+- Prefetch order: the part of the window ahead of the playhead first, then the part behind it. Eviction: outside the window
+  (LRU), then inside the window but behind the playhead; frames ahead of the playhead are never evicted — when the budget
+  is full of them the thread stalls until the next hint (a 2.5 s playing window of 1080p is 466 MB, more than the 256 MB
+  budget, so playback runs as a ring of budget-sized read-ahead). Forward-vs-seek: instead of the fixed 3 s rule, decode
+  forward unless a keyframe is known/predicted in between (keyframes are learned from seek landings; decoders flag every
+  output sample as CleanPoint, so the flag is useless); unknown GOP -> forward up to 1 s; never more than 3 s.
+  Cold exact frame at 2.5 s: 64-89 ms (was 300-350 ms with the 3 s rule).
+- Thumbnails: the software decoder is created on the IO pool right after `Open` (its creation takes ~0.5 s under load);
+  newest request first; consecutive buckets decode forward without a seek. 650 ms for the first, 150-230 ms after.
+- Peaks key also includes the stream index; cache dir = `<Paths logs dir>\..\cache` when `Paths::Init` ran, else
+  `%LOCALAPPDATA%\Camtesia\cache`. The 1080p pattern gives 502 windows (AAC padding, see 6.1); the test accepts 500-502.
+- Draw FrameRefs/thumbnails with `D3DDevice::Lock` held: worker threads (thumbnails, decoder copies) use the immediate
+  context under that lock, so the UI thread must too (P08/P09).
+Why: budget/latency measurements above; testability.
+Impact: P08 samples `FrameRef::y/uv` (or `rgba` for images) and reuses `Nv12Blit`; P09 takes the device lock while rendering.
+## 2026-10-17 · P06 task 6.5 · AudioEngine clock and control details
+Spec said: `PositionUs = play_from + (frames - frames_at_play) * rate / 48000 - latency`, interpolated with QPC.
+Done instead: no latency is subtracted: `IAudioClock::GetPosition` already reports the stream position of the sample
+being played (docs), and `frames_at_play` is the device frame index of the first sample of the new playback (the
+`device_position_frames` of the buffer in which the render thread applied Play). Measured: 200 ms after `Play` the
+position is 171-184 ms in (the 20-30 ms difference is the output latency), then advances 502-503 ms over 502-503 ms
+of wall time; rate 2: 1001-1006 ms. QPC extrapolation past the last `GetClock` reading is capped at 50 ms. Until the render
+thread applied the latest command, `PositionUs` returns the requested start. Play/Pause go to the render thread through
+an SRW lock the render thread only try-locks. Varispeed keeps one source frame of history between buffers. Negative
+rates are silent (the PlaybackClock runs them on QPC). Additions: `Muted`, `PeakLevel`, `DeviceOk`, `LatencyMs`,
+`DeviceName`. Default-device hot-swap is not followed (the editor reopens the engine; P09/P11).
+Why: correctness of the clock; the render thread must not block.
+Impact: P09's timeline mixer implements `AudioEngine::Source` fed from decoder threads (Pull must not block).
+## 2026-10-17 · P06 task 6.6 · PlaybackClock / Player details; thumbnails on a second DXVA decoder
+Spec said: `PlaybackClock` and `Player` as declared; thumbnails from a software `VideoDecoder` (`allow_hardware = false`).
+Done instead (additions only):
+- `PlaybackClock`: `UsingAudio()`, `ClampRate()` (|rate| 0.25..4, negative = reverse on QPC, 0/NaN -> 1),
+  `SetQpcSourceForTest()`. The audio engine is the clock only while playing forward with a working device
+  (`AudioEngine::DeviceOk`); every Play/Seek/SetRate re-anchors both clocks at the current position.
+- `Player`: audio goes through a "ct-audio-feed" thread that decodes the first audio stream into a 1 s `AudioRing`;
+  `Feed::Pull` (render thread) try-locks, drops stale frames to catch up with `from_us` and plays silence until data for
+  the requested generation exists, so a seek never blocks the audio thread and audio rejoins in sync. Additions:
+  `Close`, `Playing`, `Rate`, `Duration`, `HasAudio`, `ClockUsesAudio`, `Cache()`, `Engine()`, `ResetStats`. Tick stops at
+  the end (last frame) and at 0 for reverse; `seek_to_frame_ms` = `Seek()` -> first Tick with the exact frame;
+  `frames_late` counts newly shown frames already > 50 ms stale.
+- Thumbnails use a second hardware (DXVA) decoder, falling back to software: with the machine at 70-100 % CPU (parallel
+  agent builds) the software decoder needed 1.1-3 s for the first thumbnail; DXVA: 450 ms first (decoder creation),
+  95-140 ms after.
+- Real-time assertions in the playback tests (late frames, cache misses during 60 fps playback, the 1 s thumbnail) are
+  enforced in Release only; Debug + debug layer under load only reports them. On a machine at 100 % CPU from other
+  processes even Release misses them; the numbers in PROGRESS.md come from runs at <= 70 % background load.
+Why: measured behaviour; non-blocking audio thread.
+Impact: P09 drives `Player`-like logic per timeline (MediaCache per clip media, AudioEngine::Source = timeline mixer).
+## 2026-10-17 · P06 task 6.7 · player_demo, seek bench, avsync; acceptance measured on a substitute file
+Spec said: `player_demo file.mp4` with an overlay; acceptance on the 4K60 H.264 pattern: in sync, seek-to-frame < 150 ms,
+CPU < 10 %, frames_late measured; `--avsync` on the clap recording.
+- The overlay is the window title (pts, clock, rate, cache MB, shown, late), not text drawn into the frame; `--stats`
+  prints the same once per second plus a summary (CPU of the process, cache stats). Other modes: `--count-frames`,
+  `--seek-bench [N]` (random seeks through `MediaCache::Hint` + `WaitForFrame`, p50/p95/max), `--avsync`.
+- `--avsync`: per-frame luma mean (staging readback) finds flashes; the audio stream goes through two 2 kHz band-passes
+  (Q 8) and a 1 ms RMS envelope; the detector's own delay (1.69 ms, measured on a synthetic click) is subtracted; events
+  in the first 250 ms are skipped (decoder priming); a flash pairs with the nearest beep within +-250 ms; PASS when
+  |mean offset| < 20 ms and the regression drift < 20 ms. Tested only on the synthetic pattern (exact by construction);
+  the real clap recording is left for the P11/P13 manual pass.
+- `VideoDecoder::ReadFrame(out, skip_before, abort_gen, gen)`: the skip phase returns `E_ABORT` when `*abort_gen != gen`.
+  `MediaCache` bumps that generation only on a jump (|dt| > 1 s, play/pause, direction change), never on per-tick
+  playhead moves (the first version re-seeked 34 times in 3 s of 4K playback). After an abort the decoder position is
+  unknown and the next request seeks.
+- No 4K60 H.264 reference file and no idle machine: the numbers come from `ct_gen_test_media` output
+  (`out/testmedia/pattern_{1080p60_5s,4k60_3s}.mp4`, GOP 2 s) on an AMD Radeon iGPU with the CPU at 70-100 % from parallel
+  agent builds. 4K60 does not play in real time here: the hardware decoder is saturated (~56 fps decoded with copies)
+  and the swap chain's present waits behind the decode copies (~5 presents/s); rate 0.5 plays every frame.
+Why: no reference media in the worktree; measured behaviour.
+Impact: re-measure 6.7 on the reference machine with the real 4K file. If 4K60 is still short there, the cache should take
+the decoder pool texture instead of copying it (one 12 MB copy per frame less).
