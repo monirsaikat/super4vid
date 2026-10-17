@@ -12,7 +12,7 @@ float4 ps_shadow(QuadOut i) : SV_Target {
 // Highlight region: t0 = copy of the region (premultiplied, opaque canvas); multiply by g_color.rgb with strength
 // g_color.a, drawn back with the rounded mask.
 float4 ps_multiply(QuadOut i) : SV_Target {
-    float4 c = g_tex0.Sample(g_lin, i.uv);
+    float4 c = g_tex0.Sample(g_lin, SrcUv0(i.uv));
     float3 rgb = c.rgb * lerp(float3(1, 1, 1), g_color.rgb, g_color.a);
     float a = RoundedMask(i.local) * g_opacity;
     return float4(rgb, c.a) * a;

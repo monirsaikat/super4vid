@@ -3,10 +3,12 @@
 #include <ct/core/fs.h>
 #include <ct/core/strings.h>
 #include <ct/core/time.h>
+#include <ct/events/ctev.h>
 #include <ct/events/event_log.h>
 #include <ct/recorder/event_recorder.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -220,5 +222,47 @@ CT_TEST_DEVICE(event_recorder_flushes_every_second) {
     if (ms > 1200) std::printf("  WARN: flush took longer than the 1 s budget (machine busy?)\n");
     CT_CHECK(ms < 3000);
     rec.Stop();
+    fs::Delete(path);
+}
+
+// Markers (controlling thread) interleaved with hook events (ct-hooks): the file holds every record in time order.
+// A control used to be stamped before it was queued, so a drain in between could write later hook events before it.
+CT_TEST_DEVICE(event_recorder_controls_and_hook_events_in_time_order) {
+    const std::string path = TempCtev("order");
+    SessionClock clock;
+    clock.Start(Clock::QpcNow());
+    EventRecorder rec;
+    EventRecorder::Config cfg;
+    cfg.region = PrimaryRect();
+    cfg.keystrokes = KeystrokeMode::ShortcutsOnly;
+    cfg.focus = false;
+    cfg.test_swallow_tag = kTag;
+    Err err;
+    CT_REQUIRE(rec.Start(cfg, path, clock, &err));
+    constexpr int kRounds = 300;
+    for (int i = 0; i < kRounds; ++i) {
+        SendMouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(WHEEL_DELTA));
+        rec.Marker("m");
+        if (i % 50 == 25) rec.Flush(500);   // flush drains between the periodic ones
+        if (i % 10 == 0) Wait(1);
+    }
+    CT_CHECK(WaitRecords(rec, 2 * kRounds, 5000));
+    rec.Stop();
+
+    events::EventReader reader;
+    CT_REQUIRE(reader.Open(path, &err));
+    events::RecordView r;
+    TimeUs prev = INT64_MIN;
+    size_t markers = 0, wheels = 0, out_of_order = 0;
+    while (reader.Next(r)) {
+        if (r.t_us < prev) ++out_of_order;
+        prev = std::max(prev, r.t_us);
+        if (r.type == static_cast<uint8_t>(events::RecordType::Marker)) ++markers;
+        if (r.type == static_cast<uint8_t>(events::RecordType::MouseWheel)) ++wheels;
+    }
+    CT_CHECK(!reader.Truncated());
+    CT_CHECK_EQ(markers, static_cast<size_t>(kRounds));
+    CT_CHECK_EQ(wheels, static_cast<size_t>(kRounds));
+    CT_CHECK_EQ(out_of_order, size_t{0});
     fs::Delete(path);
 }

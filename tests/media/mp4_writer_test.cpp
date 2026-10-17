@@ -363,3 +363,44 @@ CT_TEST_DEVICE(mp4_writer_audio_only_gap_fill) {
     CT_CHECK_NEAR(after, -15.05, 0.5);
     CT_CHECK_NEAR(p.duration_us, 1'000'000, 25'000);
 }
+
+// Review fix: an audio item that starts before the data already written (here a producer restarting 50 ms early) is
+// trimmed so the file's audio timestamps never go backwards and nothing after it shifts.
+CT_TEST_DEVICE(mp4_writer_audio_overlap_trimmed) {
+    MfScope mf;
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(false)));
+    const std::string path = TempPath("audio_overlap.m4a");
+    Mp4Writer::Config c;
+    c.path = path;
+    c.has_video = false;
+    c.audio.push_back(AudioEncodeConfig{});
+    Mp4Writer w;
+    CT_REQUIRE(SUCCEEDED(w.Init(dev, c, nullptr)));
+    CT_REQUIRE(w.Start());
+    std::vector<float> pcm(480 * 2);
+    auto send = [&](TimeUs t_us) {
+        Sine(pcm.data(), 480, 1000.0, 0.25f, t_us * 48 / 1000);
+        audio::AudioPacket p;
+        p.t_us = t_us;
+        p.frames = 480;
+        p.data = pcm.data();
+        CT_CHECK(w.OnAudio(0, p));
+    };
+    for (int k = 0; k < 50; ++k) send(k * 10'000);   // 0 .. 500 ms
+    Sleep(20);
+    for (int k = 45; k < 100; ++k) send(k * 10'000);  // restarts at 450 ms: 50 ms overlap, then on to 1 s
+    CT_CHECK_HR(w.Finalize());
+    std::printf("  written %llu frames, trimmed %llu\n", static_cast<unsigned long long>(w.GetStats().audio_written[0].load()),
+                static_cast<unsigned long long>(w.GetStats().audio_overlap_frames[0].load()));
+    CT_CHECK_EQ(w.GetStats().audio_written[0].load(), 48'000ull);
+    CT_CHECK_EQ(w.GetStats().audio_overlap_frames[0].load(), 2'400ull);
+    StreamScan s;
+    CT_REQUIRE(SUCCEEDED(ScanStream(path, 0, s, true)));
+    bool monotonic = true;
+    for (size_t i = 1; i < s.times.size(); ++i) monotonic = monotonic && s.times[i] > s.times[i - 1];
+    std::printf("  %llu AAC samples, end %lld us, max gap %lld us\n", static_cast<unsigned long long>(s.samples),
+                static_cast<long long>(s.end_us), static_cast<long long>(s.max_gap_us));
+    CT_CHECK(monotonic);
+    CT_CHECK_NEAR(s.end_us, 1'000'000, 25'000);
+}

@@ -148,17 +148,35 @@ void RenderContext::Shutdown() {
     m_dev = nullptr;
 }
 
+SizeI RenderContext::TempTextureSize(SizeI used) {
+    constexpr int kMax = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+    auto up = [](int v) { return std::min(std::max((v + kTempBucketPx - 1) / kTempBucketPx * kTempBucketPx, v), kMax); };
+    return SizeI{up(used.w), up(used.h)};
+}
+
+size_t RenderContext::TempBytes() const {
+    size_t b = 0;
+    for (const auto& e : m_temps) {
+        const size_t px = static_cast<size_t>(e->tex_size.w) * static_cast<size_t>(e->tex_size.h);
+        b += px * (e->format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4);
+    }
+    return b;
+}
+
 RenderContext::TempRT* RenderContext::AcquireTemp(SizeI size, DXGI_FORMAT format) {
     if (!m_dev || size.IsEmpty()) return nullptr;
+    const SizeI tex = TempTextureSize(size);
     for (auto& e : m_temps)
-        if (!e->in_use && e->format == format && e->rt.size.w == size.w && e->rt.size.h == size.h) {
+        if (!e->in_use && e->format == format && e->tex_size.w == tex.w && e->tex_size.h == tex.h) {
             e->in_use = true;
+            e->last_frame = m_frame;
+            e->rt.size = size;
             return &e->rt;
         }
     auto e = std::make_unique<TempEntry>();
     D3D11_TEXTURE2D_DESC td{};
-    td.Width = static_cast<UINT>(size.w);
-    td.Height = static_cast<UINT>(size.h);
+    td.Width = static_cast<UINT>(tex.w);
+    td.Height = static_cast<UINT>(tex.h);
     td.MipLevels = 1;
     td.ArraySize = 1;
     td.Format = format;
@@ -169,11 +187,13 @@ RenderContext::TempRT* RenderContext::AcquireTemp(SizeI size, DXGI_FORMAT format
     if (FAILED(d->CreateTexture2D(&td, nullptr, e->rt.tex.GetAddressOf())) ||
         FAILED(d->CreateRenderTargetView(e->rt.tex.Get(), nullptr, e->rt.rtv.GetAddressOf())) ||
         FAILED(d->CreateShaderResourceView(e->rt.tex.Get(), nullptr, e->rt.srv.GetAddressOf()))) {
-        CT_LOG_ERROR("RenderContext: could not create a %dx%d temp render target", size.w, size.h);
+        CT_LOG_ERROR("RenderContext: could not create a %dx%d temp render target", tex.w, tex.h);
         return nullptr;
     }
     e->rt.size = size;
+    e->tex_size = tex;
     e->format = format;
+    e->last_frame = m_frame;
     e->in_use = true;
     m_temps.push_back(std::move(e));
     return &m_temps.back()->rt;
@@ -189,7 +209,10 @@ void RenderContext::ReleaseTemp(TempRT* rt) {
 }
 
 void RenderContext::BeginFrame() {
+    ++m_frame;
     for (auto& e : m_temps) e->in_use = false;
+    // Free textures no pass asked for recently (sizes of an animation that has moved on).
+    std::erase_if(m_temps, [this](const std::unique_ptr<TempEntry>& e) { return m_frame - e->last_frame > kTempIdleFrames; });
 }
 
 void RenderContext::UnbindSrvs() {
@@ -248,7 +271,26 @@ platform::GpuTimer& RenderContext::Timer(int slot) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Draw helpers (render_internal.h)
 
-void ZeroCb(QuadCb& cb) { std::memset(&cb, 0, sizeof(cb)); }
+void ZeroCb(QuadCb& cb) {
+    std::memset(&cb, 0, sizeof(cb));
+    for (auto& src : cb.src) src[0] = src[1] = 1.f;   // identity source uv transform
+}
+
+void SetSourceUv(QuadCb& cb, int slot, ID3D11ShaderResourceView* srv, SizeI used) {
+    if (slot < 0 || slot > 1 || !srv || used.IsEmpty()) return;
+    ComPtr<ID3D11Resource> res;
+    srv->GetResource(res.GetAddressOf());
+    ComPtr<ID3D11Texture2D> tex;
+    if (!res || FAILED(res.As(&tex))) return;
+    D3D11_TEXTURE2D_DESC d{};
+    tex->GetDesc(&d);
+    if (static_cast<int>(d.Width) == used.w && static_cast<int>(d.Height) == used.h) return;   // clamp addressing does it
+    float* s = cb.src[slot];
+    s[0] = static_cast<float>(used.w) / static_cast<float>(d.Width);
+    s[1] = static_cast<float>(used.h) / static_cast<float>(d.Height);
+    s[2] = 0.5f / static_cast<float>(used.w);
+    s[3] = 0.5f / static_cast<float>(used.h);
+}
 
 void SetColor(float out[4], const ColorF& c) {
     out[0] = c.r;
