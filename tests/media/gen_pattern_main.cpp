@@ -88,6 +88,10 @@ HRESULT Generate(const std::string& path, int width, int height, int fps, int se
     GEN_CHECK(MFCreateAttributes(enc.GetAddressOf(), 2));
     enc->SetUINT32(CODECAPI_AVEncMPVGOPSize, static_cast<UINT32>(fps * 2));
     enc->SetUINT32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+    // P04's recording default: quality mode 70 with a peak cap (1080p60 12 Mbps, 4K60 40 Mbps).
+    enc->SetUINT32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_Quality);
+    enc->SetUINT32(CODECAPI_AVEncCommonQuality, 70);
+    enc->SetUINT32(CODECAPI_AVEncCommonMaxBitRate, bitrate);
     GEN_CHECK(writer->SetInputMediaType(vstream, vin.Get(), enc.Get()));
 
     // Audio: AAC 48 kHz stereo 192 kbps from PCM16.

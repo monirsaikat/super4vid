@@ -458,3 +458,29 @@ Done instead:
   first 20 ms of every second (flash frames are 0, 60, 120, ...).
 Why: parallel phases; MF behaviour; the generator spec leaves the digit geometry open.
 Impact: P04 merge: swap the MFStartup guard, keep the counter layout (or update frame_index.h to match its generator).
+
+## 2026-10-17 · P06 task 6.2 · VideoDecoder: no advanced video processing, low latency on hardware, seek budget missed
+Spec said: reader attributes include `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = TRUE`; seek to an exact frame
+< 150 ms (p95 over 20 seeks); the interface in P06 section "Interfaces".
+Done instead:
+- Hardware path: D3D manager + `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS` + `MF_LOW_LATENCY = TRUE`, *without* advanced
+  video processing. The H.264/HEVC decoders output NV12 already; the extra video processor stage cost ~3x the CPU per frame
+  (156 ms vs 47 ms CPU for a 119-frame seek) and saved no wall time. Low latency makes a seek to a keyframe 2-4 ms instead
+  of ~8 ms. Software path (`allow_hardware = false`): no D3D manager, DXVA disabled, `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`
+  (software conversion to NV12), and *no* `MF_LOW_LATENCY`: with it the software decoder restarts output timestamps at 0
+  after a seek (Win11 26100).
+- Additions: `ReadFrame(out, skip_before_us)` decodes and drops frames ending at/before `skip_before_us` without the copy
+  (fast-forward after a seek); `ReadFrame` returns `E_PENDING` (nothing consumed) when every pool texture is held; `YSrv/UvSrv`
+  (R8 / R8G8 views per pool slot, created once), `FrameDurationUs`, `AtEnd`, `FramesCopied/Skipped`, `Shutdown`, and the pure
+  `ComputeApertureBox` (aperture clamped to the frame, origin rounded *up* and size *down* to even). The software path
+  rebuilds the aperture as contiguous NV12 in a scratch buffer before `UpdateSubresource` (the UV plane of an MF buffer
+  starts after the padded height, e.g. 1088, which `UpdateSubresource` cannot express).
+- Seek budget: on the reference machine (Ryzen 7 5700G iGPU, Win11 26100) Microsoft's DXVA H.264 decoder runs ~1.75 ms per
+  1080p frame regardless of bitrate (24 Mbps and 0.45 Mbps files decode equally fast; the video engine is only ~30 % busy;
+  an asynchronous Source Reader with 4 requests in flight and two decoders in parallel were tried and gave no or +25 %
+  aggregate). A seek to the last frame of a 2 s GOP (119 frames) therefore takes ~210 ms; 20 random seeks: p50 75-82 ms,
+  p95 205-220 ms. The decoder test reports the p95 and enforces < 400 ms; MediaCache hides most of it with its prefetch
+  window (see 6.4/6.7 for the cache-level numbers).
+Why: measured behaviour of the platform decoder; the budget is unreachable by sequential decode from the keyframe here.
+Impact: P05/P04 could shorten the recording GOP (1 s halves the worst case) if scrub latency matters more than size;
+P09 should keep scrubbing on cached frames (`exact = false`) while the exact frame decodes.
