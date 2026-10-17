@@ -124,6 +124,27 @@ CT_TEST(undo_caps_entries_and_bytes) {
     CT_CHECK_EQ(small.Bytes(), size_t(0));
 }
 
+// Review fix: Undo() adds the redo snapshot's bytes; the byte cap must hold even when only redo entries are left.
+CT_TEST(undo_redo_bytes_respect_cap) {
+    Project p = MakeSampleProject();
+    const size_t one = ToJson(p).size();
+    UndoStack undo(200, one + one / 2);
+    undo.Push(p, "grow");                 // small snapshot
+    p.name = std::string(one, 'n');       // the current document is now ~2x larger
+    CT_REQUIRE(undo.Undo(p));             // redo entry = the large document, alone over the cap
+    CT_CHECK(undo.Bytes() <= one + one / 2);
+    CT_CHECK_EQ(undo.Entries(), size_t(0));
+    CT_CHECK(!undo.CanRedo());
+    // Within the cap the redo entry is kept.
+    UndoStack roomy(200, one * 4);
+    Project q = MakeSampleProject();
+    roomy.Push(q, "grow");
+    q.name = std::string(one, 'n');
+    CT_REQUIRE(roomy.Undo(q));
+    CT_CHECK(roomy.CanRedo());
+    CT_CHECK(roomy.Bytes() <= one * 4);
+}
+
 CT_TEST(undo_dirty_flag_tracks_save_point) {
     Project p = MakeSampleProject();
     UndoStack undo;
