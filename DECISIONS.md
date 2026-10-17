@@ -525,3 +525,17 @@ Done instead (additions only, specified members unchanged):
   context under that lock, so the UI thread must too (P08/P09).
 Why: budget/latency measurements above; testability.
 Impact: P08 samples `FrameRef::y/uv` (or `rgba` for images) and reuses `Nv12Blit`; P09 takes the device lock while rendering.
+
+## 2026-10-17 · P06 task 6.5 · AudioEngine clock and control details
+Spec said: `PositionUs = play_from + (frames - frames_at_play) * rate / 48000 - latency`, interpolated with QPC.
+Done instead: no latency is subtracted: `IAudioClock::GetPosition` already reports the stream position of the sample
+being played (docs), and `frames_at_play` is the device frame index of the first sample of the new playback (the
+`device_position_frames` of the buffer in which the render thread applied Play). Measured: 200 ms after `Play` the
+position is 171-184 ms in (the 20-30 ms difference is the output latency), then advances 502-503 ms over 502-503 ms
+of wall time; rate 2: 1001-1006 ms. QPC extrapolation past the last `GetClock` reading is capped at 50 ms. Until the render
+thread applied the latest command, `PositionUs` returns the requested start. Play/Pause go to the render thread through
+an SRW lock the render thread only try-locks. Varispeed keeps one source frame of history between buffers. Negative
+rates are silent (the PlaybackClock runs them on QPC). Additions: `Muted`, `PeakLevel`, `DeviceOk`, `LatencyMs`,
+`DeviceName`. Default-device hot-swap is not followed (the editor reopens the engine; P09/P11).
+Why: correctness of the clock; the render thread must not block.
+Impact: P09's timeline mixer implements `AudioEngine::Source` fed from decoder threads (Pull must not block).

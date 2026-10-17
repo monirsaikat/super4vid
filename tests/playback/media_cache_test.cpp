@@ -21,6 +21,12 @@ using namespace ct::playback;
 
 namespace {
 
+#ifdef CT_DEBUG
+constexpr double kThumbBudgetMs = 2000.0;   // Debug + debug layer under parallel builds; the 1 s budget is Release
+#else
+constexpr double kThumbBudgetMs = 1000.0;
+#endif
+
 int64_t IndexOf(platform::D3DDevice& dev, const FrameRef& f) {
     test::Nv12Image img;
     if (!test::ReadbackNv12(dev, f.nv12, img)) return -2;
@@ -131,7 +137,7 @@ CT_TEST_DEVICE(media_cache_thumbnail_within_1s) {
     const double ms = sw.ElapsedMs();
     std::printf("    thumbnail ready after %.0f ms\n", ms);
     CT_REQUIRE(srv != nullptr);
-    CT_CHECK(ms < 1000.0);
+    CT_CHECK(ms < kThumbBudgetMs);
     Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
     std::vector<uint8_t> px;
     int w = 0, h = 0;
@@ -147,11 +153,11 @@ CT_TEST_DEVICE(media_cache_thumbnail_within_1s) {
     sw.Start();
     while (!cache.Thumbnail(3'000'000, srv) && sw.ElapsedMs() < 3000) Sleep(5);
     const double next_ms = sw.ElapsedMs();
-    CT_CHECK(next_ms < 1000.0);
+    CT_CHECK(next_ms < kThumbBudgetMs);
     sw.Start();
     while (!cache.Thumbnail(4'500'000, srv) && sw.ElapsedMs() < 3000) Sleep(5);   // another GOP: seek + 30 frames
     std::printf("    next bucket %.0f ms, other GOP %.0f ms\n", next_ms, sw.ElapsedMs());
-    CT_CHECK(sw.ElapsedMs() < 1000.0);
+    CT_CHECK(sw.ElapsedMs() < kThumbBudgetMs);
 }
 
 CT_TEST_DEVICE(media_cache_peaks_and_audio) {
