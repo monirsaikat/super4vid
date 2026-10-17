@@ -46,6 +46,7 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
     dc.region = m_cfg.region;
     dc.prefer_fp16_when_hdr = m_cfg.hdr_tonemap;
     CT_RETURN_IF_FAILED(m_dup.Init(dev, dc));
+    m_ran_before = false;
 
     CT_RETURN_IF_FAILED(m_bgra_pool.Init(dev, TexDesc(m_dup.Size(), m_dup.Format()), 3, "capture.bgra"));
 
@@ -76,6 +77,8 @@ void ScreenCapturer::ResetStats() {
     m_stats.acquire.Reset();
     m_stats.convert.Reset();
     m_stats.gpu.Reset();
+    m_stats.present_lag.Reset();
+    m_stats.late_images.store(0, std::memory_order_relaxed);
     m_stats.first_frame_us.store(-1, std::memory_order_relaxed);
     m_stats.last_new_frame_qpc.store(0, std::memory_order_relaxed);
 }
@@ -130,11 +133,59 @@ void ScreenCapturer::Run() {
     int64_t n = 0;
     bool lost = false;
     int64_t next_reinit_qpc = 0;
-    uint32_t cur = 0;            // copy path: BGRA pool slot holding the newest desktop image
-    bool bgra_pending = false;   // copy path: bgra[cur] is newer than the last NV12 frame (not converted yet)
-    bool has_last = false;       // an NV12 pool texture (last_idx) holds the newest delivered frame
+    if (m_ran_before) {
+        // A duplication that already delivered images returns the next one only when the desktop changes, so a
+        // restarted capture of a static desktop would never get its first image (and deliver no frame at all). A
+        // fresh duplication starts with the current desktop image. A failure takes the access-lost retry path.
+        platform::D3DDevice::Lock lock(*m_dev);
+        if (FAILED(m_dup.Reinit())) lost = true;
+    }
+    m_ran_before = true;
+    uint32_t cur = 0;               // copy path: BGRA pool slot holding the newest desktop image
+    bool bgra_pending = false;      // copy path: bgra[cur] is newer than the last NV12 frame (not converted yet)
+    int64_t bgra_present_qpc = 0;   // copy path: desktop present time of bgra[cur]
+    bool has_last = false;          // an NV12 pool texture (last_idx) holds the newest delivered frame
     uint32_t last_idx = 0;
+    // An image presented after this tick's window, converted already: the next tick's content (this thread owns the
+    // pool reference until it hands it to the sink).
+    bool has_held = false;
+    uint32_t held_idx = 0;
+    int64_t held_present_qpc = 0;
+    // Tick n stands for the desktop images displayed (present + L, L = display_latency_us) in
+    // [T(n) - frame/2, T(n) + frame/2): a frame shows the image seen nearest to its timestamp, so the stamp is within
+    // +-frame/2 of the display time instead of 0..1 frame (plus duplication and display latency) late as with "the
+    // tick at which it was acquired". The pacer therefore acquires around the window's end in present time,
+    // W(n) = T(n) + frame/2 - L, and decides by the image's present time.
+    const int64_t latency_qpc = static_cast<int64_t>(m_cfg.display_latency_us) * freq / 1'000'000;
+    const int64_t window_end_offset_qpc = static_cast<int64_t>(frame_qpc / 2) - latency_qpc;
     HANDLE handles[2] = {m_stop_event.Handle(), m_wake_event.Handle()};
+
+    auto deliver = [&](uint32_t idx, TimeUs t_us, int64_t tick_qpc, int64_t present_qpc) {
+        has_last = true;
+        last_idx = idx;
+        int64_t expected = -1;
+        m_stats.first_frame_us.compare_exchange_strong(expected, t_us, std::memory_order_relaxed);
+        // (A fresh duplication's first image can be seconds old: that is not a latency.)
+        if (tick_qpc - present_qpc < freq) {
+            m_stats.present_lag.AddUs(Clock::QpcToUs(tick_qpc, present_qpc));
+            if (present_qpc < tick_qpc + window_end_offset_qpc - static_cast<int64_t>(frame_qpc))
+                m_stats.late_images.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!m_sink->OnFrame(m_nv12_pool.At(idx), idx, t_us)) {
+            m_nv12_pool.Release(idx);
+            m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    auto repeat = [&](TimeUs t_us, bool referenced) {
+        // Re-send the previous NV12 texture (no GPU work, no extra pool texture). Only this thread writes pool
+        // textures, so last_idx still holds that frame even if the sink released it.
+        m_stats.repeats.fetch_add(1, std::memory_order_relaxed);
+        if (!referenced) m_nv12_pool.AddRef(last_idx);
+        if (!m_sink->OnFrame(m_nv12_pool.At(last_idx), last_idx, t_us)) {
+            m_nv12_pool.Release(last_idx);
+            m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
 
     while (!m_stop.load(std::memory_order_acquire)) {
         if (m_paused.load(std::memory_order_acquire)) {
@@ -144,7 +195,8 @@ void ScreenCapturer::Run() {
         const int64_t base_qpc = m_epoch_qpc + m_pause_accum_qpc.load(std::memory_order_acquire);
         const TimeUs t_us = FrameTimeUs(n, fps_num, fps_den);
         const int64_t tick_qpc = Clock::UsToQpc(t_us, base_qpc);
-        if (!timer.WaitUntilQpc(tick_qpc - ms_qpc, m_stop_event.Handle())) break;
+        const int64_t window_end_qpc = tick_qpc + window_end_offset_qpc;
+        if (!timer.WaitUntilQpc(window_end_qpc - ms_qpc, m_stop_event.Handle())) break;
         if (m_paused.load(std::memory_order_acquire)) continue;   // paused while waiting: this tick never happened
 
         HRESULT fatal = S_OK;
@@ -163,14 +215,16 @@ void ScreenCapturer::Run() {
                 }
             }
             bool got = false;                       // a new desktop image this tick
+            int64_t present_qpc = 0;                // its desktop present time
             ID3D11Texture2D* direct_src = nullptr;  // zero-copy: the acquired desktop image (held until the end of the tick)
             D3D11_BOX direct_box{};
-            if (!lost && SUCCEEDED(fatal)) {
+            // With an image held from the last tick this tick's content is known: no acquire, so there is still at
+            // most one conversion per tick. Newer images stay queued in the duplication for the next tick.
+            if (!has_held && !lost && SUCCEEDED(fatal)) {
                 now = Clock::QpcNow();
-                const int64_t timeout_qpc = tick_qpc + 2 * ms_qpc - now;
+                const int64_t timeout_qpc = window_end_qpc + 2 * ms_qpc - now;
                 const uint32_t timeout_ms =
                     static_cast<uint32_t>(std::clamp<int64_t>((timeout_qpc + ms_qpc - 1) / ms_qpc, 0, 4));
-                int64_t present_qpc = 0;
                 const int64_t t0 = Clock::QpcNow();
                 HRESULT hr;
                 if (m_cfg.zero_copy && !m_conv.UsingVideoProcessorFallback() && m_dup.CanAcquireDirect()) {
@@ -182,6 +236,7 @@ void ScreenCapturer::Run() {
                     if (hr == S_OK) {
                         cur = next;
                         bgra_pending = true;
+                        bgra_present_qpc = present_qpc;
                     }
                 }
                 if (hr == S_OK) {
@@ -203,8 +258,18 @@ void ScreenCapturer::Run() {
                 }
             }
 
-            if (SUCCEEDED(fatal) && (got || bgra_pending)) {
-                // A new image (or one the copy path could not convert last tick): convert it into a fresh pool texture.
+            if (SUCCEEDED(fatal) && has_held) {
+                has_held = false;
+                deliver(held_idx, t_us, tick_qpc, held_present_qpc);
+            } else if (SUCCEEDED(fatal) && (got || bgra_pending)) {
+                // A new image (or one the copy path could not convert last tick): convert it into a fresh pool
+                // texture. Presented after this tick's window (the acquire waits up to 2 ms past it), it is the next
+                // tick's content and this tick repeats the previous frame.
+                const int64_t image_present_qpc = direct_src ? present_qpc : bgra_present_qpc;
+                const bool for_next = image_present_qpc >= window_end_qpc;
+                // The repeat's reference is taken first so that the pool cannot hand last_idx out for the new image.
+                const bool repeat_ref = for_next && has_last;
+                if (repeat_ref) m_nv12_pool.AddRef(last_idx);
                 uint32_t idx = 0;
                 ID3D11Texture2D* nv12 = m_nv12_pool.Acquire(idx);
                 if (!nv12) [[unlikely]] {
@@ -221,25 +286,21 @@ void ScreenCapturer::Run() {
                         fatal = hr;
                     } else {
                         bgra_pending = false;
-                        has_last = true;
-                        last_idx = idx;
-                        int64_t expected = -1;
-                        m_stats.first_frame_us.compare_exchange_strong(expected, t_us, std::memory_order_relaxed);
-                        if (!m_sink->OnFrame(nv12, idx, t_us)) {
-                            m_nv12_pool.Release(idx);
-                            m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);
+                        if (for_next) {
+                            has_held = true;
+                            held_idx = idx;
+                            held_present_qpc = image_present_qpc;
+                        } else {
+                            deliver(idx, t_us, tick_qpc, image_present_qpc);
                         }
                     }
                 }
-            } else if (SUCCEEDED(fatal) && has_last) {
-                // No new image: re-send the previous NV12 texture (no GPU work, no extra pool texture). Only this
-                // thread writes pool textures, so last_idx still holds that frame even if the sink released it.
-                m_stats.repeats.fetch_add(1, std::memory_order_relaxed);
-                m_nv12_pool.AddRef(last_idx);
-                if (!m_sink->OnFrame(m_nv12_pool.At(last_idx), last_idx, t_us)) {
-                    m_nv12_pool.Release(last_idx);
-                    m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);
+                if (repeat_ref) {
+                    if (SUCCEEDED(fatal)) repeat(t_us, true);
+                    else m_nv12_pool.Release(last_idx);
                 }
+            } else if (SUCCEEDED(fatal) && has_last) {
+                repeat(t_us, false);   // no new image
             }
             if (direct_src) m_dup.ReleaseDirect();
             double gpu_ms = 0;
@@ -254,15 +315,17 @@ void ScreenCapturer::Run() {
         ++n;
         m_stats.ticks.fetch_add(1, std::memory_order_relaxed);
         // Catch up by skipping ticks when more than 1.5 frames late: the file keeps CFR, the skipped ticks are drops.
+        // (A held image is delivered at the next tick that runs.)
         const int64_t now = Clock::QpcNow();
-        if (static_cast<double>(now - tick_qpc) > 1.5 * frame_qpc) [[unlikely]] {
-            const int64_t current = FrameIndexAt(Clock::QpcToUs(now, base_qpc), fps_num, fps_den);
+        if (static_cast<double>(now - window_end_qpc) > 1.5 * frame_qpc) [[unlikely]] {
+            const int64_t current = FrameIndexAt(Clock::QpcToUs(now - window_end_offset_qpc, base_qpc), fps_num, fps_den);
             if (current > n) {
                 m_stats.late_ticks.fetch_add(static_cast<uint64_t>(current - n), std::memory_order_relaxed);
                 n = current;
             }
         }
     }
+    if (has_held) m_nv12_pool.Release(held_idx);   // converted for a tick that never came
 }
 
 } // namespace ct::capture

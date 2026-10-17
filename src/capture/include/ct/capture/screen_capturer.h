@@ -29,10 +29,13 @@ namespace ct::capture {
 struct CaptureStats {
     std::atomic<uint64_t> ticks{0}, new_frames{0}, repeats{0}, dropped_pool_empty{0}, dropped_sink{0}, late_ticks{0},
         access_lost{0}, reinits{0};
+    // New images delivered at a later tick than their present time asks for (acquired after their tick's window).
+    std::atomic<uint64_t> late_images{0};
     Stats::Timing acquire;   // S_OK acquires: from max(call, desktop present time) to return, i.e. without the
                              // wait for the desktop to change (AcquireNextFrame + crop copy submission + ReleaseFrame)
     Stats::Timing convert;   // CPU time of the NV12 conversion of new images (command submission)
     Stats::Timing gpu;       // GPU time of the NV12 conversion of new images (GpuTimer; resolved a few frames late)
+    Stats::Timing present_lag;   // new images: tick time - the image's desktop present time (negative = tick before it)
     std::atomic<int64_t> first_frame_us{-1};   // t_us of the first frame delivered (tick-aligned), -1 before
     std::atomic<int64_t> last_new_frame_qpc{0};   // QPC when the last new desktop image arrived
 };
@@ -50,6 +53,11 @@ public:
         // copy path (bench comparisons; letterboxing and cross-adapter capture always copy).
         bool zero_copy = true;
         bool allow_compute = true;   // ColorConverter::Config::allow_compute (NV12 pool gets UAV binding when used)
+        // Desktop present time (DXGI LastPresentTime) -> the time the image is on the display. Each new image is
+        // stamped with the tick nearest to present + display_latency_us, so a frame's timestamp is when its content
+        // was seen. The clap test (avsync_source, vsync of the source's own swapchain) puts the desktop present
+        // 1-6 ms after that vsync, hence the negative default (DECISIONS, av-sync).
+        int display_latency_us = -4000;
     };
 
     ScreenCapturer() = default;
@@ -93,6 +101,7 @@ private:
     std::atomic<int64_t> m_pause_qpc{0};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_stop{false};
+    bool m_ran_before = false;   // capture thread (owner thread in Init): a previous Start..Stop used m_dup
 };
 
 } // namespace ct::capture

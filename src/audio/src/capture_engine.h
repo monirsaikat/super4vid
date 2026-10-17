@@ -134,6 +134,11 @@ private:
     int64_t m_epoch_us = 0;
     PauseTimeline m_pauses;
     int64_t m_last_packet_qpc = 0;   // capture thread only
+    // Capture thread only: the previous device packet (device position after it and its QPC time) for the
+    // discontinuity log line.
+    uint64_t m_prev_pos_end = 0;
+    int64_t m_prev_end_us = 0;
+    bool m_have_prev = false;
     bool m_force_resync = false;     // capture thread only: next device packet resyncs exactly
     bool m_device_lost = false;      // capture thread only
     int64_t m_next_retry_qpc = 0;    // capture thread only
