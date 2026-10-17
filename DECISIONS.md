@@ -285,3 +285,16 @@ the loopback, which is tested) and its Realtek endpoint accepts float 48 kHz, so
 unit tests of its parts. The unplug and default-change checks are listed for a human under 3.5 in PROGRESS.md.
 Why: hardware availability.
 Impact: run `ct_audio_tests --verbose` and `audio_bench --seconds 60 --tone --mic` on a machine with a USB mic before P05 sign-off.
+## 2026-10-17 · P03 review fix · Pause decided by capture time (PauseTimeline)
+Spec said: `SetPaused(bool)`: packets are consumed but not delivered while paused; media time = qpc - epoch - pause offset.
+Done instead: `SetPaused(paused, at_qpc)` records pause intervals in `ct::audio::PauseTimeline` (new public header,
+`pause_timeline.h`). The capture thread maps every device frame by its *own capture time*: frames inside [begin, end) are
+dropped, the others get media = capture - (pauses that ended before them). The old code read a pause flag and an offset as
+two separate atomics when the packet was read, so a packet captured before Pause() but read after it was lost (10-20 ms per
+pause), and a resume racing a packet could see the old offset with paused == false (late by the whole pause, then ~P of audio
+dropped as overlap). The resampler fallback now loops until a run's input is fully consumed.
+Remaining effect: a frame whose capture time lies after the recorded resume time but which is read before the Resume() call
+reaches the engine is dropped (the pause still looks open) and becomes silence; nothing shifts. With at_qpc = now this only
+affects loopback, whose timestamps are presentation times ~10-20 ms ahead of "now".
+Why: review finding (high): pause/resume must not lose or shift audio.
+Impact: P05 should call `SetPaused` on every stream promptly with the same QPC; nothing else changes for callers.
