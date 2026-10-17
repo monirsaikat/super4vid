@@ -4,6 +4,7 @@
 #include <ct/capture/webcam_source.h>
 #include <ct/core/strings.h>
 #include <ct/core/time.h>
+#include <ct/platform/mf_runtime.h>
 #include <ct/test/ct_test.h>
 
 #include <mfapi.h>
@@ -51,7 +52,7 @@ struct FakeClock : MediaTimeSource {
 void ComInit() {
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     (void)hr;   // S_FALSE / RPC_E_CHANGED_MODE are fine: COM is usable either way
-    MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    (void)platform::MfRuntime::EnsureForProcess();
 }
 
 // --- Scripted reader ----------------------------------------------------------------------------------------------

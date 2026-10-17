@@ -8,6 +8,7 @@
 #include <ct/core/log.h>
 #include <ct/core/strings.h>
 #include <ct/core/time.h>
+#include <ct/platform/mf_runtime.h>
 
 #include <mfapi.h>
 #include <mferror.h>
@@ -22,21 +23,7 @@ using Microsoft::WRL::ComPtr;
 
 namespace ct::capture {
 
-// --- MF startup -------------------------------------------------------------------------------------------------
-
 namespace internal {
-
-HRESULT EnsureMfStarted() {
-    // Process lifetime, never MFShutdown (MFStartup is reference counted, so P04's media::MfRuntime can coexist).
-    // Replaced by media::MfRuntime::Ensure() once P04 is merged (DECISIONS.md, P05 task 5.7).
-    static std::once_flag once;
-    static HRESULT hr = E_FAIL;
-    std::call_once(once, [] {
-        hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-        if (FAILED(hr)) LogHr(hr, "MFStartup", __FILE__, __LINE__);
-    });
-    return hr;
-}
 
 void FillNv12(uint8_t* y, size_t y_pitch, uint8_t* uv, size_t uv_pitch, SizeI size, uint8_t y_val, uint8_t u_val,
               uint8_t v_val) {
@@ -235,7 +222,7 @@ TimeUs WebcamFrameTimeUs(const MediaTimeSource& clock, bool has_device_ts, uint6
 
 HRESULT WebcamSource::Enumerate(std::vector<WebcamInfo>& out, bool with_modes) {
     out.clear();
-    CT_RETURN_IF_FAILED(internal::EnsureMfStarted());
+    CT_RETURN_IF_FAILED(platform::MfRuntime::EnsureForProcess());
     ComPtr<IMFAttributes> attr;
     CT_RETURN_IF_FAILED(MFCreateAttributes(attr.GetAddressOf(), 1));
     CT_RETURN_IF_FAILED(attr->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
@@ -281,7 +268,7 @@ WebcamSource::~WebcamSource() { Shutdown(); }
 HRESULT WebcamSource::Init(platform::D3DDevice& dev, const Config& cfg) {
     if (m_thread.IsRunning()) return E_UNEXPECTED;
     Shutdown();
-    CT_RETURN_IF_FAILED(internal::EnsureMfStarted());
+    CT_RETURN_IF_FAILED(platform::MfRuntime::EnsureForProcess());
     CT_RETURN_IF_FAILED(dev.InitMfManager());
 
     std::vector<WebcamInfo> devices;

@@ -24,6 +24,18 @@ CT_TEST_DEVICE(mf_runtime_refcount) {
     CT_CHECK_EQ(MfRuntime::RefCount(), base);
 }
 
+CT_TEST_DEVICE(mf_runtime_process_reference_taken_once) {
+    // The decoders and the webcam take one never-released reference (EnsureForProcess), however often they call it.
+    const int base = MfRuntime::RefCount();
+    CT_CHECK_HR(MfRuntime::EnsureForProcess());
+    const int after_first = MfRuntime::RefCount();
+    CT_CHECK(after_first == base || after_first == base + 1);   // + 1 unless an earlier test already took it
+    CT_CHECK_HR(MfRuntime::EnsureForProcess());
+    CT_CHECK_HR(platform::MfRuntime::EnsureForProcess());
+    CT_CHECK_EQ(MfRuntime::RefCount(), after_first);
+    CT_CHECK(after_first >= 1);
+}
+
 CT_TEST_DEVICE(encoder_caps_enumerate_h264) {
     const std::vector<EncoderInfo> list = EncoderCaps::Enumerate(VideoCodec::H264);
     bool software = false, hw_first = true, seen_sw = false;
