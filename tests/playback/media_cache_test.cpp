@@ -35,6 +35,31 @@ int64_t IndexOf(platform::D3DDevice& dev, const FrameRef& f) {
 
 } // namespace
 
+// Review fix: re-returning a pinned slot refreshes it (true LRU of the last 4 returned). With A,B,A,C,A,D,A,E the
+// frame returned last but one (A) must stay pinned; the old round-robin pinned A once and unpinned it at E.
+CT_TEST(media_cache_pins_are_lru) {
+    uint32_t pins[MediaCache::kPinned] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    const uint32_t A = 10, B = 11, C = 12, D = 13, E = 14;
+    for (uint32_t s : {A, B, A, C, A, D, A, E}) MediaCache::PinRecent(pins, s);
+    auto pinned = [&](uint32_t s) {
+        for (uint32_t p : pins)
+            if (p == s) return true;
+        return false;
+    };
+    CT_CHECK(pinned(A));
+    CT_CHECK(pinned(C));
+    CT_CHECK(pinned(D));
+    CT_CHECK(pinned(E));
+    CT_CHECK(!pinned(B));
+    CT_CHECK_EQ(pins[0], C);   // least recent first
+    CT_CHECK_EQ(pins[1], D);
+    CT_CHECK_EQ(pins[2], A);
+    CT_CHECK_EQ(pins[3], E);
+    MediaCache::PinRecent(pins, E);   // repeat of the newest: no change
+    CT_CHECK_EQ(pins[0], C);
+    CT_CHECK_EQ(pins[3], E);
+}
+
 CT_TEST_DEVICE(media_cache_exact_frame_after_hint) {
     CT_REQUIRE_DEVICE(dev);
     CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");

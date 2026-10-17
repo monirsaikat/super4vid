@@ -226,7 +226,7 @@ bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
                 slot = AcquireSlot(f.size);
                 if (slot >= 0) break;
             }
-            const int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, 4);
+            const int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned);
             if (v < 0) return false;
             const FrameCache::Entry e = m_cache.Erase(v);
             m_free.push_back(e.slot);
@@ -312,7 +312,7 @@ void MediaCache::PrefetchMain() {
                 SharedGuard g(m_lock);
                 const size_t bytes = static_cast<size_t>(m_dec.Size().w) * m_dec.Size().h * 3 / 2;
                 const bool room = (CacheBudget::Fits(bytes) && (m_slots_used < m_slots.size() || !m_free.empty())) ||
-                                  m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, 4) >= 0;
+                                  m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned) >= 0;
                 if (!room) {
                     stalled_gen = h.gen;
                     break;
@@ -404,12 +404,7 @@ bool MediaCache::GetVideoFrame(TimeUs t_us, FrameRef& out, bool& exact) {
             out.pts_us = e.pts_us;
             out.duration_us = e.duration_us;
             out.size = s.size;
-            bool pinned = false;
-            for (uint32_t p : m_pinned) pinned |= p == e.slot;
-            if (!pinned) {
-                m_pinned[m_pin_next] = e.slot;
-                m_pin_next = (m_pin_next + 1) % 4;
-            }
+            PinRecent(m_pinned, e.slot);
             found = true;
         }
         if (exact) ++m_stats.hits;
@@ -421,6 +416,14 @@ bool MediaCache::GetVideoFrame(TimeUs t_us, FrameRef& out, bool& exact) {
         if (t_us < w.start || t_us >= w.end) Hint(t_us, h.rate, h.playing);
     }
     return found;
+}
+
+void MediaCache::PinRecent(uint32_t (&pins)[kPinned], uint32_t slot) {
+    int at = 0;   // not pinned: the least recent entry drops out
+    for (int i = 0; i < kPinned; ++i)
+        if (pins[i] == slot) at = i;
+    for (int i = at; i + 1 < kPinned; ++i) pins[i] = pins[i + 1];
+    pins[kPinned - 1] = slot;
 }
 
 bool MediaCache::WaitForFrame(TimeUs t_us, uint32_t timeout_ms) {
