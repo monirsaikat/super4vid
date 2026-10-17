@@ -61,6 +61,7 @@ struct Autosave::Shared {
     uint64_t queued = 0;    // generation of the newest text handed to a writer
     uint64_t written = 0;   // generation on disk
     uint64_t saves = 0;
+    bool failed = false;    // the newest write failed: the next Tick saves again
     std::string path;
 };
 
@@ -110,7 +111,15 @@ void Autosave::NotifyChanged() { ++m_edits; }
 void Autosave::Tick(const Project& p) { Tick(p, Clock::NowUs()); }
 
 void Autosave::Tick(const Project& p, int64_t now_us) {
-    if (m_id.empty() || m_edits == 0) return;
+    if (m_id.empty()) return;
+    {
+        ExclusiveGuard g(m_shared->lock);
+        if (m_shared->failed) {
+            m_shared->failed = false;
+            if (m_edits == 0) m_edits = 1;   // still dirty: retry on this tick if due
+        }
+    }
+    if (m_edits == 0) return;
     const bool time_due = m_interval_s > 0 && now_us - m_last_save_us >= int64_t(m_interval_s) * kUsPerSecond;
     if (!time_due && m_edits < kEditsPerSave) return;
     if (!TakeLock(p)) return;
@@ -144,10 +153,18 @@ void Autosave::StartWrite(std::string text) {
     auto job = [shared, gen, text = std::move(text)]() {
         ExclusiveGuard g(shared->lock);
         if (gen <= shared->written || gen != shared->queued) return;   // a newer snapshot is coming
-        if (fs::WriteAtomic(shared->path, text)) {
-            shared->written = gen;
-            ++shared->saves;
+        // The replace can fail transiently while another process (indexer, antivirus, a reader) has the file open.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (fs::WriteAtomic(shared->path, text)) {
+                shared->written = gen;
+                ++shared->saves;
+                shared->failed = false;
+                return;
+            }
+            Event pause;
+            pause.Wait(50);
         }
+        shared->failed = true;
     };
     if (m_sync) job();
     else Async::Run(std::move(job));

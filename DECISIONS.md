@@ -367,3 +367,11 @@ Done instead:
   were written by this implementation with `--update-golden` and reviewed against the descriptions in each file.
 Why: the spec text is internally inconsistent; these choices keep the camera continuous.
 Impact: P08 plays the keys with Camera::At; P09's "Regenerate" = `Camera::ReplaceGenerated(AutoZoom::ForClip(...))`.
+
+## 2026-10-17 · P07 task 7.7 · Autosave retries failed writes
+Spec said: autosave writes when dirty and the interval elapsed.
+Done instead: a failed write (the atomic replace failed, e.g. while another process had the autosave open) is retried
+3 times 50 ms apart on the IO thread; if it still fails the document stays dirty and the next Tick writes again.
+Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
+stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
+Impact: none for callers.

@@ -11,6 +11,7 @@
 #include <ct/project/undo.h>
 #include <ct/test/ct_test.h>
 
+#include <cstdio>
 #include <memory>
 #include <string>
 
@@ -246,8 +247,12 @@ CT_TEST(autosave_async_writes_land) {
         if (fs::ReadAll(a.AutosavePath(), text) && text == want) break;
         Event e;
         e.Wait(10);
+        a.Tick(p, Clock::NowUs() + (spin + 20) * 2 * kUsPerSecond);   // the UI timer keeps ticking (retries failed writes)
     }
-    CT_CHECK_EQ(text, want);
+    if (text != want)
+        std::printf("  saves=%llu exists=%d size=%zu want=%zu path=%s\n", (unsigned long long)a.Saves(),
+                    (int)fs::Exists(a.AutosavePath()), text.size(), want.size(), a.AutosavePath().c_str());
+    CT_CHECK(text == want);
     a.Clear();
     fs::DeleteTree(dir);
 }
