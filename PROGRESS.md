@@ -89,7 +89,7 @@ Legend: `[ ]` not started Â· `[~]` in progress (one per agent at a time) Â· `[x]
 ## P06 Decode & playback
 - [x] 6.1 `MediaInfo` (streams, durations, codec, size, fps, rotation) — pattern 1080p60: H264 1920x1080 60 fps + AAC 48 kHz, duration 5.0133 s (AAC padding, see DECISIONS); PNG via WIC; Windows WAV probe
 - [x] 6.2 `VideoDecoder` (source reader, HW NV12 textures, seek, EOS, type change) — pattern 1080p: 300 frames, indices 0..299 strictly increasing (DXVA, aperture 1920x1088 -> 1920x1080); seek to 2.5 s -> frame 150 in 52-70 ms; 20 random exact seeks p50 75-82 ms, p95 205-220 ms (over the 150 ms budget: ~1.75 ms per frame in the platform decoder, see DECISIONS); software path and 4K EOS/rewind pass
-- [ ] 6.3 `AudioDecoder` (float 48 kHz stereo, seek, EOS)
+- [x] 6.3 `AudioDecoder` (float 48 kHz stereo, seek, EOS) — pattern: 240640 frames (240000 + AAC packet padding), tone 1000.000 Hz; seek 1.9 s -> first pts 1899999 us, beep onset at frame 4792 (expected 4800); 44.1 kHz mono WAV -> 48 kHz stereo through the reader (95999 frames) and through our Resampler (96000 frames), 1000.000 Hz both; MP3/M4A test skips (no files in tests/data yet)
 - [ ] 6.4 `FrameCache` + prefetch thread per media; NV12->RGB shader
 - [ ] 6.5 `AudioEngine` (WASAPI render, master clock from `IAudioClock`, mixing callback)
 - [ ] 6.6 `PlaybackClock` (audio-driven, falls back to QPC), rate 0.25-4x, frame step

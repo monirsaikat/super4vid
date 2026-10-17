@@ -484,3 +484,15 @@ Done instead:
 Why: measured behaviour of the platform decoder; the budget is unreachable by sequential decode from the keyframe here.
 Impact: P05/P04 could shorten the recording GOP (1 s halves the worst case) if scrub latency matters more than size;
 P09 should keep scrubbing on cached frames (`exact = false`) while the exact frame decodes.
+
+## 2026-10-17 · P06 task 6.3 · AudioDecoder details
+Spec said: `AudioDecoder` as declared; total frames of the 1080p pattern 240000 +- 48.
+Done instead (additions only): `Shutdown()`, `UsingResampler()`, `Config::force_resampler` (tests run our conversion path on
+files the reader converts itself), constants `kRate`/`kChannels`. The reader's 48 kHz stereo float type is verified with
+`GetCurrentMediaType` after it is accepted. `Read` returns frames contiguous from the first packet after Init/Seek
+(pts = base + n * 1e6 / 48000), not each packet's own timestamp. A seek at or past the duration makes the next `Read`
+return `S_FALSE` (MF's `SetCurrentPosition` fails there). The pattern decodes to 240640 frames (MF's AAC encoder pads the
+track to whole packets, see 6.1); the test accepts 240000 - 48 .. 240640 + 48. Sample accuracy was checked on the beep:
+after `Seek(1.9 s)` the 2 kHz onset lands at frame 4792 (expected 4800, the detector's step is 4 frames).
+Why: testability; MF behaviour.
+Impact: none for callers.
