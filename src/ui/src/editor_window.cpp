@@ -27,6 +27,8 @@
 #include <ct/render/render_context.h>
 #include <ct/ui/dialogs.h>
 #include <ct/ui/editor_commands.h>
+#include <ct/ui/first_run.h>
+#include <ct/ui/settings_window.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
@@ -149,6 +151,14 @@ struct EditorWindow::Impl {
     bool regen_after_load = false;
     int busy = 0;   // IO jobs whose result the UI waits for (spinner in the status bar)
     std::shared_ptr<int> alive = std::make_shared<int>(1);
+    Settings settings;
+    std::unique_ptr<SettingsWindow> settings_window;
+
+    void ApplySettings(const Settings& s) {
+        autosave_interval = s.editor.autosave_s;
+        playback::CacheBudget::SetBytes(static_cast<size_t>(s.editor.frame_cache_mb) << 20);
+        if (w.m_shell && !st().project.id.empty()) st().autosave.Init(st().project.id, autosave_interval);
+    }
 
     EditorShell& shell() { return *w.m_shell; }
     EditorState& st() { return w.m_shell->State(); }
@@ -764,15 +774,22 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     m_shell->persist_layout = true;
     EditorState& s = m_shell->State();
 
-    // Settings that matter here (editor.autosave_s, frame cache budget); IO is small but stays off the UI thread rule
-    // only after startup, so read it once synchronously before the first frame.
-    Settings settings = Settings::Defaults();
-    settings.Load(platform::Paths::SettingsDir() + "\\settings.json", nullptr);
-    I.autosave_interval = settings.editor.autosave_s;
-    playback::CacheBudget::SetBytes(static_cast<size_t>(settings.editor.frame_cache_mb) << 20);
-    s.snap = settings.editor.snap;
-    s.ripple = settings.editor.ripple;
+    // Settings that matter here (editor.autosave_s, frame cache budget, snap/ripple): one small read at startup, before
+    // the first frame (like --settings-demo); Edit > Preferences opens P11a's SettingsWindow on the same file.
+    I.settings = Settings::Defaults();
+    I.settings.Load(SettingsFilePath(), nullptr);
+    I.ApplySettings(I.settings);
+    s.snap = I.settings.editor.snap;
+    s.ripple = I.settings.editor.ripple;
     Autosave::SetDirectory(platform::Paths::AutosaveDir());
+    I.settings_window = std::make_unique<SettingsWindow>(SettingsFilePath());
+    I.settings_window->SetGpuName(dev.AdapterName());
+    I.settings_window->request_redraw = [h = I.hwnd] { PostMessageW(h, WM_NULL, 0, 0); };
+    I.settings_window->on_changed = [this](const Settings& st) {
+        m_impl->settings = st;
+        m_impl->ApplySettings(st);
+    };
+    m_shell->on_preferences = [this] { m_impl->settings_window->Open(m_impl->settings, SettingsSection::Editor); };
 
     HRESULT hr = I.rc.Init(dev);
     if (SUCCEEDED(hr)) hr = I.comp.Init(I.rc);
@@ -928,12 +945,13 @@ void EditorWindow::Frame() {
     m_shell->Frame();
     I.DrawUnsavedPrompt();
     I.DrawRecoverPrompt();
+    if (I.settings_window) I.settings_window->Draw();
 }
 
 bool EditorWindow::WantsContinuousRedraw() const {
     const Impl& I = *m_impl;
     return m_shell->WantsContinuousRedraw() || I.busy > 0 || I.saving || I.player.MediaPending() || I.unsaved_prompt ||
-           !I.deferred.empty();
+           !I.deferred.empty() || (I.settings_window && I.settings_window->WantsRedraw());
 }
 
 void EditorWindow::OnTimer() {
