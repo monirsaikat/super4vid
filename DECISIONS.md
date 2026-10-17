@@ -602,3 +602,21 @@ lists. `--tray` starts the main window with `SW_HIDE`; a second launch (forwarde
 Why: the literal manifest version was the only place that would not follow a version bump. The tray icon belongs to P05
 (`TrayIcon`), which does not exist yet.
 Impact: P05 adds the tray icon for `--tray` (left click shows the bar). Edit `app.manifest.in`, not `app.manifest`.
+
+## 2026-10-17 · P12 task 12.2 · Installer/package deviations from the P12 listings
+Spec said: the `.iss` and `tools/package.ps1` listings in docs/phases/P12 sections 12.2/12.3; ISCC at
+`%ProgramFiles(x86)%\Inno Setup 6`.
+Done instead:
+- `.ctproj` key: `Flags: uninsdeletevalue uninsdeletekeyifempty`. With `uninsdeletevalue` alone the silent uninstall test
+  left an empty `HKCU\Software\Classes\.ctproj` key behind.
+- `PrivilegesRequiredOverridesAllowed=dialog commandline` so `/CURRENTUSER` / `/ALLUSERS` work for scripted installs.
+- `#define BinDir` (default `..\out\build\ninja-release\bin`), passed by `package.ps1 -Config`; setup VersionInfo
+  product name/description added.
+- `package.ps1` finds ISCC in Program Files (x86) (choco/CI), Program Files, or `%LOCALAPPDATA%\Programs\Inno Setup 6`
+  (where `winget install JRSoftware.InnoSetup` put it on the reference machine, per-user). The portable zip also holds
+  `licenses\imgui-LICENSE.txt`; the symbols zip holds the PDB plus the matching exe (dump debugging needs both).
+  `SHA256SUMS.txt` lists only this version's three artifacts, lower-case hex, LF endings (`sha256sum -c` compatible,
+  used by the CI release job). The budget check (exe < 20 MB, installer < 15 MB) fails the script when exceeded.
+Why: found while running `build.cmd package` and the silent install/uninstall test on this machine.
+Impact: `build.cmd doctor` still only checks `%ProgramFiles(x86)%` and prints Inno "MISSING" for a per-user install
+(doctor is outside this task's file ownership; fix when convenient).
