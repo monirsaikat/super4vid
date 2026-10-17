@@ -8,6 +8,7 @@
 #include <ct/core/strings.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 using Microsoft::WRL::ComPtr;
@@ -86,6 +87,7 @@ HRESULT CaptureEngine::Init(const CaptureConfig& config, AudioDevices& devices) 
     m_packet_frames = std::clamp<uint32_t>(config.packet_frames, 48, kPoolFrames);
     m_devices = &devices;
     if (!m_stereo) m_stereo = std::make_unique<float[]>(static_cast<size_t>(kScratchFrames) * 2);
+    if (!m_resampled) m_resampled = std::make_unique<float[]>(static_cast<size_t>(kResampledFrames) * 2);
     if (m_pool.Count() == 0) {
         m_pool.Init(kPoolPackets, [](size_t) {
             PacketBuffer b;
@@ -142,7 +144,9 @@ HRESULT CaptureEngine::InitializeClient(IMMDevice* device) {
     }
     const SampleType type = SampleTypeOf(format);
     if (type == SampleType::Unsupported) return AUDCLNT_E_UNSUPPORTED_FORMAT;
-    if (format->nSamplesPerSec != static_cast<DWORD>(kSampleRate)) return AUDCLNT_E_UNSUPPORTED_FORMAT;
+    const bool resample = format->nSamplesPerSec != static_cast<DWORD>(kSampleRate);
+    if (resample && !m_resampler.Init(static_cast<int>(format->nSamplesPerSec), kSampleRate, kChannels))
+        return AUDCLNT_E_UNSUPPORTED_FORMAT;
     if (IsMic()) CT_RETURN_IF_FAILED(client->SetEventHandle(m_data.Handle()));
     ComPtr<IAudioCaptureClient> capture;
     CT_RETURN_IF_FAILED(client->GetService(IID_PPV_ARGS(&capture)));
@@ -151,6 +155,13 @@ HRESULT CaptureEngine::InitializeClient(IMMDevice* device) {
     m_dev_channels = format->nChannels;
     m_dev_block_align = format->nBlockAlign;
     m_dev_type = type;
+    m_resampling = resample;
+    if (resample) {
+        const uint64_t fit = (kResampledFrames - 64ull) * m_dev_rate / kSampleRate;
+        m_resample_chunk = static_cast<uint32_t>(std::min<uint64_t>(fit, kScratchFrames));
+        m_rs_in = 0;
+        m_rs_out = 0;
+    }
     m_client = client;
     m_capture = capture;
     return S_OK;
@@ -385,18 +396,42 @@ void CaptureEngine::ProcessDeviceFrames(const BYTE* data, uint32_t frames, bool 
     const bool paused = m_paused.load(std::memory_order_acquire);
     if (m_was_paused && !paused) m_force_resync = true;   // resume: land exactly on the shifted timeline
     m_was_paused = paused;
+    const uint32_t chunk = m_resampling ? m_resample_chunk : kScratchFrames;
     uint32_t done = 0;
     while (done < frames) {
-        const uint32_t n = std::min(frames - done, kScratchFrames);
+        const uint32_t n = std::min(frames - done, chunk);
         float* stereo = m_stereo.get();
         if (silent || !data) std::memset(stereo, 0, sizeof(float) * 2 * n);
         else ConvertToStereo(data + static_cast<size_t>(done) * m_dev_block_align, n, stereo);
         m_meter.Push(stereo, n, 2);
         const TimeUs t = t_us + static_cast<int64_t>(done) * kUsPerSecond / m_dev_rate;
         if (!paused) {
-            const bool resync = discontinuity || m_force_resync;
+            bool resync = discontinuity || m_force_resync;
             m_force_resync = false;
-            PushAligned(timestamp_valid ? t : m_aligner.NextExpectedUs(), stereo, n, resync);
+            if (!m_resampling) {
+                PushAligned(timestamp_valid ? t : m_aligner.NextExpectedUs(), stereo, n, resync);
+            } else {
+                if (resync) {
+                    m_resampler.Reset();
+                    m_rs_in = 0;
+                    m_rs_out = 0;
+                    m_rs_resync = true;
+                }
+                size_t consumed = 0;
+                const size_t out_n = m_resampler.Process(stereo, n, m_resampled.get(), kResampledFrames, &consumed);
+                // Output frame J sits at input position J * in / out, so the first output of this call is offset
+                // from this chunk's first input frame (index m_rs_in) by (J / out - I / in) seconds.
+                const double offset_us = (static_cast<double>(m_rs_out) / kSampleRate -
+                                          static_cast<double>(m_rs_in) / m_dev_rate) * 1e6;
+                m_rs_in += static_cast<int64_t>(consumed);
+                m_rs_out += static_cast<int64_t>(out_n);
+                if (out_n > 0) {
+                    const TimeUs t_out = timestamp_valid ? t + static_cast<int64_t>(std::llround(offset_us))
+                                                         : m_aligner.NextExpectedUs();
+                    PushAligned(t_out, m_resampled.get(), static_cast<uint32_t>(out_n), m_rs_resync);
+                    m_rs_resync = false;   // a resync waits for the first chunk that produces output
+                }
+            }
         }
         done += n;
         discontinuity = false;

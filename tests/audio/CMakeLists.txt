@@ -3,4 +3,7 @@ ct_add_test(ct_audio_tests DEPS ct_audio SOURCES
   stream_aligner_test.cpp
   meter_test.cpp
   wasapi_capture_test.cpp
-  wasapi_loopback_test.cpp)
+  wasapi_loopback_test.cpp
+  resampler_test.cpp
+  dsp_test.cpp
+  wav_test.cpp)

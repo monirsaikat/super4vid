@@ -9,6 +9,7 @@
 #include <ct/audio/audio_sink.h>
 #include <ct/audio/devices.h>
 #include <ct/audio/meter.h>
+#include <ct/audio/resampler.h>
 #include <ct/audio/stream_aligner.h>
 #include <ct/audio/wasapi_render.h>
 #include <ct/core/object_pool.h>
@@ -98,6 +99,16 @@ private:
     // Scratch (allocated in Init, sized for the largest packet we convert at once).
     static constexpr uint32_t kScratchFrames = 19200;   // 100 ms at 192 kHz; longer packets are split
     std::unique_ptr<float[]> m_stereo;
+
+    // Fallback when the engine rejects our 48 kHz request: device-rate stereo -> 48 kHz.
+    static constexpr uint32_t kResampledFrames = 38400;
+    std::unique_ptr<float[]> m_resampled;
+    Resampler m_resampler;
+    bool m_resampling = false;
+    uint32_t m_resample_chunk = 0;   // device frames per Process call so the output always fits
+    int64_t m_rs_in = 0;             // device frames fed since the last resampler reset
+    int64_t m_rs_out = 0;            // 48 kHz frames produced since the last resampler reset
+    bool m_rs_resync = false;        // capture thread only
 
     StreamAligner m_aligner;
     Meter m_meter;

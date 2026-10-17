@@ -218,3 +218,21 @@ Done instead:
 Why: keep the caller's cost to a memcpy and make every line accounted for.
 Impact: the app should call `Trace::Register()` at startup, `Stats::SetScopeTimings(true)` with --stats, and keep calling
 `Log::Shutdown()` last. `Log::Tick()` may be removed from the UI loop later; it is a no-op.
+
+## 2026-10-17 · P03 task 3.4 · Resampler/dsp/wav details; "Mixer" is the dsp kernels
+Spec said: `Resampler` with `Process/Flush/Ratio/Latency`; `dsp` functions with scalar + AVX2 paths; PROGRESS 3.4 names a `Mixer`.
+Done instead:
+- `Resampler` places output frame j exactly at input position j * in / out (centred filter, 15 frames of silent history),
+  so it has zero group delay; `Latency()` is the 16-frame look-ahead in *input* frames, not a timestamp offset. `Ratio()`
+  is out/in. Added `Reset()`, `InRate()`, `OutRate()`. `Flush` must be called until it returns less than the capacity.
+  Each phase row is normalized to unity DC gain. Init accepts ratios within [1/8, 8].
+- `dsp` adds `UsingAvx2()`, `Kernels`, `ScalarKernels()`, `Avx2Kernels()` (tests compare both sets directly) and
+  `struct GateState { envelope, gain }`. `FloatToPcm16` scales by 32768 and saturates (so `Pcm16ToFloat` = x/32768 is its
+  exact inverse) instead of 32767. AVX2 paths use mul + add (never FMA) so MixAdd/FloatToPcm16 are bit-exact with
+  scalar. `NoiseGate` is a per-frame recursion; its "AVX2" entry is the scalar kernel. `DownmixToStereo` for > 2 channels
+  is a strided copy in both sets.
+- There is no separate `Mixer` class in P03: mixing is `dsp::MixAdd` + `ApplyGainRamp`. The timeline mixer (clips, gain
+  keyframes, fades) is P06's `AudioEngine` / P10's export mix, which build on these kernels.
+- `WavReader` adds `Seek()`; `WavWriter` adds `FramesWritten()` and closes in its destructor.
+Why: testability and exact int16 round trips; a mixer object has nothing to own until there is a timeline.
+Impact: P04 converts with `dsp::FloatToPcm16`; P06/P10 implement mixing on top of `dsp`.
