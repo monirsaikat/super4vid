@@ -127,7 +127,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [~] 10.1 Export dialog + presets (`assets/presets/*.json`) — presets done (`exportng::Preset`: 10 built-ins = `assets/presets/*.json`, JSON, user presets, EstimateBytes); dialog pending (needs P09)
 - [ ] 10.2 Offline render loop (frame-accurate, audio mix, progress, cancel, background thread)
 - [ ] 10.3 MP4 (H.264/HEVC) via `Mp4Writer`, fast-start moov
-- [ ] 10.4 GIF encoder (quantization, dithering, LZW, frame diff)
+- [x] 10.4 GIF encoder (quantization, dithering, LZW, frame diff) — `gif_demo` 720p20 5 s worst case (full-frame moving gradient + text, dither, 256 colors, frame diff): 2.65-2.9x real time end to end incl. frame generation (Release, Ryzen 7 5700G under load), 18.4 MB; static background + typing/scrolling text: 6.8x, 869 KB; decoded frame matches PIL's decode exactly
 - [ ] 10.5 PNG still, M4A audio-only
 - [ ] 10.6 Acceptance: export speed budget met; PNG export identical to the preview; MP4 export PSNR >= 42 dB vs preview at quality 90; GIF 720p20 >= 2x real time
 
