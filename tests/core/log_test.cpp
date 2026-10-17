@@ -143,6 +143,18 @@ CT_TEST(log_rotation_keeps_five) {
     CT_CHECK(sizes_ok);
 }
 
+// Review fix: another instance's pruning (DeleteFileW) must not be able to remove the live log.
+CT_TEST(log_live_file_cannot_be_deleted) {
+    LogSession session(ct::LogLevel::Info);
+    const std::wstring path = ct::Utf8ToWide(ct::Log::FilePathUtf8());
+    CT_REQUIRE(!path.empty());
+    CT_CHECK(!DeleteFileW(path.c_str()));
+    CT_CHECK_EQ(GetLastError(), DWORD(ERROR_SHARING_VIOLATION));
+    CT_LOG_WARN("still here");
+    ct::Log::Flush();
+    CT_CHECK_EQ(CountLines(session.dir, "still here"), size_t(1));
+}
+
 CT_TEST(stats_counters_gauges_timings) {
     ct::Stats::Counter& c = ct::Stats::C("test.frames");
     CT_CHECK_EQ(&c, &ct::Stats::C("test.frames"));   // interned

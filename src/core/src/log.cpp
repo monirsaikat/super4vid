@@ -180,6 +180,7 @@ std::wstring Stamp() {
 }
 
 // Keeps the newest (kKeepFiles - 1) logs, by creation time, so the file about to be created makes kKeepFiles.
+// A log still open by a running instance (opened without FILE_SHARE_DELETE) fails DeleteFileW and is skipped.
 void PruneLogs(const std::wstring& dir) {
     struct Item {
         std::wstring name;
@@ -217,8 +218,9 @@ bool OpenNewFileLocked() {
     // Same second (rotation, or a second instance about to exit): add -2, -3, ...
     for (int n = 1; n <= 20 && file == INVALID_HANDLE_VALUE; ++n) {
         if (n > 1) path = base + L"-" + std::to_wstring(n) + L".log";
-        file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        // No FILE_SHARE_DELETE: another instance's PruneLogs must not be able to delete the live log.
+        file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
     }
     if (file == INVALID_HANDLE_VALUE) return false;
     g_log.file = file;
