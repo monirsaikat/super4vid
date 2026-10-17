@@ -9,6 +9,7 @@
 #include <ct/audio/audio_sink.h>
 #include <ct/audio/devices.h>
 #include <ct/audio/meter.h>
+#include <ct/audio/pause_timeline.h>
 #include <ct/audio/resampler.h>
 #include <ct/audio/stream_aligner.h>
 #include <ct/audio/wasapi_render.h>
@@ -61,16 +62,15 @@ private:
     void Close();
     void ThreadMain();
     void ReadPackets();
-    void ProcessDeviceFrames(const BYTE* data, uint32_t frames, bool silent, bool timestamp_valid, TimeUs t_us,
+    void ProcessDeviceFrames(const BYTE* data, uint32_t frames, bool silent, bool timestamp_valid, int64_t abs_us,
                              bool discontinuity);
+    void FeedRun(const float* stereo, uint32_t frames, TimeUs t_us, bool resync);
     void ConvertToStereo(const BYTE* data, uint32_t frames, float* out) const;
     void PushAligned(TimeUs t_us, const float* stereo, uint32_t frames, bool discontinuity);
     void OnAligned(const float* p, uint32_t frames, bool fill);
     void FlushPending();
     void Reopen();
     void CheckStarvation();
-    TimeUs MediaUsFromAbsUs(int64_t abs_us) const;
-    TimeUs MediaNowUs() const;
     void SetError(HRESULT hr);
     void StartKeepAlive();
     void StopKeepAlive();
@@ -130,12 +130,9 @@ private:
     HighResTimer m_timer;         // 5 ms poll (loopback)
     std::atomic<bool> m_running{false};
 
-    // Clock: media_us = abs_us - m_epoch_us - m_pause_offset_us.
+    // Clock: media_us = capture_abs_us - m_epoch_us - (pauses that ended before the frame was captured).
     int64_t m_epoch_us = 0;
-    std::atomic<bool> m_paused{false};
-    bool m_was_paused = false;   // capture thread only
-    int64_t m_pause_begin_qpc = 0;   // owner thread only
-    std::atomic<int64_t> m_pause_offset_us{0};
+    PauseTimeline m_pauses;
     int64_t m_last_packet_qpc = 0;   // capture thread only
     bool m_force_resync = false;     // capture thread only: next device packet resyncs exactly
     bool m_device_lost = false;      // capture thread only

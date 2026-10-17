@@ -208,9 +208,7 @@ bool CaptureEngine::Start(int64_t epoch_qpc, AudioSink& sink) {
     if (m_running.load() || !m_devices) return false;
     m_sink = &sink;
     m_epoch_us = QpcToAbsUs(epoch_qpc);
-    m_pause_offset_us.store(0, std::memory_order_relaxed);
-    m_paused.store(false, std::memory_order_relaxed);
-    m_was_paused = false;
+    m_pauses.Reset();
     m_aligner.Reset(kSampleRate, kChannels, 0);
     m_out_frames = 0;
     m_pending = nullptr;
@@ -244,23 +242,9 @@ void CaptureEngine::Stop() {
 
 void CaptureEngine::SetPaused(bool paused, int64_t at_qpc) {
     if (at_qpc == 0) at_qpc = Clock::QpcNow();
-    const bool was = m_paused.load(std::memory_order_relaxed);
-    if (paused && !was) {
-        m_pause_begin_qpc = at_qpc;
-        m_paused.store(true, std::memory_order_release);
-    } else if (!paused && was) {
-        const int64_t d_us = QpcToAbsUs(at_qpc) - QpcToAbsUs(m_pause_begin_qpc);
-        m_pause_offset_us.fetch_add(d_us > 0 ? d_us : 0, std::memory_order_relaxed);
-        m_paused.store(false, std::memory_order_release);
-    }
+    if (paused) m_pauses.Pause(QpcToAbsUs(at_qpc));
+    else m_pauses.Resume(QpcToAbsUs(at_qpc));
 }
-
-TimeUs CaptureEngine::MediaUsFromAbsUs(int64_t abs_us) const {
-    return abs_us - m_epoch_us - m_pause_offset_us.load(std::memory_order_relaxed);
-}
-
-TimeUs CaptureEngine::MediaNowUs() const { return MediaUsFromAbsUs(QpcToAbsUs(Clock::QpcNow())); }
-
 void CaptureEngine::OnDefaultDeviceChanged(bool capture, const std::wstring& new_id) {
     if (capture != IsMic() || !m_config.follow_default_device) return;
     {
@@ -345,8 +329,8 @@ void CaptureEngine::ReadPackets() {
         const bool disc = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
         if (ts_error || disc) m_st_disc.fetch_add(1, std::memory_order_relaxed);
         // QPCPosition is in 100 ns units, not QPC ticks.
-        const TimeUs t = MediaUsFromAbsUs(static_cast<int64_t>(qpc_hns / 10));
-        ProcessDeviceFrames(data, frames, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0, !ts_error, t, disc);
+        ProcessDeviceFrames(data, frames, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0, !ts_error,
+                            static_cast<int64_t>(qpc_hns / 10), disc);
         m_capture->ReleaseBuffer(frames);   // always, even for silent packets; data is invalid afterwards
     }
     if (FAILED(hr)) [[unlikely]] {
@@ -409,10 +393,8 @@ void CaptureEngine::ConvertToStereo(const BYTE* data, uint32_t frames, float* ou
 }
 
 void CaptureEngine::ProcessDeviceFrames(const BYTE* data, uint32_t frames, bool silent, bool timestamp_valid,
-                                        TimeUs t_us, bool discontinuity) {
-    const bool paused = m_paused.load(std::memory_order_acquire);
-    if (m_was_paused && !paused) m_force_resync = true;   // resume: land exactly on the shifted timeline
-    m_was_paused = paused;
+                                        int64_t abs_us, bool discontinuity) {
+    bool resync = discontinuity;
     const uint32_t chunk = m_resampling ? m_resample_chunk : kScratchFrames;
     uint32_t done = 0;
     while (done < frames) {
@@ -420,42 +402,70 @@ void CaptureEngine::ProcessDeviceFrames(const BYTE* data, uint32_t frames, bool 
         float* stereo = m_stereo.get();
         if (silent || !data) std::memset(stereo, 0, sizeof(float) * 2 * n);
         else ConvertToStereo(data + static_cast<size_t>(done) * m_dev_block_align, n, stereo);
-        m_meter.Push(stereo, n, 2);
-        const TimeUs t = t_us + static_cast<int64_t>(done) * kUsPerSecond / m_dev_rate;
-        if (!paused) {
-            bool resync = discontinuity || m_force_resync;
-            m_force_resync = false;
-            if (!m_resampling) {
-                PushAligned(timestamp_valid ? t : m_aligner.NextExpectedUs(), stereo, n, resync);
+        m_meter.Push(stereo, n, 2);   // meters keep moving while paused
+        if (!timestamp_valid) {
+            // No capture time: decide by "now" and append at the expected position.
+            int64_t media_abs = 0;
+            if (m_pauses.PeekMedia(QpcToAbsUs(Clock::QpcNow()), &media_abs)) {
+                FeedRun(stereo, n, m_aligner.NextExpectedUs(), resync || m_force_resync);
+                m_force_resync = false;
+                resync = false;
             } else {
-                if (resync) {
-                    m_resampler.Reset();
-                    m_rs_in = 0;
-                    m_rs_out = 0;
-                    m_rs_resync = true;
-                }
-                size_t consumed = 0;
-                const size_t out_n = m_resampler.Process(stereo, n, m_resampled.get(), kResampledFrames, &consumed);
-                // Output frame J sits at input position J * in / out, so the first output of this call is offset
-                // from this chunk's first input frame (index m_rs_in) by (J / out - I / in) seconds.
-                const double offset_us = (static_cast<double>(m_rs_out) / kSampleRate -
-                                          static_cast<double>(m_rs_in) / m_dev_rate) * 1e6;
-                m_rs_in += static_cast<int64_t>(consumed);
-                m_rs_out += static_cast<int64_t>(out_n);
-                if (out_n > 0) {
-                    const TimeUs t_out = timestamp_valid ? t + static_cast<int64_t>(std::llround(offset_us))
-                                                         : m_aligner.NextExpectedUs();
-                    PushAligned(t_out, m_resampled.get(), static_cast<uint32_t>(out_n), m_rs_resync);
-                    m_rs_resync = false;   // a resync waits for the first chunk that produces output
-                }
+                m_force_resync = true;
             }
+        } else {
+            // Pause is decided per frame by its own capture time, so frames captured just before Pause() and read
+            // after it are kept, and a resume that races this packet cannot shift it.
+            const int64_t r0 = abs_us + static_cast<int64_t>(done) * kUsPerSecond / m_dev_rate;
+            uint32_t next_expected = 0;
+            m_pauses.Map(r0, n, static_cast<int>(m_dev_rate), [&](uint32_t first, uint32_t count, int64_t media_abs) {
+                const bool after_skip = first != next_expected;   // frames before this run were inside a pause
+                FeedRun(stereo + static_cast<size_t>(first) * 2, count, media_abs - m_epoch_us,
+                        resync || m_force_resync || after_skip);
+                m_force_resync = false;
+                resync = false;
+                next_expected = first + count;
+                m_st_last_end_us.store(media_abs - m_epoch_us + static_cast<int64_t>(count) * kUsPerSecond / m_dev_rate,
+                                       std::memory_order_relaxed);
+            });
+            if (next_expected < n) m_force_resync = true;   // ended inside a pause: resync on the next kept frame
         }
         done += n;
-        discontinuity = false;
     }
-    m_st_last_end_us.store(t_us + static_cast<int64_t>(frames) * kUsPerSecond / m_dev_rate, std::memory_order_relaxed);
 }
 
+void CaptureEngine::FeedRun(const float* stereo, uint32_t n, TimeUs t, bool resync) {
+    if (!m_resampling) {
+        PushAligned(t, stereo, n, resync);
+        return;
+    }
+    if (resync) {
+        m_resampler.Reset();
+        m_rs_in = 0;
+        m_rs_out = 0;
+        m_rs_resync = true;
+    }
+    size_t fed = 0;
+    while (fed < n) {   // the output buffer may fill before all input is consumed
+        size_t consumed = 0;
+        const size_t out_n =
+            m_resampler.Process(stereo + fed * 2, n - fed, m_resampled.get(), kResampledFrames, &consumed);
+        // Output frame J sits at input position J * in / out, so the first output of this call is offset from input
+        // frame I (= m_rs_in, the first frame of this call) by (J / out - I / in) seconds.
+        const double offset_us =
+            (static_cast<double>(m_rs_out) / kSampleRate - static_cast<double>(m_rs_in) / m_dev_rate) * 1e6;
+        const TimeUs t_in = t + static_cast<int64_t>(fed) * kUsPerSecond / m_dev_rate;
+        m_rs_in += static_cast<int64_t>(consumed);
+        m_rs_out += static_cast<int64_t>(out_n);
+        if (out_n > 0) {
+            PushAligned(t_in + static_cast<int64_t>(std::llround(offset_us)), m_resampled.get(),
+                        static_cast<uint32_t>(out_n), m_rs_resync);
+            m_rs_resync = false;   // a resync waits for the first call that produces output
+        }
+        if (consumed == 0 && out_n == 0) break;   // cannot happen with a valid resampler; never spin
+        fed += consumed;
+    }
+}
 void CaptureEngine::PushAligned(TimeUs t_us, const float* stereo, uint32_t frames, bool discontinuity) {
     m_aligner.Push(t_us, stereo, frames, discontinuity,
                    [this](TimeUs, const float* p, uint32_t n, bool fill) { OnAligned(p, n, fill); });
@@ -554,10 +564,11 @@ void CaptureEngine::Reopen() {
 }
 
 void CaptureEngine::CheckStarvation() {
-    if (m_paused.load(std::memory_order_acquire)) return;
     const int64_t now = Clock::QpcNow();
     if (now - m_last_packet_qpc < UsToQpcTicks(kStarveUs)) return;
-    m_aligner.FillSilenceUntil(MediaNowUs() - kStarveLagUs,
+    int64_t media_abs = 0;
+    if (!m_pauses.PeekMedia(QpcToAbsUs(now) - kStarveLagUs, &media_abs)) return;   // paused: media time stands still
+    m_aligner.FillSilenceUntil(media_abs - m_epoch_us,
                                [this](TimeUs, const float* p, uint32_t n, bool fill) { OnAligned(p, n, fill); });
     m_st_pad.store(static_cast<uint64_t>(m_aligner.LeadingPadFrames()), std::memory_order_relaxed);
     m_st_inserted.store(static_cast<uint64_t>(m_aligner.TotalInserted()), std::memory_order_relaxed);

@@ -7,4 +7,5 @@ ct_add_test(ct_audio_tests DEPS ct_audio SOURCES
   resampler_test.cpp
   dsp_test.cpp
   wav_test.cpp
-  hotswap_test.cpp)
+  hotswap_test.cpp
+  pause_timeline_test.cpp)
