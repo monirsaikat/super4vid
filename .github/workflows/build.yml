@@ -1,0 +1,43 @@
+# Build, test and package on every push and pull request (docs/01 section 11, docs/phases/P12 12.4).
+# Tag pushes (v*) also publish a GitHub release with out/dist/* (installer, portable zip, symbols zip, SHA256SUMS.txt).
+name: build
+on: [push, pull_request]
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - run: cmake --preset ninja-release
+      - run: cmake --build --preset ninja-release
+      - run: ctest --preset ninja-release --output-on-failure
+        env: { CT_CI: "1" }           # device tests (GPU/audio/webcam) print SKIPPED and pass
+      - run: choco install innosetup --no-progress -y
+      - run: .\build.cmd package
+      - uses: actions/upload-artifact@v4
+        with: { name: camtesia-dist, path: out/dist/*, if-no-files-found: error }
+
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: camtesia-dist, path: dist }
+      - run: cd dist && sha256sum -c SHA256SUMS.txt
+      # Closed-source product: drop Camtesia-*-symbols.zip from `files` and archive it privately instead.
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Camtesia ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/CamtesiaSetup-*.exe
+            dist/Camtesia-*-portable.zip
+            dist/Camtesia-*-symbols.zip
+            dist/SHA256SUMS.txt
