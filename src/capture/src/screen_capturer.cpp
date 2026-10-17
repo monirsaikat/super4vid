@@ -161,6 +161,9 @@ void ScreenCapturer::Run() {
     HANDLE handles[2] = {m_stop_event.Handle(), m_wake_event.Handle()};
 
     auto deliver = [&](uint32_t idx, TimeUs t_us, int64_t tick_qpc, int64_t present_qpc) {
+        // Counted here, not at acquire: an image held for the next tick is never delivered if capture stops first, and
+        // new_frames + repeats must equal the frames handed to the sink.
+        m_stats.new_frames.fetch_add(1, std::memory_order_relaxed);
         has_last = true;
         last_idx = idx;
         int64_t expected = -1;
@@ -245,7 +248,6 @@ void ScreenCapturer::Run() {
                     const int64_t t1 = Clock::QpcNow();
                     m_stats.acquire.AddUs(Clock::QpcToUs(t1, std::max(t0, std::min(present_qpc, t1))));
                     got = true;
-                    m_stats.new_frames.fetch_add(1, std::memory_order_relaxed);
                     m_stats.last_new_frame_qpc.store(t1, std::memory_order_relaxed);
                 } else if (hr == E_NOTIMPL) {
                     // The direct path stopped being possible (mode change, no SRV binding); AcquireInto from now on.

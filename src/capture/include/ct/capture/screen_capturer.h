@@ -27,6 +27,8 @@
 namespace ct::capture {
 
 struct CaptureStats {
+    // new_frames: new desktop images handed to the sink (an image held for the next tick counts when delivered);
+    // new_frames + repeats = frames handed to the sink.
     std::atomic<uint64_t> ticks{0}, new_frames{0}, repeats{0}, dropped_pool_empty{0}, dropped_sink{0}, late_ticks{0},
         access_lost{0}, reinits{0};
     // New images delivered at a later tick than their present time asks for (acquired after their tick's window).
