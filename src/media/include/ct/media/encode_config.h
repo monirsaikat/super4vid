@@ -23,7 +23,9 @@ struct VideoEncodeConfig {
     uint32_t max_bitrate_bps = 0;     // 0 = 1.5 x bitrate
     int gop_seconds = 2;
     bool bframes = false;
-    bool low_latency = true;
+    // CODECAPI_AVEncCommonLowLatency + MF_LOW_LATENCY. Off by default: in low-latency mode the AMD H.264 MFT writes
+    // pic_order_cnt_type 2 streams that the Microsoft H.264 decoder (software and DXVA) does not decode (DECISIONS P04).
+    bool low_latency = false;
     bool prefer_hardware = true;
 };
 

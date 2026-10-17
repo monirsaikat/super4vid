@@ -4,6 +4,8 @@ ct_add_module(media
     src/mf_runtime.cpp
     src/encode_config.cpp
     src/encoder_caps.cpp
+    src/mp4_writer.cpp
+    src/probe.cpp
   DEPS
     ct_capture
     ct_audio)

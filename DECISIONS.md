@@ -435,3 +435,28 @@ Seen once during development (older build, user working on the machine): 3 late 
 Impact: P04 — the NV12 pool textures carry `D3D11_BIND_UNORDERED_ACCESS` when the compute path is active (check the MF
 encoder accepts them; if not, set `ScreenCapturer::Config::allow_compute = false`), and the same `pool_index` can arrive in
 consecutive `OnFrame` calls (one Release per call). The reuse predicate is consulted only by `Acquire`, never by `AddRef`.
+
+## 2026-10-17 · P04 task 4.2 · Low latency off by default (AMD POC type 2); MF source reader lists tracks in reverse
+Spec said: `VideoEncodeConfig::low_latency = true` (sets `MF_LOW_LATENCY` and `CODECAPI_AVEncCommonLowLatency`); stream order
+video = 0, then audio in config order, "matches meta.json stream_index"; `Probe` via the source reader.
+Done instead:
+- `low_latency` defaults to **false**. With it on, `AMDh264Encoder` (Radeon 5700G iGPU, Windows 10.0.26100) writes SPS with
+  `pic_order_cnt_type = 2`, and the Microsoft H.264 decoder MFT returns end-of-stream on the first `ReadSample` of such a file,
+  with the software path and with DXVA (`MF_SOURCE_READER_D3D_MANAGER`) alike: 0 frames decoded. The same stream with low
+  latency off (POC type 0, no B-frames since `bframes = false`) decodes in both paths, and the Microsoft software encoder's
+  output decodes either way. Recording does not need encoder low latency (nothing is streamed); the cost is a few frames of
+  encoder delay, measured as the OnFrame -> WriteSample latency and pool use in the tests/bench.
+- The MP4 file has the specified order (moov: track 1 video, 2 mic, 3 system; checked with a box dump), but the MF MPEG-4
+  source presents the tracks in **reverse** order (reader stream 0 = last track) and numbers its stream identifiers 1..n in
+  that order (not the track_IDs). `Probe`/`ScanStream` reverse the reader order so their stream numbers are the file's track
+  order (video 0, mic 1, system 2); the tests tell the two AAC tracks apart by bitrate (128 vs 192 kbps). `ProbeResult` gained
+  `stream_codecs`, `audio_sample_rate`, `audio_channels`; added `ScanStream` (compressed sample count/times/bytes, no decode).
+- The sink writer's video MFT carries no `MFT_FRIENDLY_NAME_Attribute`: the hardware encoder is named from
+  `MFT_ENUM_HARDWARE_URL_Attribute` ("AMDh264Encoder"), the Microsoft software encoder (no name, no CLSID on its attributes)
+  from the first software entry of `EncoderCaps`. Hardware = `MFT_ENUM_HARDWARE_URL_Attribute` or `MF_TRANSFORM_ASYNC`.
+- When the encoder rejects the parameter attributes in `SetInputMediaType`, the writer retries without them and then applies
+  each `ICodecAPI` value on its own (`IsSupported` + `SetValue`), logging the unsupported ones.
+Why: files that the Windows decoder cannot play are not acceptable; meta.json's stream_index means the file's track order.
+Impact: P05 writes `stream_index` 0/1/2 as specified. **P06**: do not use source-reader stream indices as track numbers; map
+them (reverse order for MP4, or by major type: the video is `MF_SOURCE_READER_FIRST_VIDEO_STREAM`, mic = the last audio
+reader stream, system = the one before). P10 export may enable low latency only after verifying the decode on the target GPU.
