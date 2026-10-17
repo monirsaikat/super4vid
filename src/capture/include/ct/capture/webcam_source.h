@@ -12,6 +12,7 @@
 // Lifetime: Init -> [Nv12Pool() setup] -> Start -> (SetPaused)* -> Stop -> [Start again] -> Shutdown/destructor.
 
 #include <ct/capture/frame_sink.h>
+#include <ct/capture/media_time_source.h>
 #include <ct/core/thread.h>
 #include <ct/core/types.h>
 #include <ct/platform/d3d_device.h>
@@ -27,25 +28,7 @@ struct IMFSample;
 
 namespace ct::capture {
 
-// The pause-adjusted session time base. recorder::SessionClock implements it (see DECISIONS.md P05 task 5.7);
-// QpcMediaTimeSource below is the plain epoch-based version for tools and tests.
-struct MediaTimeSource {
-    virtual TimeUs QpcHnsToMediaUs(uint64_t qpc_hns) const = 0;   // QPC in 100 ns units (device timestamps)
-    virtual TimeUs NowMediaUs() const = 0;
-    virtual ~MediaTimeSource() = default;
-};
-
-// Media time = QPC time since epoch_qpc, no pauses.
-class QpcMediaTimeSource final : public MediaTimeSource {
-public:
-    explicit QpcMediaTimeSource(int64_t epoch_qpc) : m_epoch_qpc(epoch_qpc) {}
-    TimeUs QpcHnsToMediaUs(uint64_t qpc_hns) const override;
-    TimeUs NowMediaUs() const override;
-    int64_t EpochQpc() const { return m_epoch_qpc; }
-
-private:
-    int64_t m_epoch_qpc;
-};
+// MediaTimeSource / QpcMediaTimeSource: ct/capture/media_time_source.h (recorder::SessionClock implements it).
 
 // One native media type of a camera (GetNativeMediaType). fourcc = the subtype GUID's Data1 ('NV12', 'YUY2', 'MJPG'...).
 struct WebcamMode {
