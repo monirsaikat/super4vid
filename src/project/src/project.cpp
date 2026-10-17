@@ -206,8 +206,17 @@ bool Project::Validate(std::string* why) const {
         if (!ids.insert(id).second) return Fail(why, "duplicate id '" + id + "'");
         return true;
     };
-    for (const Media& m : media)
+    for (const Media& m : media) {
         if (!unique(m.id, "media")) return false;
+        // Frame and size math (FrameTimeUs, scaling) divides by these.
+        if (m.fps_den <= 0 || m.fps_num < 0 || m.width < 0 || m.height < 0 || m.duration_us < 0)
+            return Fail(why, "media " + m.id + " has an invalid frame rate, size or duration");
+        if ((m.kind == Media::Kind::Video || m.kind == Media::Kind::Recording) &&
+            (m.fps_num <= 0 || m.width <= 0 || m.height <= 0))
+            return Fail(why, "video media " + m.id + " needs a positive frame rate and size");
+        if (m.kind == Media::Kind::Image && (m.width <= 0 || m.height <= 0))
+            return Fail(why, "image media " + m.id + " needs a positive size");
+    }
     for (const Track& t : tracks)
         if (!unique(t.id, "track")) return false;
     for (const Clip& c : clips)

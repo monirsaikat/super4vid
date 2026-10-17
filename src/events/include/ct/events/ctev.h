@@ -19,6 +19,8 @@ namespace ct::events {
 
 constexpr uint16_t kVersion = 1;
 constexpr uint32_t kRecordHeaderSize = 16;   // size u32, type u8, pad u8[3], t_us i64
+// Largest cursor shape edge (the capture side caps shapes at 1024 px); larger records are rejected as damaged.
+constexpr uint16_t kMaxShapeSize = 1024;
 
 enum class RecordType : uint8_t {
     CursorMove = 1, MouseButton = 2, MouseWheel = 3, Key = 4, CursorShape = 5,
@@ -90,7 +92,8 @@ static_assert(sizeof(MarkerPayload) == 68 && sizeof(PausePayload) == 4 && sizeof
 uint32_t ShapeId(const uint8_t* bgra, size_t bytes, int16_t hot_x, int16_t hot_y);
 // RLE as docs/04: runs of identical 32-bit pixels as (u8 run_length 1..255, u32 pixel). `bytes` must be a multiple of 4.
 std::vector<uint8_t> RleEncode(const uint8_t* bgra, size_t bytes);
-// Decodes exactly `pixel_count` pixels; false when the data is malformed or yields a different count.
+// Decodes exactly `pixel_count` pixels; false when the data is malformed or yields a different count. The count is
+// checked against what `size` bytes can encode (255 pixels per 5-byte run) before anything is allocated.
 bool RleDecode(const uint8_t* data, size_t size, size_t pixel_count, std::vector<uint8_t>& out_bgra);
 // Copies UTF-8 into a fixed zero-terminated field, truncating on a code point boundary.
 void CopyLabel(char* dst, size_t dst_size, std::string_view src);
@@ -116,7 +119,8 @@ public:
     void MouseWheel(TimeUs t_us, int16_t delta_v, int16_t delta_h, int32_t x, int32_t y);
     void Key(TimeUs t_us, const KeyPayload& key);
     // Writes a shape once per file (a known shape_id is ignored) and picks RLE when it is smaller than raw.
-    // shape_id 0 means "compute it with ShapeId". Returns the shape id.
+    // shape_id 0 means "compute it with ShapeId". Returns the shape id, or 0 (nothing written) when w or h is 0 or
+    // larger than kMaxShapeSize.
     uint32_t CursorShape(TimeUs t_us, uint32_t shape_id, uint16_t w, uint16_t h, int16_t hot_x, int16_t hot_y,
                          const uint8_t* bgra_premultiplied);
     bool HasShape(uint32_t shape_id) const;

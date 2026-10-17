@@ -29,8 +29,32 @@ std::string FixedString(const char* s, size_t max) {
 
 template <class P>
 bool ReadPayload(const RecordView& r, P& out) {
-    if (r.payload_size < sizeof(P)) return false;   // short (damaged) record: skip it
+    if (r.payload_size < sizeof(P)) return false;   // short (damaged) record
     std::memcpy(&out, r.payload, sizeof(P));
+    return true;
+}
+
+// Validates a CURSOR_SHAPE record and decodes it. Every size is checked before anything is allocated.
+bool DecodeShape(const RecordView& r, CursorShapeData& s) {
+    CursorShapePayload p;
+    if (!ReadPayload(r, p) || p.format != 0) return false;
+    if (p.w == 0 || p.h == 0 || p.w > kMaxShapeSize || p.h > kMaxShapeSize) return false;
+    if (p.data_size > r.payload_size - sizeof(p)) return false;
+    const uint8_t* data = r.payload + sizeof(p);
+    const size_t pixels = size_t(p.w) * size_t(p.h);
+    if (p.compression == 0) {
+        if (p.data_size != pixels * 4) return false;
+        s.bgra.assign(data, data + p.data_size);
+    } else if (p.compression == 1) {
+        if (!RleDecode(data, p.data_size, pixels, s.bgra)) return false;
+    } else {
+        return false;
+    }
+    s.id = p.shape_id;
+    s.w = p.w;
+    s.h = p.h;
+    s.hot_x = p.hot_x;
+    s.hot_y = p.hot_y;
     return true;
 }
 
@@ -110,29 +134,36 @@ bool EventLog::LoadFromMemory(std::string bytes, Err* err) {
     m_header = reader.Header();
     RecordView r;
     bool any = false;
+    // A record of a known type whose payload is too short or inconsistent means the file is damaged (not just torn
+    // at the end): the whole load fails instead of guessing.
+    bool damaged = false;
+    auto need = [&](bool ok) {
+        if (!ok) damaged = true;
+        return ok;
+    };
     while (reader.Next(r)) {
         if (!any || r.t_us > m_last_t) m_last_t = r.t_us;
         any = true;
         switch (static_cast<RecordType>(r.type)) {
         case RecordType::CursorMove: {
             CursorMovePayload p;
-            if (ReadPayload(r, p)) m_cursor.push_back({r.t_us, p.x, p.y, p.shape_id, p.visible != 0});
+            if (need(ReadPayload(r, p))) m_cursor.push_back({r.t_us, p.x, p.y, p.shape_id, p.visible != 0});
             break;
         }
         case RecordType::MouseButton: {
             MouseButtonPayload p;
-            if (ReadPayload(r, p) && p.button <= static_cast<uint8_t>(Button::X2))
+            if (need(ReadPayload(r, p)) && p.button <= static_cast<uint8_t>(Button::X2))
                 m_buttons.push_back({r.t_us, static_cast<Button>(p.button), p.down != 0, p.x, p.y});
             break;
         }
         case RecordType::MouseWheel: {
             MouseWheelPayload p;
-            if (ReadPayload(r, p)) m_wheels.push_back({r.t_us, p.delta_v, p.delta_h, p.x, p.y});
+            if (need(ReadPayload(r, p))) m_wheels.push_back({r.t_us, p.delta_v, p.delta_h, p.x, p.y});
             break;
         }
         case RecordType::Key: {
             KeyPayload p;
-            if (!ReadPayload(r, p)) break;
+            if (!need(ReadPayload(r, p))) break;
             KeyEvent k;
             k.t_us = r.t_us;
             k.vk = p.vk;
@@ -146,23 +177,9 @@ bool EventLog::LoadFromMemory(std::string bytes, Err* err) {
             break;
         }
         case RecordType::CursorShape: {
-            CursorShapePayload p;
-            if (!ReadPayload(r, p) || p.format != 0) break;
-            if (p.data_size > r.payload_size - sizeof(p)) break;
             CursorShapeData s;
-            s.id = p.shape_id;
-            s.w = p.w;
-            s.h = p.h;
-            s.hot_x = p.hot_x;
-            s.hot_y = p.hot_y;
-            const uint8_t* data = r.payload + sizeof(p);
-            const size_t pixels = size_t(p.w) * size_t(p.h);
-            if (p.compression == 0) {
-                if (p.data_size != pixels * 4) break;
-                s.bgra.assign(data, data + p.data_size);
-            } else if (p.compression == 1) {
-                if (!RleDecode(data, p.data_size, pixels, s.bgra)) break;
-            } else {
+            if (!DecodeShape(r, s)) {
+                damaged = true;
                 break;
             }
             if (!FindShape(s.id)) {
@@ -174,30 +191,35 @@ bool EventLog::LoadFromMemory(std::string bytes, Err* err) {
         }
         case RecordType::WindowFocus: {
             WindowFocusPayload p;
-            if (!ReadPayload(r, p)) break;
+            if (!need(ReadPayload(r, p))) break;
             m_focus.push_back({r.t_us, p.hwnd, RectI{p.x, p.y, p.w, p.h}, FixedString(p.title, sizeof(p.title)),
                                FixedString(p.exe, sizeof(p.exe))});
             break;
         }
         case RecordType::Marker: {
             MarkerPayload p;
-            if (ReadPayload(r, p)) m_markers.push_back({r.t_us, p.kind, FixedString(p.label, sizeof(p.label))});
+            if (need(ReadPayload(r, p))) m_markers.push_back({r.t_us, p.kind, FixedString(p.label, sizeof(p.label))});
             break;
         }
         case RecordType::Pause: {
             PausePayload p;
-            if (ReadPayload(r, p)) m_pauses.push_back({r.t_us, p.paused != 0});
+            if (need(ReadPayload(r, p))) m_pauses.push_back({r.t_us, p.paused != 0});
             break;
         }
         case RecordType::Typing: {
             TypingPayload p;
-            if (ReadPayload(r, p)) m_typing_records.push_back({r.t_us, p.started != 0});
+            if (need(ReadPayload(r, p))) m_typing_records.push_back({r.t_us, p.started != 0});
             break;
         }
         default:
             ++m_unknown;
             break;
         }
+    }
+    if (damaged) {
+        Clear();
+        if (err) err->Set("The events file is damaged (a record has invalid sizes)");
+        return false;
     }
     m_truncated = reader.Truncated();
     Finish();

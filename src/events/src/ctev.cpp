@@ -58,16 +58,25 @@ std::vector<uint8_t> RleEncode(const uint8_t* bgra, size_t bytes) {
 
 bool RleDecode(const uint8_t* data, size_t size, size_t pixel_count, std::vector<uint8_t>& out_bgra) {
     out_bgra.clear();
-    out_bgra.reserve(pixel_count * 4);
-    size_t pos = 0;
-    while (pos + 5 <= size && out_bgra.size() < pixel_count * 4) {
+    // Validate before allocating: a damaged header could otherwise ask for gigabytes (no exceptions: bad_alloc kills us).
+    if (pixel_count == 0 || pixel_count > (size / 5) * 255) return false;
+    out_bgra.resize(pixel_count * 4);
+    size_t done = 0;   // pixels decoded
+    for (size_t pos = 0; pos + 5 <= size && done < pixel_count; pos += 5) {
         const size_t run = data[pos];
-        if (run == 0) return false;
-        if (out_bgra.size() / 4 + run > pixel_count) return false;
-        for (size_t r = 0; r < run; ++r) out_bgra.insert(out_bgra.end(), data + pos + 1, data + pos + 5);
-        pos += 5;
+        if (run == 0 || done + run > pixel_count) {
+            out_bgra.clear();
+            return false;
+        }
+        uint8_t* dst = out_bgra.data() + done * 4;
+        for (size_t r = 0; r < run; ++r) std::memcpy(dst + r * 4, data + pos + 1, 4);
+        done += run;
     }
-    return out_bgra.size() == pixel_count * 4;
+    if (done != pixel_count) {
+        out_bgra.clear();
+        return false;
+    }
+    return true;
 }
 
 void CopyLabel(char* dst, size_t dst_size, std::string_view src) {
@@ -180,6 +189,7 @@ bool EventWriter::HasShape(uint32_t shape_id) const {
 
 uint32_t EventWriter::CursorShape(TimeUs t_us, uint32_t shape_id, uint16_t w, uint16_t h, int16_t hot_x, int16_t hot_y,
                                   const uint8_t* bgra_premultiplied) {
+    if (w == 0 || h == 0 || w > kMaxShapeSize || h > kMaxShapeSize || !bgra_premultiplied) return 0;
     const size_t bytes = size_t(w) * size_t(h) * 4;
     if (shape_id == 0) shape_id = ShapeId(bgra_premultiplied, bytes, hot_x, hot_y);
     if (HasShape(shape_id)) return shape_id;

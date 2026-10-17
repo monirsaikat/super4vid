@@ -220,3 +220,39 @@ CT_TEST(project_validate_rejects_each_invariant) {
         CT_CHECK(!p.Validate(&why));
     }
 }
+
+// Review fix: media frame rates and sizes are validated (later frame-time math divides by them).
+CT_TEST(project_validate_rejects_bad_media_rates_and_sizes) {
+    std::string why;
+    struct Bad { const char* id; int fps_num, fps_den, w, h; };
+    const Bad bad[] = {
+        {"m1", 60, 0, 1920, 1080},   // fps_den 0
+        {"m1", -1, 1, 1920, 1080},   // negative fps
+        {"m1", 0, 1, 1920, 1080},    // recording without a frame rate
+        {"m2", 60, 1, 0, 1080},      // video without a size
+        {"m2", 60, 1, -4, 1080},
+        {"m3", 0, 0, 0, 0},          // audio: fps_den must still be positive
+        {"m3", 0, 1, -1, 0},         // audio: negative size
+        {"m4", 0, 1, 0, 0},          // image without a size
+    };
+    for (const Bad& b : bad) {
+        Project p = MakeSampleProject();
+        Media* m = p.FindMedia(b.id);
+        m->fps_num = b.fps_num;
+        m->fps_den = b.fps_den;
+        m->width = b.w;
+        m->height = b.h;
+        CT_CHECK(!p.Validate(&why));
+    }
+    Project p = MakeSampleProject();
+    p.FindMedia("m1")->duration_us = -1;
+    CT_CHECK(!p.Validate(&why));
+    p = MakeSampleProject();
+    p.canvas.fps_den = 0;
+    CT_CHECK(!p.Validate(&why));
+    p.canvas.fps_den = 1;
+    p.canvas.fps_num = 0;
+    CT_CHECK(!p.Validate(&why));
+    p.canvas.fps_num = 30;
+    CT_CHECK(p.Validate(&why));
+}

@@ -269,3 +269,17 @@ Done instead:
 - `Load` returns false (with the Validate reason) for a timeline that breaks the invariants; `FromJson` alone does not validate.
 Why: the spec text conflicts with itself (docs sample layout vs byte identity) or is silent; these keep files stable.
 Impact: P08/P09 include `<ct/project/project.h>` (pulls in all model headers).
+
+## 2026-10-17 · P07 review fix · Damaged .ctev records fail the load; media rates/sizes validated
+Spec said: docs/04 section 2 only says readers skip unknown record types by size. The 7.0 entry above said short payloads of
+known types are skipped.
+Done instead: `EventLog::Load*` now returns false (with an Err) when a record of a known type is too short or a CURSOR_SHAPE
+has impossible sizes (w or h 0 or > `kMaxShapeSize` = 1024, raw `data_size != w*h*4`, RLE that cannot encode `w*h` pixels in
+`data_size` bytes, `data_size` past the record, unknown compression/format). Every size is checked before allocating;
+`RleDecode` resizes once and fills runs. `EventWriter::CursorShape` refuses shapes it could not read back (returns 0).
+A torn last record is still tolerated (`Truncated()`), unknown types are still skipped.
+`Project::Validate` also rejects media with `fps_den <= 0`, `fps_num < 0`, negative size or duration, video/recording
+media without a positive frame rate and size, and images without a size (canvas fps was already checked).
+Why: independent review: a corrupt shape record (65535x65535 RLE) requested ~17 GB and terminated the process (no
+exceptions); a zero fps_den would divide by zero in frame-time math.
+Impact: P05 must not write shapes larger than 1024 px (CursorTracker already caps them); P08 can trust EventLog sizes.
