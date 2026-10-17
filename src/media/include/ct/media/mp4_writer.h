@@ -70,6 +70,9 @@ public:
         ct::Stats::Timing video_latency;   // OnFrame -> WriteSample start
         std::atomic<int64_t> finalize_ms{-1};
         std::atomic<uint32_t> max_textures_in_mf{0};   // peak number of pool textures still referenced by MF samples
+        // Review fix: audio frames trimmed because their item started before the data already written (timestamps
+        // never go backwards in the file).
+        std::atomic<uint64_t> audio_overlap_frames[kMaxAudioStreams]{};
     };
 
     Mp4Writer();

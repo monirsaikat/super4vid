@@ -556,16 +556,34 @@ struct Mp4Writer::Impl {
     HRESULT WriteAudio(uint32_t stream, const AudioItem& it) {
         AudioStream& a = *audio[stream];
         HRESULT hr = S_OK;
+        // Timestamps never go backwards: the part of an item that starts before the data written so far (an overlapping
+        // or late producer, or a negative start) is trimmed; an item entirely before it is dropped.
+        const int16_t* pcm = a.pool.At(it.buf);
+        uint32_t frames = it.frames;
+        TimeUs t_us = it.t_us;
+        if (t_us < a.next_us) {
+            const int64_t drop = std::min<int64_t>(UsToFrames(a.next_us - t_us), frames);
+            if (drop > 0) {
+                stats.audio_overlap_frames[stream].fetch_add(static_cast<uint64_t>(drop), std::memory_order_relaxed);
+                pcm += static_cast<size_t>(drop) * static_cast<size_t>(a.cfg.channels);
+                frames -= static_cast<uint32_t>(drop);
+            }
+            t_us = a.next_us;   // sub-frame overlaps (rounding) just snap to the end of the written data
+        }
+        if (frames == 0) {
+            a.pool.Release(it.buf);
+            return S_OK;
+        }
         // Streams begin at t = 0; gaps (frames the producer could not queue) become silence so nothing shifts.
-        if (!a.started && it.t_us > 0) hr = WriteSilence(a, stream, 0, it.t_us);
-        else if (a.started && it.t_us - a.next_us > kGapFillUs) hr = WriteSilence(a, stream, a.next_us, it.t_us);
+        if (!a.started && t_us > 0) hr = WriteSilence(a, stream, 0, t_us);
+        else if (a.started && t_us - a.next_us > kGapFillUs) hr = WriteSilence(a, stream, a.next_us, t_us);
         a.started = true;
-        if (SUCCEEDED(hr)) hr = WritePcm(a, a.pool.At(it.buf), it.frames, it.t_us);
+        if (SUCCEEDED(hr)) hr = WritePcm(a, pcm, frames, t_us);
         a.pool.Release(it.buf);
         if (SUCCEEDED(hr)) {
-            a.next_us = it.t_us + FramesToUs(it.frames);
-            stats.audio_written[stream].fetch_add(it.frames, std::memory_order_relaxed);
-            stats.last_audio_us[stream].store(it.t_us, std::memory_order_relaxed);
+            a.next_us = t_us + FramesToUs(frames);
+            stats.audio_written[stream].fetch_add(frames, std::memory_order_relaxed);
+            stats.last_audio_us[stream].store(t_us, std::memory_order_relaxed);
         }
         return hr;
     }

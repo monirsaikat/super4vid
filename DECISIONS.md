@@ -1173,3 +1173,12 @@ Added `SetFinalizeDelayForTest(ms)` (test `mp4_writer_abort_during_slow_finalize
 Why: the old destructor reset the sink writer while ct-encode could still be inside Finalize (use-after-free), and the
 events/atomics were destroyed before `~Thread` joined.
 Impact: P05 can destroy the writer right after `Abort()` on the crash path; the NV12 pool must still outlive the writer.
+
+## 2026-10-17 · Review fix (P04) · Mp4Writer trims audio that overlaps what was already written
+Spec said: audio items are written at their `t_us`; gaps > 2 ms become silence.
+Done instead: an item that starts before the end of the stream's written data (an overlapping/late producer, or a
+negative first time) loses its overlapping frames and is written at the end of the written data; an item entirely
+inside it is dropped. Sub-frame overlaps (rounding) only snap the timestamp. Trimmed frames are counted in the new
+`Stats::audio_overlap_frames[stream]` (not in `audio_written`). Test `mp4_writer_audio_overlap_trimmed`.
+Why: the item was written as-is, so the file's audio timestamps went backwards.
+Impact: none for callers; P05 may log `audio_overlap_frames` next to the other writer stats.
