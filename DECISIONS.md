@@ -244,3 +244,22 @@ or one that does not intersect the display, as the whole display, and shifts a r
 Added `RotationName()` for logs.
 Why: the spec leaves these open; P05's monitor picker and the bench need a stable "primary = 0".
 Impact: none.
+
+## 2026-10-17 · P02 task 2.3 · DesktopDuplicator details
+Spec said: the `DesktopDuplicator` declaration and Init/Acquire sequences in P02 section 2.3.
+Done instead (specified members unchanged):
+- The output is found by GDI device name (`DXGI_OUTPUT_DESC.DeviceName`) across all adapters rather than by
+  `adapter_luid/output_index` alone: LUID + index can go stale after a hot-plug, the name is what `DisplayInfo` was built from.
+- `DuplicateOutput` (legacy) is also the fallback when `DuplicateOutput1` returns `DXGI_ERROR_UNSUPPORTED`/`E_INVALIDARG`
+  (process not per-monitor DPI aware), not only `E_NOTIMPL`/no interface.
+- `Reinit()` asks only for the format the session started with, and returns `DXGI_ERROR_UNSUPPORTED` (retry) if the display
+  now delivers another one (HDR toggled), so the BGRA/FP16 pool and converter never see a format change. A rotation change
+  during a session is not followed (the converter keeps the start rotation); documented limitation.
+- Mode change to a smaller size: `ComputeBox` intersects the region with the new desktop; the visible part keeps its place in
+  dst and the rest is cleared to black via a cached RTV (dst textures must be bound as render targets). The stream size never
+  changes (docs/03 section 10 "letterbox"). The duplicated texture size is re-checked on every frame so the box never leaves it.
+- `capture.coalesced` counts the extra frames (`AccumulatedFrames - 1`), not the number of acquires with more than one.
+- The cross-adapter slow path is implemented (second device, staging copy, `UpdateSubresource`) but not exercised: the reference
+  machine has one GPU.
+Why: robustness against hot-plug, DPI-unaware hosts and mode changes.
+Impact: P05's pool textures for capture need `D3D11_BIND_RENDER_TARGET` (ScreenCapturer creates them that way).
