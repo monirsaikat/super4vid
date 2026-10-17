@@ -159,7 +159,10 @@ struct Mp4Writer::Impl {
         CT_RETURN_IF_FAILED(attr->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, TRUE));
         CT_RETURN_IF_FAILED(attr->SetUINT32(MF_LOW_LATENCY, cfg.video.low_latency ? TRUE : FALSE));
         CT_RETURN_IF_FAILED(attr->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_MPEG4));
-        if (cfg.fast_start) CT_RETURN_IF_FAILED(attr->SetUINT32(MF_MPEG4SINK_MOOV_BEFORE_MDAT, TRUE));
+        // Config::fast_start is ignored (DECISIONS P04 4.3): MF_MPEG4SINK_MOOV_BEFORE_MDAT fails Finalize with
+        // E_ACCESSDENIED on the default (write-only) byte stream and writes a corrupt file (mdat header lost, data
+        // duplicated) on a read/write one. The moov stays at the end; P10 can relocate it after Finalize if needed.
+        if (cfg.fast_start) CT_LOG_WARN("Mp4Writer: fast_start is not supported; the moov box is written at the end");
         const std::wstring wpath = Utf8ToWide(cfg.path);
         const HRESULT hr = MFCreateSinkWriterFromURL(wpath.c_str(), nullptr, attr.Get(), writer.GetAddressOf());
         if (FAILED(hr)) CT_LOG_ERROR("MFCreateSinkWriterFromURL(%s) failed: %s", cfg.path.c_str(), HrToString(hr).c_str());

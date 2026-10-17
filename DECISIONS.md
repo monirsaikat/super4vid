@@ -460,3 +460,40 @@ Why: files that the Windows decoder cannot play are not acceptable; meta.json's 
 Impact: P05 writes `stream_index` 0/1/2 as specified. **P06**: do not use source-reader stream indices as track numbers; map
 them (reverse order for MP4, or by major type: the video is `MF_SOURCE_READER_FIRST_VIDEO_STREAM`, mic = the last audio
 reader stream, system = the one before). P10 export may enable low latency only after verifying the decode on the target GPU.
+
+## 2026-10-17 · P04 task 4.3 · Texture reuse, UAV-bound NV12 accepted, sync export path copies, fast start unsupported
+Spec said: one `MFCreateDXGISurfaceBuffer` per pool texture stored as the slot's user data; reuse predicate
+`CanReuse(user = pool, index)` true when the buffer's refcount is 1; `WriteVideoSync` "blocks until the sample was
+written"; `fast_start` sets `MF_MPEG4SINK_MOOV_BEFORE_MDAT`. P02 asked P04 to check that the encoder accepts NV12 textures
+with `D3D11_BIND_UNORDERED_ACCESS` (compute converter), else set `allow_compute = false`.
+Done instead:
+- **UAV-bound NV12 works**: `AMDh264Encoder` encodes the capturer's pool (bind flags 0xa8 = RT|SR|UAV) through
+  `MFCreateDXGISurfaceBuffer`; decoded luma matches the written values (software and DXVA decoders) and a 3 s real capture
+  writes every delivered frame. `allow_compute` stays true, no extra GPU cost.
+- The buffer is still stored as the slot's user data, but the predicate's `user` is the writer (it reads its own slot table),
+  so it never touches the pool object. `SetCurrentLength` is called once at Init (constant length) instead of per frame, so
+  nothing writes a buffer while MF may hold it. The writer's destructor clears the predicate and user data: the pool must
+  outlive the writer.
+- Repeats: every `OnFrame` is one hand-out; the writer creates one `IMFSample` per call (several samples may reference one
+  buffer) and calls `pool->Release(index)` after dropping its own sample reference. The predicate becomes true only when
+  every sample of every repeat was released by MF. Test `texture_reuse_waits_for_every_repeat` (pool of one texture, bursts
+  of 10 sends): the slot was free by hand-out count but refused by the predicate for 53-59 ms (up to 13 references on the
+  buffer), frames written after the reuse never leak into the earlier ones (decoded luma per frame).
+- `WriteVideoSync` copies the caller's texture into an internal NV12 pool (`Config::sync_pool_size`, default 8, same reuse
+  predicate) under `D3DDevice::Lock` and returns once queued (waits up to 5 s while the queue or the pool is full). Waiting
+  until "written" could deadlock with the 500 ms interleave rule when the caller writes video before audio; the copy makes
+  the caller's texture reusable immediately. `WriteAudioSync` likewise returns once queued. Export measured 17x real time
+  for 720p30 (queueing only).
+- `fast_start` is **ignored with a warning**: on the default byte stream `IMFSinkWriter::Finalize` fails with
+  `E_ACCESSDENIED`; with a read/write `MFCreateFile` byte stream the sink writes moov first but drops the mdat header and
+  leaves the old data behind (file twice the size, undecodable). P10 can relocate the moov itself after `Finalize`.
+- The reviewer's concern (ScreenCapturer holds `D3DDevice::Lock` while `AcquireNextFrame` waits up to 4 ms): ct-encode never
+  takes that lock on the capture path (`OnFrame` only queues; WriteSample does not use our lock). Measured in
+  `capture_into_writer_3s`: OnFrame -> WriteSample latency avg 0.04 ms, max 0.9 ms; WriteSample avg 0.15 ms (the first call,
+  which starts the encoder, up to 18 ms). No change to screen_capturer.cpp.
+- `Mp4Writer::Stats` gained `audio_rejected_frames`, `audio_lead_pad_frames`, `video_write`, `video_latency`, `finalize_ms`;
+  `Config` gained `listener`, `sync_pool_size`; added `VideoStreamIndex`, `AudioStreamIndex`, `Accepting`, `ErrorMessage`,
+  `InjectWriteErrorForTest`.
+Why: correctness of texture lifetime with repeats; no deadlock in export; no corrupt files.
+Impact: P05 passes `ScreenCapturer::Nv12Pool()` to `Init` before `ScreenCapturer::Start` and destroys the writer before the
+capturer. P10 calls `WriteVideoSync`/`WriteAudioSync` from its export thread and `Finalize` at the end; no fast start.

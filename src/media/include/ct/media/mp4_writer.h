@@ -53,7 +53,7 @@ public:
         bool has_video = true;
         VideoEncodeConfig video;
         std::vector<AudioEncodeConfig> audio;   // 0..4 streams
-        bool fast_start = false;                // moov before mdat (export only; the sink rewrites the file)
+        bool fast_start = false;                // moov before mdat: NOT supported yet (ignored with a warning, see DECISIONS)
         uint32_t video_queue = 8;               // 2..64 frames
         uint32_t audio_queue = 64;              // 2..64 items of up to 100 ms per stream
         Listener* listener = nullptr;
