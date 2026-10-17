@@ -44,7 +44,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 
 ## P02 Screen capture
 - [x] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager) — AMD Radeon (5700G iGPU): NV12 RT yes, FP16 RT yes, video device yes
-- [ ] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag)
+- [x] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag) — reference machine: 2 x 1920x1080 SDR (HP M22f 60 Hz primary, HP 22fw 59 Hz), 96 dpi, one adapter
 - [ ] 2.3 `DesktopDuplicator`: acquire loop, crop copy, timeout/repeat, access-lost recovery
 - [ ] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback
 - [ ] 2.5 `CursorTracker`: 120 Hz position poll + shape capture (color, mask, animated), dedupe by hash

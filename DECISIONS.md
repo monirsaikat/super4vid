@@ -235,3 +235,12 @@ Done instead (additions only, specified signatures unchanged):
   has its own `main()` that sets per-monitor-v2 DPI awareness before running the tests.
 Why: the reuse predicate and the SPSC contract cannot both hold with a queue; the rest is robustness.
 Impact: P04 uses the specified API unchanged.
+
+## 2026-10-17 · P02 task 2.2 · Display order and region clamp rules
+Spec said: `EnumerateDisplays` returns the displays with an `index`; `ClampRegionToDisplay` forces even sizes, min 64x64.
+Done instead: the order is primary first, then left to right, top to bottom, so `--monitor 0` is always the primary monitor.
+`friendly_name` falls back to the GDI device name when the EDID name is missing. `ClampRegionToDisplay` treats an empty region,
+or one that does not intersect the display, as the whole display, and shifts a region grown to 64x64 back inside the display.
+Added `RotationName()` for logs.
+Why: the spec leaves these open; P05's monitor picker and the bench need a stable "primary = 0".
+Impact: none.
