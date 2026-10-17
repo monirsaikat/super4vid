@@ -1191,3 +1191,13 @@ so `Close` (which sets it first) no longer waits for a full decode pass of a lon
 during it 3 ms in Debug). Existing callers are unchanged (default argument).
 Why: Close blocked the owner thread for the whole build.
 Impact: none for callers.
+
+## 2026-10-17 · Review fix (P05 task 5.7) · Webcam memory buffers use the media type's frame height
+Spec said: (DECISIONS P05 5.7) memory-buffer samples are uploaded as NV12 with the UV plane after `height` luma rows.
+Done instead: like VideoDecoder (frame vs display size), `Init` delivers the reader output's
+`MF_MT_MINIMUM_DISPLAY_APERTURE` when it is a top-left sub-rectangle of the frame (e.g. 1920x1080 of a 1920x1088
+frame; `ActualSize()` and the pool are the aperture) and remembers the type's frame height (`m_frame_h`); the memory
+path reads the UV plane after `m_frame_h` rows (`internal::UploadNv12(..., src_rows)`). Without an aperture nothing
+changes. Test `webcam_upload_nv12_padded_frame_height` (the MF device path is still not verified on hardware here).
+Why: a padded height (1088) put the chroma read 8 rows early: corrupt colours.
+Impact: none for callers.

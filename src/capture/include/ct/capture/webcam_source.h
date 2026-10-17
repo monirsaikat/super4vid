@@ -177,6 +177,7 @@ private:
     WebcamMode m_native{};
     std::string m_name;
     SizeI m_size{};
+    int32_t m_frame_h = 0;   // media type frame height (>= m_size.h when padded): memory buffers' UV plane offset
     uint32_t m_fps_num = 30, m_fps_den = 1;
     TimeUs m_last_t_us = -1;
     std::atomic<uint64_t> m_preview_serial{0};
