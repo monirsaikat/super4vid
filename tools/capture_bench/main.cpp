@@ -9,6 +9,7 @@
 // --no-convert   duplication + crop only (own pacing loop, no NV12 conversion).
 // --copy-path    crop-copy into a BGRA texture before converting (ScreenCapturer::Config::zero_copy = false).
 // --pixel-shader two pixel-shader passes instead of the compute conversion (Config::allow_compute = false).
+// --display-latency-us N  ScreenCapturer::Config::display_latency_us (desktop present -> display; A/V measurements).
 // Prints the capture stats every second and a summary: ticks, new frames, repeats, drops, acquire/convert/GPU times,
 // process CPU % and RSS. GPU % is read from Task Manager or the "GPU Engine" performance counters.
 //
@@ -75,6 +76,7 @@ struct Args {
     bool mic = false, system = false;
     media::RateControl rc = media::RateControl::Quality;
     uint32_t bitrate = 0;
+    int display_latency_us = INT32_MIN;   // INT32_MIN: ScreenCapturer::Config default
     int animator_monitor = -1;   // internal: run as the animation window
     int animator_seconds = 0;
 };
@@ -104,6 +106,7 @@ bool ParseArgs(int argc, char** argv, Args& a) {
         else if (s == "--copy-path") a.copy_path = true;
         else if (s == "--pixel-shader") a.pixel_shader = true;
         else if (s == "--debug-layer") a.debug_layer = true;
+        else if (s == "--display-latency-us" && next(v)) a.display_latency_us = std::atoi(v);
         else if (s == "--encode" && next(v)) a.encode = v;
         else if (s == "--mic") a.mic = true;
         else if (s == "--system") a.system = true;
@@ -582,6 +585,7 @@ int main(int argc, char** argv) {
         cfg.force_video_processor = a.video_processor;
         cfg.zero_copy = !a.copy_path;
         cfg.allow_compute = !a.pixel_shader;
+        if (a.display_latency_us != INT32_MIN) cfg.display_latency_us = a.display_latency_us;
         hr = cap.Init(dev, cfg);
         if (FAILED(hr)) {
             std::fprintf(stderr, "ScreenCapturer::Init: %s\n", HrToString(hr).c_str());
@@ -660,6 +664,10 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(s.access_lost.load()), static_cast<unsigned long long>(s.reinits.load()));
         std::printf("acquire avg %.3f max %.3f ms | convert avg %.3f max %.3f ms | gpu convert avg %.3f max %.3f ms\n",
                     s.acquire.AvgMs(), s.acquire.MaxMs(), s.convert.AvgMs(), s.convert.MaxMs(), s.gpu.AvgMs(), s.gpu.MaxMs());
+        std::printf("present lag (tick - desktop present) avg %.3f max %.3f ms over %llu new images\n", s.present_lag.AvgMs(),
+                    s.present_lag.MaxMs(), static_cast<unsigned long long>(s.present_lag.Count()));
+        std::printf("late images (delivered after the tick their present time belongs to) %llu\n",
+                    static_cast<unsigned long long>(s.late_images.load()));
         std::printf("process CPU %.2f %% of the machine (%d logical CPUs; %.1f %% of one core) | RSS %.1f MB (peak %.1f MB)\n",
                     100.0 * cpu_s / wall_s / CpuCount(), CpuCount(), 100.0 * cpu_s / wall_s, rss, peak);
         std::printf("frames delivered %llu; luma checksums %zu distinct of %zu sampled (every 60th frame)%s\n",
