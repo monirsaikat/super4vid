@@ -10,6 +10,7 @@
 #include <ct/platform/single_instance.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
+#include <ct/ui/editor_app.h>
 #include <ct/ui/editor_shell.h>
 #include <ct/ui/settings_window.h>
 #include <ct/ui/theme.h>
@@ -347,7 +348,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         ct::Log::Shutdown();
         return rc;
     }
-    if (!opt.editor_demo && !opt.settings_demo && !wcsstr(GetCommandLineW(), L"--editor")) {   // default mode: the recorder bar
+    if (ct::ui::IsRecorderBarCommandLine(GetCommandLineW())) {   // default mode: the recorder bar
         ct::ui::RecorderAppOptions ro;
         ro.tray = opt.tray;
         ro.stats = opt.stats;
@@ -361,6 +362,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         CT_LOG_INFO("exit %d", rc);
         ct::Log::Shutdown();
         return rc;
+    }
+
+    // P09 editor mode: `--editor [file]` or a bare file argument (the .ctproj association passes --editor "%1").
+    if (ct::ui::EditorLaunch editor_launch; ct::ui::ParseEditorLaunch(GetCommandLineW(), &editor_launch)) {
+        const int editor_code = ct::ui::RunEditorApp(instance, show_cmd, editor_launch);
+        if (SUCCEEDED(com_hr)) CoUninitialize();
+        ct::platform::SingleInstance::Release();
+        ct::Log::Shutdown();
+        return editor_code;
     }
 
     App* app_ptr = new App();   // big and long-lived; not on the stack

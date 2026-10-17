@@ -95,8 +95,8 @@ void EditorState::Commit(bool snapshot, std::string before, const char* label) {
     if (snapshot) {
         undo.PushJson(std::move(before), m_drag_active ? m_drag_label.c_str() : label);
         if (m_drag_active) m_drag_pushed = true;
-        autosave.NotifyChanged();
     }
+    autosave.NotifyChanged();   // every commit, also the coalesced frames of a drag (review fix)
     ++revision;
     needs_render = true;
     last_error.clear();

@@ -98,8 +98,14 @@ private:
     const Lane* LaneAt(float y) const;
     const project::Clip* ClipAt(const EditorState& state, const Lane& lane, TimeUs t) const;
     Zone ZoneAt(const project::Clip& c, float x) const;
-    TimeUs SnapTime(const EditorState& state, TimeUs t, const std::vector<project::Id>& ignore) const;
-    TimeUs SnapMove(const EditorState& state, TimeUs start, TimeUs dur, const std::vector<project::Id>& ignore) const;
+    // What a snap ignores: one clip, the whole selection (group moves) and/or the dragged marker. No allocation.
+    struct SnapIgnore {
+        const project::Id* clip = nullptr;
+        bool selection = false;
+        TimeUs marker = -1;
+    };
+    TimeUs SnapTime(const EditorState& state, TimeUs t, const SnapIgnore& ignore) const;
+    TimeUs SnapMove(const EditorState& state, TimeUs start, TimeUs dur, const SnapIgnore& ignore) const;
     float ContentHeight() const;
     TimeUs ContentEnd(const EditorState& state) const;
     void SelectInRect(EditorState& state, ImVec2 a, ImVec2 b, bool add);

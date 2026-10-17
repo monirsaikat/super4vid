@@ -352,6 +352,21 @@ bool RunsAsSeparateInstance(const wchar_t* cmdline) {
     return wcsstr(cmdline, L"--screenshot") || wcsstr(cmdline, L"--time-to-window") || wcsstr(cmdline, L"--bench-hotkey");
 }
 
+bool IsRecorderBarCommandLine(const wchar_t* cmdline) {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(cmdline ? cmdline : L"", &argc);
+    bool bar = true;
+    for (int i = 1; argv && i < argc && bar; ++i) {
+        const wchar_t* a = argv[i];
+        if (!wcscmp(a, L"--editor") || !wcscmp(a, L"--editor-demo") || !wcscmp(a, L"--settings-demo")) bar = false;
+        const size_t n = wcslen(a);
+        // A project or recording passed as a file (Explorer "Open with", the .ctproj association) opens the editor.
+        if ((n > 7 && !_wcsicmp(a + n - 7, L".ctproj")) || (n > 6 && !_wcsicmp(a + n - 6, L".ctrec"))) bar = false;
+    }
+    if (argv) LocalFree(argv);
+    return bar;
+}
+
 int RunRecorderApp(const RecorderAppOptions& options) {
     const Extra extra = ParseExtra();
     App* app_ptr = new App();

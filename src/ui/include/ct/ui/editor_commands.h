@@ -48,4 +48,10 @@ void ClearLoopOut(EditorState& s);
 // Media name for labels: the file name of the path (no allocation; points into m.path).
 const char* MediaDisplayName(const project::Media& m);
 
+// Only clips on audio tracks make sound (DECISIONS P10): when `video` (just added on a video track) uses a plain video
+// file with audio, adds the linked clip of its first audio stream on an audio track at the same time and media range
+// (the first audio track with room, else a new "Audio" track). Operates on `p` directly (call inside an Edit /
+// EditCopy). True when an audio clip was added; false (p unchanged) when the media has no audio or no room.
+bool AddLinkedAudioClip(project::Project& p, const project::Clip& video, project::Id* out = nullptr);
+
 } // namespace ct::ui::cmd

@@ -33,4 +33,8 @@ int RunRecorderApp(const RecorderAppOptions& options);
 // and an editor started from the bar (environment CAMTESIA_SEPARATE_INSTANCE=1).
 bool RunsAsSeparateInstance(const wchar_t* cmdline);
 
+// True when the command line starts the recorder bar (the default mode): no --editor / --editor-demo /
+// --settings-demo and no .ctproj/.ctrec file argument.
+bool IsRecorderBarCommandLine(const wchar_t* cmdline);
+
 } // namespace ct::ui
