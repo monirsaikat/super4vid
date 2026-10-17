@@ -6,3 +6,6 @@ out/
 *.log
 tests/data/tmp/
 __pycache__/
+
+# Claude Code agent worktrees and local settings
+.claude/
