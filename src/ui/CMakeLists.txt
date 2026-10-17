@@ -7,4 +7,5 @@ ct_add_module(ui
     src/editor_shell.cpp
     src/panels/timeline_widget.cpp src/panels/properties_panel.cpp src/panels/media_panel.cpp src/panels/status_bar.cpp
     src/error_ux.cpp
+    src/first_run.cpp
   DEPS ct_core ct_project ct_platform imgui)
