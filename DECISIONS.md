@@ -183,3 +183,19 @@ when nothing is left at the path (missing counts as success); `DeleteTree` remov
 `ShowInExplorer`/`OpenWithShell` initialize STA COM on the calling thread when it has no apartment.
 Why: the spec leaves these open; these are the conservative choices.
 Impact: none.
+
+## 2026-10-17 · P01 task 1.7 · Settings layout
+Spec said: `struct Settings` mirroring docs/04 section 4 with typed fields, `m_extra` for unknown keys, `Version()`, `Migrate()`.
+Done instead:
+- The "export" section is the member `export_` (`export` is a C++ keyword). Nullable strings (`mic_device`, `webcam_device`,
+  `output_dir`, `last_dir`) are `std::string`, empty = JSON null. Hotkeys are stored as `Hotkey` values (strings only in the file).
+- `m_extra` and the file version are private; `Extra()` and `Version()` read them. Unknown keys are kept at every nesting level
+  (e.g. `recording.new_knob`, `window.editor.monitor`) and written after the known keys of their object.
+- `FromJson` validates: clamps numbers (fps 1-240, quality 1-100, countdown 0-10, cursor_hz 30-1000, autosave 0-3600,
+  frame cache 32-16384 MB, editor window >= 640x400) and replaces unknown enum strings / wrong types with defaults.
+  `keystrokes` accepts "shortcuts" | "all" | "off". The docs sample's `"preview_quality": "full|half"` lists the options; default "full".
+- A file without "version" is version 0 and migrates to 1; a file with a newer version keeps it (and its unknown keys) on save.
+- `Load` of a damaged file resets to defaults and returns false with a user-presentable `Err`; `Save` creates the parent directory.
+- `Hotkey` adds `IsSet()` and `operator==`; "None" parses to {0, 0}. Canonical text order is Ctrl+Alt+Shift+Win+Key.
+Why: the spec leaves these choices open.
+Impact: P05 (hotkeys, recording options) and P11 (settings UI) use these field names.

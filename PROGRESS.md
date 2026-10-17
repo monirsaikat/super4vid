@@ -34,7 +34,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 1.4 threads (`Thread` wrapper with name + priority + MMCSS class, `Event`, `SrwLock`)
 - [x] 1.5 json (parser + writer, DOM, round-trip tests incl. unicode and 1e308)
 - [x] 1.6 fs (atomic write, read all, enumerate, known folders, temp files)
-- [ ] 1.7 config (settings load/save/migrate with defaults)
+- [x] 1.7 config (settings load/save/migrate with defaults)
 - [ ] 1.8 trace (TraceLogging provider + scoped spans) and `--stats` counters
 - [ ] 1.9 Acceptance: all `ct_core_tests` pass in Debug/Release; SPSC queue benchmark >= 20 M ops/s
 
