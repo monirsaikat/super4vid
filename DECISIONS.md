@@ -128,3 +128,12 @@ Why: on Win11 26100 with background load, high-resolution timers alone woke up t
 spin, over the 500 us budget). With a 1 ms period, p99 is 290-380 us. The period is held only while a timer exists (recording,
 playback), so the idle budget (0 redraws, 0 % CPU) is unaffected.
 Impact: P02/P03/P06 pacing threads should keep one HighResTimer for the session, not create one per wait.
+
+## 2026-10-17 · P01 task 1.3 · Container additions
+Spec said: `spsc_queue.h`, `object_pool.h`, `ring_buffer.h`, `arena.h` with the listed members; no .cpp for them.
+Done instead (additions only): `AudioRing::CapacityFrames()/Channels()`, `Arena::Capacity()`, deleted copy operations on all four,
+`Arena` destructor (VirtualFree). `AudioRing` and `Arena` bodies live in `src/core/src/containers.cpp` (they need `<windows.h>`).
+`SpscQueue::Pop` resets the slot to `T{}` for non-trivially-copyable T, so T must be default-constructible (static_assert).
+`ObjectPool::Release` of an index that is not acquired asserts in Debug and is ignored in Release.
+Why: keep `<windows.h>` out of public core headers; make misuse loud.
+Impact: none for callers of the specified API.

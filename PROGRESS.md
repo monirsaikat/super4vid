@@ -30,7 +30,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 ## P01 Core library
 - [x] 1.1 strings (utf8<->utf16, format, split, trim, path ops)
 - [x] 1.2 time (QPC clock, `Now()`, `SleepUntil`, high-resolution waitable timer, `Stopwatch`)
-- [ ] 1.3 containers (`SpscQueue<T>`, `ObjectPool<T>`, `RingBuffer`, `Arena`)
+- [x] 1.3 containers (`SpscQueue<T>`, `ObjectPool<T>`, `RingBuffer`, `Arena`)
 - [ ] 1.4 threads (`Thread` wrapper with name + priority + MMCSS class, `Event`, `SrwLock`)
 - [ ] 1.5 json (parser + writer, DOM, round-trip tests incl. unicode and 1e308)
 - [ ] 1.6 fs (atomic write, read all, enumerate, known folders, temp files)
