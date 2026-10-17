@@ -106,7 +106,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical — ct_project_tests 49/49 and ct_events_tests 19/19 pass in Debug and Release with `--repeat 3` (2026-10-17); fuzz 10,000 ops in Release (Validate after each, undo of each applied op restores the JSON, redo checked every 10th) 5.3-6.8 s over 4 runs (budget < 10 s; Debug runs 2,000 ops in ~27 s); full/minimal/sample.ctproj round-trip byte-identical, v0 migrates, docs/04 sample re-serializes stably; ToJson 22-33 us and FromJson 105 us for the 8-clip fixture (Release)
 
 ## P08 Compositor
-- [ ] 8.1 Render target management, canvas/background pass, color space utilities
+- [x] 8.1 Render target management, canvas/background pass, color space utilities — RenderContext (all pipeline objects in Init, temp RTs pooled per size/format, D2D device on the shared device with BGRA_SUPPORT asserted), solid/gradient/image background, Readback; golden harness implemented in ct_test (WIC, max diff 2 + PSNR 45 dB, --update-golden, .actual/.diff on failure)
 - [ ] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow
 - [ ] 8.3 Camera (zoom/pan keyframes, easing, auto-zoom playback)
 - [ ] 8.4 Cursor renderer from `.ctev` (interpolation + smoothing, shapes atlas, click effects)
