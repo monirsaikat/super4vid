@@ -107,7 +107,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 
 ## P08 Compositor
 - [x] 8.1 Render target management, canvas/background pass, color space utilities — RenderContext (all pipeline objects in Init, temp RTs pooled per size/format, D2D device on the shared device with BGRA_SUPPORT asserted), solid/gradient/image background, Readback; golden harness implemented in ct_test (WIC, max diff 2 + PSNR 45 dB, --update-golden, .actual/.diff on failure)
-- [ ] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow
+- [x] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow — NV12 (BT.709 limited) or RGBA, rotation/mirror uv, 1 px analytic SDF edge in target pixels, shadow mask at 1/4 res + separable blur (downsample above sigma 8) + composite over the bounds only, cached (0 mask renders for an unchanged frame)
 - [ ] 8.3 Camera (zoom/pan keyframes, easing, auto-zoom playback)
 - [ ] 8.4 Cursor renderer from `.ctev` (interpolation + smoothing, shapes atlas, click effects)
 - [ ] 8.5 Annotations via Direct2D/DirectWrite into layer textures (text, callout, arrow, shapes, keystroke badge), blur/pixelate region
