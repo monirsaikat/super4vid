@@ -30,6 +30,7 @@
 #include <ct/ui/first_run.h>
 #include <ct/ui/settings_window.h>
 #include <ct/ui/fonts.h>
+#include <ct/ui/panels/export_dialog.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 #include <ct/ui/widgets.h>
@@ -153,6 +154,24 @@ struct EditorWindow::Impl {
     std::shared_ptr<int> alive = std::make_shared<int>(1);
     Settings settings;
     std::unique_ptr<SettingsWindow> settings_window;
+    // File > Export (P10). Destroyed before the RenderContext it shares (its destructor cancels and joins the job).
+    std::unique_ptr<ExportDialog> export_dialog;
+
+    void OpenExport(const std::string& preset_id) {
+        if (!gpu_ok || !export_dialog) {
+            Banner(BannerPanel::Preview, "Export needs the preview renderer, which could not start.");
+            return;
+        }
+        if (transport && transport->Playing()) transport->Pause();
+        ExportDialog::Host host;
+        host.device = dev;
+        host.render_context = &rc;
+        host.audio_devices = devices;
+        host.toasts = &shell().Toasts();
+        host.owner_hwnd = hwnd;
+        host.request_redraw = [h = hwnd] { PostMessageW(h, WM_NULL, 0, 0); };
+        export_dialog->Open(st().project, st().Playhead(), host, preset_id);
+    }
 
     void ApplySettings(const Settings& s) {
         autosave_interval = s.editor.autosave_s;
@@ -752,7 +771,7 @@ struct EditorWindow::Impl {
             return true;
         case Action::Save: Save(nullptr); return true;
         case Action::SaveAs: SaveAs(nullptr); return true;
-        case Action::Export: Toast("Export arrives with the export dialog (P10)"); return true;
+        case Action::Export: OpenExport({}); return true;
         case Action::OpenRecorder: Toast("The recorder bar opens from the recorder mode (P05)"); return true;
         default: return false;
         }
@@ -790,6 +809,11 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
         m_impl->ApplySettings(st);
     };
     m_shell->on_preferences = [this] { m_impl->settings_window->Open(m_impl->settings, SettingsSection::Editor); };
+    I.export_dialog = std::make_unique<ExportDialog>();
+    m_shell->on_export_preset = [this](const std::string& id) { m_impl->OpenExport(id); };
+    m_shell->on_export_restore = [this] {
+        if (m_impl->export_dialog) m_impl->export_dialog->Restore();
+    };
 
     HRESULT hr = I.rc.Init(dev);
     if (SUCCEEDED(hr)) hr = I.comp.Init(I.rc);
@@ -875,6 +899,7 @@ void EditorWindow::Destroy() {
     // Autosave: a clean close removes its files (the unsaved prompt already ran); keep them when still dirty.
     if (!m_shell->State().IsDirty()) m_shell->State().autosave.Clear();
     m_shell->State().playback = &m_shell->State().simple_playback;
+    I.export_dialog.reset();   // cancels and joins a running export before the device objects it uses go
     I.player.Shutdown();
     if (I.provider) I.provider->Clear();
     I.rt = {};
@@ -908,6 +933,8 @@ void EditorWindow::OpenPaths(const std::vector<std::string>& paths) {
     if (!media.empty()) m_impl->ImportMedia(media);
 }
 
+void EditorWindow::OpenExportDialog(const std::string& preset_id) { m_impl->OpenExport(preset_id); }
+
 void EditorWindow::BeforeFrame() {
     Impl& I = *m_impl;
     I.frame_qpc = QpcNow();
@@ -937,6 +964,7 @@ void EditorWindow::Frame() {
     m_shell->status.cache_mb = m_stats.cache_mb;
     m_shell->status.cache_budget_mb = static_cast<double>(playback::CacheBudget::Bytes()) / (1 << 20);
     m_shell->status.gpu_ms = I.comp.LastTiming().gpu_total_ms;
+    m_shell->status.export_fraction = I.export_dialog && I.export_dialog->Busy() ? I.export_dialog->Fraction() : -1.0;
     if (!s.last_error.empty()) {
         m_shell->Toasts().Push(s.last_error, ToastKind::Warning, {}, 4.0f);
         s.last_error.clear();
@@ -946,12 +974,14 @@ void EditorWindow::Frame() {
     I.DrawUnsavedPrompt();
     I.DrawRecoverPrompt();
     if (I.settings_window) I.settings_window->Draw();
+    if (I.export_dialog) I.export_dialog->Draw();
 }
 
 bool EditorWindow::WantsContinuousRedraw() const {
     const Impl& I = *m_impl;
     return m_shell->WantsContinuousRedraw() || I.busy > 0 || I.saving || I.player.MediaPending() || I.unsaved_prompt ||
-           !I.deferred.empty() || (I.settings_window && I.settings_window->WantsRedraw());
+           !I.deferred.empty() || (I.settings_window && I.settings_window->WantsRedraw()) ||
+           (I.export_dialog && I.export_dialog->WantsRedraw());
 }
 
 void EditorWindow::OnTimer() {

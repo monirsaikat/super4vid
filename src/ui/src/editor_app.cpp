@@ -451,6 +451,10 @@ bool ParseEditorLaunch(const wchar_t* cmdline, EditorLaunch* out) {
         else if (wcscmp(a, L"--seek") == 0) out->seek_s = std::atof(next().c_str());
         else if (wcscmp(a, L"--select-clip") == 0) out->select_clip = next();
         else if (wcscmp(a, L"--overlay") == 0) out->show_stats_overlay = true;
+        else if (wcscmp(a, L"--open-export") == 0) {
+            out->open_export = true;
+            if (i + 1 < argc && argv[i + 1][0] != L'-') out->export_preset = WideToUtf8(argv[++i]);
+        }
         else if (wcscmp(a, L"--fit") == 0) out->fit_mode = std::atoi(next().c_str());
         else if (wcscmp(a, L"--size") == 0) {
             const std::string s = next();
@@ -537,15 +541,17 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
         if (!launch.paths.empty()) app.editor.OpenPaths(launch.paths);
         if (launch.show_stats_overlay) app.editor.Shell().Run(Action::ToggleStats);
         if (launch.fit_mode >= 0) app.editor.Shell().Preview().fit_mode = std::clamp(launch.fit_mode, 0, 3);
-        if (launch.seek_s >= 0 || !launch.select_clip.empty()) {
+        if (launch.seek_s >= 0 || !launch.select_clip.empty() || launch.open_export) {
             // After the files opened (their posts run before this one is dequeued).
             const double seek = launch.seek_s;
             const std::string sel = launch.select_clip;
+            const bool open_export = launch.open_export;
+            const std::string preset = launch.export_preset;
             EditorWindow* ed = &app.editor;
             // Two hops: the open job posts from the IO pool after its work; give it time by re-posting until loaded.
             std::function<void(int)> apply;
             auto attempt = std::make_shared<std::function<void(int)>>();
-            *attempt = [ed, seek, sel, attempt](int left) {
+            *attempt = [ed, seek, sel, open_export, preset, attempt](int left) {
                 EditorState& s = ed->State();
                 const bool loaded = !s.project.clips.empty();
                 if (!loaded && left > 0) {
@@ -557,6 +563,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
                 }
                 if (seek >= 0) s.playback->Seek(static_cast<TimeUs>(seek * 1e6));
                 if (!sel.empty() && s.project.FindClip(sel)) s.selection.Set(sel);
+                if (open_export) ed->OpenExportDialog(preset);
             };
             Async::PostToUi([attempt] { (*attempt)(200); });
         }

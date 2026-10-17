@@ -10,6 +10,7 @@
 
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -33,14 +34,14 @@ void Dim(const char* s) {
 
 } // namespace
 
-bool DrawStatusBar(const EditorState& state, const StatusInfo& info) {
+StatusBarClick DrawStatusBar(const EditorState& state, const StatusInfo& info) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Dp(12, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ToVec4(col::bg0));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
                                    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse;
-    bool clicked = false;
+    StatusBarClick clicked = StatusBarClick::None;
     if (ImGui::BeginViewportSideBar("##statusbar", vp, ImGuiDir_Down, Dp(kStatusBarHeight), flags)) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 wp = ImGui::GetWindowPos();
@@ -79,23 +80,48 @@ bool DrawStatusBar(const EditorState& state, const StatusInfo& info) {
             ImGui::PopStyleColor();
         }
 
-        // Right side: warnings, GPU time.
+        // Right side: export progress (while one runs), warnings, GPU time.
         char gpu[32];
         if (info.gpu_ms >= 0) std::snprintf(gpu, sizeof(gpu), "GPU %.1f ms", info.gpu_ms);
         else std::snprintf(gpu, sizeof(gpu), "%s", str::kGpuNA);
         char warn[16];
         std::snprintf(warn, sizeof(warn), "%d", info.warnings);
-        const float right_w = ImGui::CalcTextSize(gpu).x + ImGui::CalcTextSize(warn).x + Dp(64);
+        const bool exporting = info.export_fraction >= 0;
+        char exp[48] = "";
+        const float bar_w = Dp(80);
+        if (exporting) {
+            const double pct = std::clamp(info.export_fraction, 0.0, 1.0) * 100.0;
+            std::snprintf(exp, sizeof(exp), str::kStatusExportingFmt, static_cast<int>(pct));
+        }
+        const float exp_w = exporting ? ImGui::CalcTextSize(exp).x + bar_w + Dp(8 + 20) : 0;
+        const float right_w = ImGui::CalcTextSize(gpu).x + ImGui::CalcTextSize(warn).x + Dp(64) + exp_w;
         ImGui::SameLine(ImGui::GetWindowWidth() - right_w);
+        if (exporting) {
+            // One clickable item: label + a small progress bar; click shows the export progress window again.
+            const float h = ImGui::GetTextLineHeight();
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float tw = ImGui::CalcTextSize(exp).x;
+            const ImVec2 size(tw + Dp(8) + bar_w, h);
+            if (ImGui::InvisibleButton("##exportpill", size)) clicked = StatusBarClick::Export;
+            const bool hov = ImGui::IsItemHovered();
+            dl->AddText(p, hov ? col::text : col::text_dim, exp);
+            const ImVec2 b0(p.x + tw + Dp(8), p.y + h * 0.5f - Dp(3));
+            const ImVec2 b1(b0.x + bar_w, b0.y + Dp(6));
+            dl->AddRectFilled(b0, b1, col::bg3, Dp(3));
+            const float fw = static_cast<float>(std::clamp(info.export_fraction, 0.0, 1.0)) * bar_w;
+            if (fw > 0) dl->AddRectFilled(b0, ImVec2(b0.x + fw, b1.y), col::accent, Dp(3));
+            ItemTooltip(str::kStatusExportTooltip);
+            ImGui::SameLine(0, Dp(20));
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(info.warnings ? col::warn : col::text_faint));
         {
             FontScope icon(FontRole::Label);
             ImGui::TextUnformatted(ICON_WARNING);
         }
-        if (ImGui::IsItemClicked()) clicked = true;
+        if (ImGui::IsItemClicked()) clicked = StatusBarClick::Warnings;
         ImGui::SameLine(0, Dp(4));
         ImGui::TextUnformatted(warn);
-        if (ImGui::IsItemClicked()) clicked = true;
+        if (ImGui::IsItemClicked()) clicked = StatusBarClick::Warnings;
         ImGui::PopStyleColor();
         ImGui::SameLine(0, Dp(14));
         Dim(gpu);
