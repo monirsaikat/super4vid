@@ -286,3 +286,18 @@ Done instead:
 Measured: GPU vs CPU reference, 10,000 samples per rotation, max |dY| = 1 and max |dUV| = 1 for all four rotations; the video
 processor fallback gives max |dY| 1 / |dUV| 1 on a smooth gradient (27 on hard sawtooth edges, its chroma filter differs).
 Impact: P08 can reuse `fullscreen.hlsl` and the helper.
+
+## 2026-10-17 · P02 task 2.5 · CursorTracker details
+Spec said: the `CursorTracker`/`CursorSample`/`CursorShape` declarations and the Poll/CaptureShape algorithm in section 2.5.
+Done instead (additions only):
+- `CursorTracker()` constructor (reserves the known-id list), `Polls()` and `DroppedSamples()` counters.
+- An inverting pixel is detected when *any* channel is brighter over black than over white (the spec checks "black > white").
+  Premultiplied colour is clamped to alpha so the bitmap is always valid premultiplied BGRA.
+- A cursor whose shape cannot be captured gets `shape_id = 0` and is not retried until the handle changes (no 120 Hz GDI
+  retry storm); a full shape queue is retried on the next poll. A full sample queue drops nothing silently: it is counted and
+  the change is pushed on the next poll.
+- `GetCursorInfo` failing (secure desktop) keeps the last sample.
+- Shape ids hash pixels, size and hotspot (FNV-1a over the pixel hash plus a small header); 0 is reserved.
+Measured: `CaptureShape` ~0.16 ms per call (2,000 captures in 314 ms, Debug), 0 GDI objects leaked.
+Why: robustness; the spec leaves these open.
+Impact: P05's EventRecorder writes `shape_id 0` as "default arrow".

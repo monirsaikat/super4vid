@@ -4,4 +4,5 @@ ct_add_test(ct_capture_tests DEPS ct_capture SOURCES
   test_util.cpp
   display_test.cpp
   duplicator_test.cpp
-  convert_test.cpp)
+  convert_test.cpp
+  cursor_test.cpp)

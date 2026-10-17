@@ -1,5 +1,5 @@
 ct_add_module(capture
-  SOURCES src/display.cpp src/desktop_duplicator.cpp src/color_convert.cpp
+  SOURCES src/display.cpp src/desktop_duplicator.cpp src/color_convert.cpp src/cursor_tracker.cpp
   DEPS ct_platform)
 ct_compile_shaders(ct_capture SHADERS
   shaders/fullscreen.hlsl:vs_5_0:vs_main
