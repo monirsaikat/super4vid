@@ -181,6 +181,27 @@ uint32_t Player::Feed::Pull(float* out, uint32_t frames, TimeUs from_us, double)
     return written + static_cast<uint32_t>(n);
 }
 
+void Player::Feed::Reset(TimeUs from_us, uint64_t gen) {
+    ExclusiveGuard g(lock);
+    ring.Clear();
+    next_us = from_us;
+    data_gen = gen;
+    awaiting_first = true;
+}
+
+void Player::Feed::Append(const float* interleaved, uint32_t frames, TimeUs pts_us) {
+    if (!awaiting_first) {
+        ring.Write(interleaved, frames);
+        return;
+    }
+    // The ring is empty and Pull has not moved next_us (it only advances over frames it read): anchor the ring at the
+    // first packet's real time. Earlier than the request -> Pull drops the stale frames; later -> silence until then.
+    ExclusiveGuard g(lock);
+    next_us = pts_us;
+    ring.Write(interleaved, frames);
+    awaiting_first = false;
+}
+
 void Player::FeedMain() {
     std::vector<float> buf(static_cast<size_t>(kFeedChunk) * AudioEngine::kChannels);
     uint64_t gen = 0;
@@ -190,12 +211,7 @@ void Player::FeedMain() {
         if (want != gen) {
             gen = want;
             const TimeUs from = m_feed.req_from.load(std::memory_order_relaxed);
-            {
-                ExclusiveGuard g(m_feed.lock);
-                m_feed.ring.Clear();
-                m_feed.next_us = from;
-                m_feed.data_gen = gen;
-            }
+            m_feed.Reset(from, gen);
             eos = FAILED(m_reader->Seek(from));
         }
         bool wrote = false;
@@ -206,7 +222,7 @@ void Player::FeedMain() {
                 eos = true;
                 break;
             }
-            m_feed.ring.Write(buf.data(), n);
+            m_feed.Append(buf.data(), n, pts);
             wrote = true;
         }
         if (m_feed.req_gen.load(std::memory_order_acquire) != gen) continue;
