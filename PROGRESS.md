@@ -79,7 +79,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 ## P05 Recorder app
 - [ ] 5.1 `RecordingSession` state machine (Idle->Countdown->Recording<->Paused->Finalizing)
 - [ ] 5.2 `.ctrec` bundle writer + `meta.json`
-- [ ] 5.3 `EventRecorder`: low-level mouse/keyboard hooks thread, cursor tracker, window focus, `.ctev` writer
+- [x] 5.3 `EventRecorder`: low-level mouse/keyboard hooks thread, cursor tracker, window focus, `.ctev` writer — ct_recorder_tests (21 tests) pass in Debug and Release (`--repeat 2`): SendInput clicks/wheel/keys through real LL hooks (tagged and swallowed) land in the file with region-relative positions, input during a pause is dropped, TYPING/markers/pauses round-trip through EventLog; 120 Hz poll: 60 ticks in 0.50 s; the watchdog detects a 1.5 s stall and re-installs (hooks work afterwards); a click is on disk 925-1046 ms after it happened (1 s flush); `events_demo --seconds 3 --selftest` passes (smallest cursor sample gap 7.97 ms, 0 ring drops); SessionClock monotonic over 40-90k pause/resume cycles with a concurrent reader
 - [ ] 5.4 Hotkeys, tray icon + menu, notifications
 - [ ] 5.5 Region selection overlay (dim, drag, handles, window snap, monitor pick, size readout)
 - [ ] 5.6 Recorder bar UI + countdown overlay, excluded from capture

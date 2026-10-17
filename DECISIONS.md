@@ -591,3 +591,63 @@ Done instead: a failed write (the atomic replace failed, e.g. while another proc
 Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
 stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
 Impact: none for callers.
+
+## 2026-10-17 · P05 tasks 5.3-5.6 · Overlays live in ct_recorder; recorder input/overlay API details
+Spec said: overlays are `ui::RegionOverlay`, `ui::CountdownOverlay`, `ui::RecordingFrame` in `src/ui`; `KeystrokeMode`
+lives in `recording_session.h`; `EventRecorder::Live` has `char last_key_label[32]`; `HooksThread` polls
+`capture::CursorTracker` itself; `LayeredWindow` draws with an `ID2D1DCRenderTarget` over the DIB.
+Done instead:
+- The overlays are `ct::recorder::{RegionOverlay, CountdownOverlay, RecordingFrame}` in `src/recorder` (another agent
+  owned `src/ui` while P05 ran in parallel; they are Direct2D on layered windows, not ImGui, so they need nothing from
+  ct_ui). Colors are the docs/05 tokens as local constants in `src/recorder/src/overlay_style.h`, hint strings too
+  (move them to `ct/ui/strings.h` when the bar lands). Pure geometry (handles, drag/resize/nudge, even sizes, snap
+  pick, final region/monitor, label placement, frame edges) is in `ct/recorder/overlay_geometry.h` and unit-tested.
+- `KeystrokeMode` is defined in `ct/recorder/event_recorder.h`; `RecordingSession` will include it from there.
+- `platform::HooksThread` knows nothing about the recorder (platform sits below capture): it calls a
+  `platform::HooksHandler` (OnMouseHook/OnKeyboardHook/OnForeground/OnTimer) on ct-hooks; the hook procs find their
+  owner through a `thread_local`. `EventRecorder` implements the handler and polls the CursorTracker in `OnTimer`.
+  `HooksThread::Config::swallow_tag` (test hook): injected input whose `dwExtraInfo` equals the tag is recorded and
+  then swallowed, so tests/tools click and type through real LL hooks without touching other apps.
+  `DebugStall(ms)` exists to test the watchdog (the IO thread calls `CheckWatchdog()` every 100 ms; more than 1 s
+  without the 250 ms WM_NULL heartbeat -> unhook and re-install on the next pump).
+- `EventRecorder`: `Start(..., Err* = nullptr)`; `Live` holds atomics (cursor, records) and the last key label is read
+  with `LastKeyLabel(char[32])` (lock-protected) instead of a raw shared array; `Marker(label, kind = 0)`;
+  `Flush(timeout_ms)` waits for the IO thread; `GetStats()`. `Config` adds `focus` and `test_swallow_tag`.
+  WINDOW_FOCUS: the hook only queues the HWND; title/rect/exe are looked up on ct-events-io (keeps the hooks thread
+  free of cross-process calls). The focus rect is region-relative like every other coordinate. An initial
+  WINDOW_FOCUS of the foreground window is written at start.
+- TYPING in shortcuts-only mode: every non-modifier key-down is queued anonymously (vk 0, no label) only to derive
+  TYPING bursts, so auto-zoom still sees typing without its content being stored. Off mode installs no keyboard hook
+  (no TYPING). A burst ends at its last key-down (the rule EventLog uses for files without TYPING records); the
+  "ended" record is written once 1 s passed (or on pause/stop) with that earlier time; readers sort by time.
+  Modifier keys alone are never shortcuts (the stroke carries them as bits); in shortcuts-only mode the key-up of a
+  recorded key-down is recorded too.
+- CharFor gets a key state built from the recorded Shift bit and a Caps Lock state tracked from recorded VK_CAPITAL
+  downs (seeded with GetKeyState at start); the layout is the foreground thread's. Labels: fixed English names for
+  named keys, the VK letter/digit for A-Z/0-9, GetKeyNameTextW otherwise (MapVirtualKey char when the scan code is 0).
+- `SessionClock` is the spec struct plus `Start(epoch)`, `QpcToMediaUs`, `PauseAt/ResumeAt`, `Pauses()` (the
+  meta.json log) and an atomic `pause_started_qpc`. Readers are lock-free with a sequence counter, and
+  NowMediaUs/Pause/Resume read QPC *inside* the sequence window: a "now" read before a concurrent resume and combined
+  with the new offset made time go backwards (the monotonic test saw 669-1147 regressions in ~40k cycles; 0 after).
+- `LayeredWindow` renders with a software `ID2D1RenderTarget` on a WIC bitmap and copies only the dirty rows into the
+  DIB before `UpdateLayeredWindowIndirect(prcDirty)`. Measured on the 3840x1080 virtual screen (Release, machine loaded
+  by other agents): the DC render target cost 30-40 ms per pass whatever the dirty size (its EndDraw copies the whole
+  surface to the DC); the WIC path 1-10 ms per pass, slowest whole update 46 ms, first full draw ~80 ms. The DC
+  target stays as the fallback when WIC cannot be created (COM not initialized on the thread). Additions:
+  `SetHandler`, `Rect()`, `ReadPixelsRgba` (the overlays are excluded from screenshots, so tests/tools snapshot them
+  this way), `LastDrawMs`, `Present(alpha)`, `Show(show, activate)`.
+- Region overlay: the selection is filled with alpha 1/255, not 0 (fully transparent layered pixels are not
+  hit-testable). A click without drag selects the hovered window (or the monitor); in Window mode the click confirms.
+  Ctrl+arrows resize by 2 px (Shift 10) so sizes stay even; right click goes back a step / cancels. Window snapping
+  also skips minimized and click-through layered windows (WS_EX_TRANSPARENT and WS_EX_LAYERED).
+- RecordingFrame is four edge windows (a 4K region would otherwise need a 33 MB surface); an edge that would be
+  outside every display is drawn just inside the region (still excluded from capture), so full-monitor regions show it.
+- `TrayIcon` adds `Readd()/TaskbarCreatedMessage()`, `Decode()`, `ShowMenu()` and `CreateRecordingIcon(base, size)`
+  (base icon drawn over black and white to recover its alpha, dot coverage-blended, straight alpha for
+  CreateIconIndirect). `HotkeyManager` adds `Unregister`, `IsRegistered`, `Count`, `Describe` (canonical text from
+  `ct::HotkeyToString`).
+Why: file ownership while phases ran in parallel, the dependency order, measured performance, privacy-preserving TYPING.
+Impact: RecordingSession (5.1) creates the `EventRecorder` with `KeystrokeMode` from settings and calls `SetPaused`
+next to `SessionClock::Pause/Resume`; the recorder bar (5.6) uses `RegionOverlay::Open`, `CountdownOverlay::Start/
+Cancel`, `RecordingFrame::Show/Hide`, `HotkeyManager` and `TrayIcon` on the UI thread (COM STA initialized). P09 may
+move the overlays into ct_ui later; nothing in them depends on ImGui.
