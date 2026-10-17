@@ -496,3 +496,32 @@ track to whole packets, see 6.1); the test accepts 240000 - 48 .. 240640 + 48. S
 after `Seek(1.9 s)` the 2 kHz onset lands at frame 4792 (expected 4800, the detector's step is 4 frames).
 Why: testability; MF behaviour.
 Impact: none for callers.
+
+## 2026-10-17 · P06 task 6.4 · Nv12Blit, MediaCache/FrameCache design choices
+Spec said: `platform::Nv12Blit { Init; ToRgba }` (P05 interface); `FrameRef`/`MediaCache`/`CacheBudget` as declared in P06;
+prefetch: seek when the decoder is outside `[window.start - 3 s, window.start]`; eviction outside the window first, then LRU;
+thumbnails via a software decoder; peaks cached as `<fnv64(path+size+mtime)>.peaks`.
+Done instead (additions only, specified members unchanged):
+- `Nv12Blit` (src/platform, shaders/nv12_blit.hlsl via ct_compile_shaders): adds `Draw(ctx, y, uv, src_size, rtv, viewport,
+  box_filter, alpha)` and static `CreatePlaneViews`; `ToRgba` caches views for the last 8 textures. The box filter is one
+  pass of ceil(scale/2)^2 bilinear taps (not the "2-pass box filter"). Measured max |dRGB| 1 against the BT.709 reference.
+- `FrameRef::rgba` (images are one BGRA texture; y/uv/nv12 null). `FrameRef`s stay valid until the 4th following
+  `GetVideoFrame` (last 4 returned slots are pinned against eviction). `MediaCache` adds `GetStats`, `FrameDurationUs`,
+  `FpsNum/Den`, `DurationUs`, `HasVideo`, `WaitForFrame` (tools/tests). `FrameCache` is a GPU-free bookkeeping class
+  (slot indices into MediaCache's texture store) so its logic is unit-tested; a frame lasts until the next cached one when
+  that starts within 1 ms (rounded MF durations leave 1 us holes).
+- Prefetch order: the part of the window ahead of the playhead first, then the part behind it. Eviction: outside the window
+  (LRU), then inside the window but behind the playhead; frames ahead of the playhead are never evicted — when the budget
+  is full of them the thread stalls until the next hint (a 2.5 s playing window of 1080p is 466 MB, more than the 256 MB
+  budget, so playback runs as a ring of budget-sized read-ahead). Forward-vs-seek: instead of the fixed 3 s rule, decode
+  forward unless a keyframe is known/predicted in between (keyframes are learned from seek landings; decoders flag every
+  output sample as CleanPoint, so the flag is useless); unknown GOP -> forward up to 1 s; never more than 3 s.
+  Cold exact frame at 2.5 s: 64-89 ms (was 300-350 ms with the 3 s rule).
+- Thumbnails: the software decoder is created on the IO pool right after `Open` (its creation takes ~0.5 s under load);
+  newest request first; consecutive buckets decode forward without a seek. 650 ms for the first, 150-230 ms after.
+- Peaks key also includes the stream index; cache dir = `<Paths logs dir>\..\cache` when `Paths::Init` ran, else
+  `%LOCALAPPDATA%\Camtesia\cache`. The 1080p pattern gives 502 windows (AAC padding, see 6.1); the test accepts 500-502.
+- Draw FrameRefs/thumbnails with `D3DDevice::Lock` held: worker threads (thumbnails, decoder copies) use the immediate
+  context under that lock, so the UI thread must too (P08/P09).
+Why: budget/latency measurements above; testability.
+Impact: P08 samples `FrameRef::y/uv` (or `rgba` for images) and reuses `Nv12Blit`; P09 takes the device lock while rendering.

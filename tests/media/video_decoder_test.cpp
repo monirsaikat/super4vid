@@ -102,6 +102,16 @@ CT_TEST_DEVICE(video_decoder_all_frames_1080p) {
     CT_CHECK_EQ(count, 300);
     CT_CHECK_EQ(last_index, 299);
     CT_CHECK(increasing);
+    // The first frame is a keyframe; seek landings add more (2 s GOP: a seek to 3.1 s lands on 2.0 s).
+    CT_REQUIRE(dec.KnownKeyframes().size() == 1u);
+    CT_CHECK_EQ(dec.KnownKeyframes()[0], 0);
+    CT_REQUIRE(SUCCEEDED(dec.Seek(3'100'000)));
+    DecodedFrame k;
+    CT_REQUIRE(dec.ReadFrame(k, 3'100'000) == S_OK);
+    dec.ReleaseFrame(k.pool_index);
+    CT_REQUIRE(dec.KnownKeyframes().size() == 2u);
+    CT_CHECK_EQ(dec.KnownKeyframes()[1], 2'000'000);
+    std::printf("    keyframes known after a full decode: %zu\n",dec.KnownKeyframes().size());
     std::printf("    hardware: %d\n", dec.IsHardware() ? 1 : 0);
 }
 

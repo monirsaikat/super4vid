@@ -114,6 +114,8 @@ void VideoDecoder::Shutdown() {
     m_frame = {};
     m_eos = false;
     m_seek_target = -1;
+    m_first_after_seek = true;
+    m_keyframes.clear();
     m_frames_copied = m_frames_skipped = 0;
 }
 
@@ -170,6 +172,7 @@ HRESULT VideoDecoder::Seek(TimeUs t_us) {
     if (!m_reader) return E_ILLEGAL_METHOD_CALL;
     CT_RETURN_IF_FAILED(detail::SetReaderPosition(m_reader.Get(), t_us));
     m_seek_target = t_us < 0 ? 0 : t_us;
+    m_first_after_seek = true;
     m_eos = false;
     return S_OK;
 }
@@ -209,6 +212,9 @@ HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us) {
             if (pts < m_seek_target - kStaleAfterSeekUs) continue;   // a frame from before the seek (some sources)
             m_seek_target = -1;
         }
+        // Decoders flag every output sample as a clean point, so only seek landings identify keyframes.
+        if (m_first_after_seek) NoteKeyframe(pts);
+        m_first_after_seek = false;
         if (pts + dur <= skip_before_us) {
             ++m_frames_skipped;
             continue;
@@ -284,6 +290,13 @@ HRESULT VideoDecoder::CopyToPool(IMFSample* sample, uint32_t index) {
 }
 
 void VideoDecoder::ReleaseFrame(uint32_t pool_index) { m_pool.Release(pool_index); }
+
+void VideoDecoder::NoteKeyframe(TimeUs pts) {
+    auto it = std::lower_bound(m_keyframes.begin(), m_keyframes.end(), pts);
+    if (it != m_keyframes.end() && *it == pts) return;
+    if (m_keyframes.size() >= 8192) return;   // ~4.5 h of 2 s GOPs; beyond that the heuristic just seeks more
+    m_keyframes.insert(it, pts);
+}
 
 ID3D11ShaderResourceView* VideoDecoder::YSrv(uint32_t i) const { return i < m_y_srv.size() ? m_y_srv[i].Get() : nullptr; }
 ID3D11ShaderResourceView* VideoDecoder::UvSrv(uint32_t i) const { return i < m_uv_srv.size() ? m_uv_srv[i].Get() : nullptr; }

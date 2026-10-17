@@ -70,6 +70,9 @@ public:
     bool IsHardware() const { return m_hardware; }   // last frame came as a D3D11 surface from a DXVA decoder
     bool AtEnd() const { return m_eos; }
     uint64_t FramesCopied() const { return m_frames_copied; }
+    // Keyframe times learned while decoding (the first frame after Init and after every Seek: the reader lands on a
+    // keyframe), sorted. Callers use them to choose between decoding forward and seeking.
+    const std::vector<TimeUs>& KnownKeyframes() const { return m_keyframes; }
     uint64_t FramesSkipped() const { return m_frames_skipped; }
 
     // Copy box for a decoded frame: the display aperture clamped to the frame, origin and size rounded down to even
@@ -80,6 +83,7 @@ private:
     HRESULT ApplyCurrentType();
     HRESULT CreatePool(SizeI size);
     HRESULT CopyToPool(struct IMFSample* sample, uint32_t index);
+    void NoteKeyframe(TimeUs pts);
 
     platform::D3DDevice* m_dev = nullptr;
     Config m_cfg;
@@ -96,6 +100,8 @@ private:
     int m_rotation = 0;
     TimeUs m_duration_us = 0;
     TimeUs m_seek_target = -1;        // >= 0 right after Seek, until a frame at/after target - 2 s arrived
+    bool m_first_after_seek = true;   // the next decoded frame is the keyframe the reader landed on
+    std::vector<TimeUs> m_keyframes;
     bool m_hardware = false;
     bool m_eos = false;
     uint64_t m_frames_copied = 0;
