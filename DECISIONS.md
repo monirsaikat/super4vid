@@ -298,3 +298,140 @@ reaches the engine is dropped (the pause still looks open) and becomes silence; 
 affects loopback, whose timestamps are presentation times ~10-20 ms ahead of "now".
 Why: review finding (high): pause/resume must not lose or shift audio.
 Impact: P05 should call `SetPaused` on every stream promptly with the same QPC; nothing else changes for callers.
+## 2026-10-17 · P02 task 2.1 · D3DDevice/TexturePool/GpuTimer details
+Spec said: `TexturePool` hands out indices through an SPSC queue; `SupportsNv12RenderTarget()` checks
+`CheckFormatSupport(DXGI_FORMAT_NV12)`; `GpuTimer` is double-buffered.
+Done instead (additions only, specified signatures unchanged):
+- `TexturePool` keeps one atomic in-use flag per texture instead of an SPSC queue of free indices. Acquire scans round robin
+  from the slot after the last one handed out, so the longest-released texture comes first, and skips any slot the reuse
+  predicate refuses. With a queue, a refused index would have to be popped and pushed back by the producer, which an SPSC
+  queue does not allow. Same thread contract: Acquire on one thread, Release on one other. Added `Shutdown()` and the
+  `ReusePredicate` typedef; `Init` accepts 1..64 textures.
+- `SupportsNv12RenderTarget()` also requires R8_UNORM and R8G8_UNORM render-target support (the per-plane RTV formats).
+- `GpuTimer` rotates 4 query sets (not 2), so a span is not skipped when the GPU runs 2-3 frames behind; added `Shutdown()`.
+- `InitMfManager()` is guarded by its own critical section (ct_media may call it from a worker thread).
+- D3DDevice/TexturePool/GpuTimer tests live in `tests/capture/d3d_test.cpp` (there is no platform test exe). `ct_capture_tests`
+  has its own `main()` that sets per-monitor-v2 DPI awareness before running the tests.
+Why: the reuse predicate and the SPSC contract cannot both hold with a queue; the rest is robustness.
+Impact: P04 uses the specified API unchanged.
+
+## 2026-10-17 · P02 task 2.2 · Display order and region clamp rules
+Spec said: `EnumerateDisplays` returns the displays with an `index`; `ClampRegionToDisplay` forces even sizes, min 64x64.
+Done instead: the order is primary first, then left to right, top to bottom, so `--monitor 0` is always the primary monitor.
+`friendly_name` falls back to the GDI device name when the EDID name is missing. `ClampRegionToDisplay` treats an empty region,
+or one that does not intersect the display, as the whole display, and shifts a region grown to 64x64 back inside the display.
+Added `RotationName()` for logs.
+Why: the spec leaves these open; P05's monitor picker and the bench need a stable "primary = 0".
+Impact: none.
+
+## 2026-10-17 · P02 task 2.3 · DesktopDuplicator details
+Spec said: the `DesktopDuplicator` declaration and Init/Acquire sequences in P02 section 2.3.
+Done instead (specified members unchanged):
+- The output is found by GDI device name (`DXGI_OUTPUT_DESC.DeviceName`) across all adapters rather than by
+  `adapter_luid/output_index` alone: LUID + index can go stale after a hot-plug, the name is what `DisplayInfo` was built from.
+- `DuplicateOutput` (legacy) is also the fallback when `DuplicateOutput1` returns `DXGI_ERROR_UNSUPPORTED`/`E_INVALIDARG`
+  (process not per-monitor DPI aware), not only `E_NOTIMPL`/no interface.
+- `Reinit()` asks only for the format the session started with, and returns `DXGI_ERROR_UNSUPPORTED` (retry) if the display
+  now delivers another one (HDR toggled), so the BGRA/FP16 pool and converter never see a format change. A rotation change
+  during a session is not followed (the converter keeps the start rotation); documented limitation.
+- Mode change to a smaller size: `ComputeBox` intersects the region with the new desktop; the visible part keeps its place in
+  dst and the rest is cleared to black via a cached RTV (dst textures must be bound as render targets). The stream size never
+  changes (docs/03 section 10 "letterbox"). The duplicated texture size is re-checked on every frame so the box never leaves it.
+- `capture.coalesced` counts the extra frames (`AccumulatedFrames - 1`), not the number of acquires with more than one.
+- The cross-adapter slow path is implemented (second device, staging copy, `UpdateSubresource`) but not exercised: the reference
+  machine has one GPU.
+Why: robustness against hot-plug, DPI-unaware hosts and mode changes.
+Impact: P05's pool textures for capture need `D3D11_BIND_RENDER_TARGET` (ScreenCapturer creates them that way).
+
+## 2026-10-17 · P02 task 2.4 · ColorConverter details; ct_compile_shaders fix
+Spec said: `bgra_to_nv12.hlsl` with a runtime `tonemap` flag and `float4x4 rot_uv`; `rgba16f_to_nv12.hlsl` as a separate file;
+the `ColorConverter` declaration in section 2.4; the video processor enumerator with "Usage NORMAL".
+Done instead:
+- `rot_uv` is declared `row_major` so the C++ side (`RotationUvMatrix`, exported for tests) writes it in reading order.
+- `rgba16f_to_nv12.hlsl` defines `CT_HDR_SOURCE` and includes `bgra_to_nv12.hlsl`: the scRGB scale + sRGB encode is compiled
+  only into the FP16 variant; `tonemap` stays a runtime flag inside it. BT.709 constants are unchanged. An FP16 source with
+  `hdr_tonemap = false` is still scaled to SDR white and sRGB-encoded (only the roll-off is skipped).
+- Note: the specified roll-off `c / (1 + max(c - 1, 0))` equals 1 for every c >= 1, so it behaves as a clip at SDR white. Kept as
+  specified; a real shoulder curve is a P11 polish item if HDR captures look flat.
+- `Config` gained `force_video_processor` (tests run the fallback on hardware that has the shader path) and `Shutdown()`.
+  Exported CPU references `RotationUvMatrix`, `RotateUvRef`, `RgbToNv12Ref` live in `color_convert.h`.
+- Views (SRV, per-plane RTVs, VP input/output views) are created on first use per texture and cached (16 slots each); with
+  the 3 + 12 pool textures this means no view creation after the first second of a session.
+- Video processor fallback: `D3D11_VIDEO_USAGE_PLAYBACK_NORMAL`, auto-processing off, source/dest/target rects set. Rotation maps
+  R90 -> `D3D11_VIDEO_PROCESSOR_ROTATION_90` (clockwise, the same mapping as the shader's uv transform); not verified on a
+  rotated monitor.
+- `cmake/CtModule.cmake` `ct_compile_shaders`: the `$<IF:$<CONFIG:Debug>,/Zi;/Od,/O3>` argument is now quoted. Unquoted, the
+  `;` split the generator expression and ninja rejected the build file ("bad $-escape"); P02 is the first user of the helper.
+Measured: GPU vs CPU reference, 10,000 samples per rotation, max |dY| = 1 and max |dUV| = 1 for all four rotations; the video
+processor fallback gives max |dY| 1 / |dUV| 1 on a smooth gradient (27 on hard sawtooth edges, its chroma filter differs).
+Impact: P08 can reuse `fullscreen.hlsl` and the helper.
+
+## 2026-10-17 · P02 task 2.5 · CursorTracker details
+Spec said: the `CursorTracker`/`CursorSample`/`CursorShape` declarations and the Poll/CaptureShape algorithm in section 2.5.
+Done instead (additions only):
+- `CursorTracker()` constructor (reserves the known-id list), `Polls()` and `DroppedSamples()` counters.
+- An inverting pixel is detected when *any* channel is brighter over black than over white (the spec checks "black > white").
+  Premultiplied colour is clamped to alpha so the bitmap is always valid premultiplied BGRA.
+- A cursor whose shape cannot be captured gets `shape_id = 0` and is not retried until the handle changes (no 120 Hz GDI
+  retry storm); a full shape queue is retried on the next poll. A full sample queue drops nothing silently: it is counted and
+  the change is pushed on the next poll.
+- `GetCursorInfo` failing (secure desktop) keeps the last sample.
+- Shape ids hash pixels, size and hotspot (FNV-1a over the pixel hash plus a small header); 0 is reserved.
+Measured: `CaptureShape` ~0.16 ms per call (2,000 captures in 314 ms, Debug), 0 GDI objects leaked.
+Why: robustness; the spec leaves these open.
+Impact: P05's EventRecorder writes `shape_id 0` as "default arrow".
+
+## 2026-10-17 · P02 task 2.6 · ScreenCapturer / FrameSink details
+Spec said: the `FrameSink`, `CaptureStats` and `ScreenCapturer` declarations and the pacer loop in section 2.6.
+Done instead (additions only; specified members unchanged):
+- `FrameSink::OnError(HRESULT)` (the loop sketch says "add to FrameSink") is virtual with an empty default, called once on the
+  capture thread before it exits on a fatal error. `OnFrame` returning true transfers `pool_index` to the sink, which releases it.
+- `CaptureStats` gained `gpu` (GpuTimer around the conversion passes), `first_frame_us` and `last_new_frame_qpc` (the bench and
+  P05 use it to see "capture resumed"). `acquire` is timed only for calls that returned S_OK and includes the wait inside
+  `AcquireNextFrame` (at most until tick + 2 ms); `repeats` counts ticks that re-sent the previous image (also while access is lost).
+- `Config` gained `force_video_processor`; `Init` clamps `region` with `ClampRegionToDisplay` (an empty region = whole display).
+  `Region()` and `IsRunning()` getters added.
+- The HighResTimer is created inside the capture thread (it holds `timeBeginPeriod(1)` only while capturing).
+- Reinit is retried every 250 ms on any failure except device loss (`DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG`,
+  `DRIVER_INTERNAL_ERROR`), which is fatal. `reinits` counts successful re-creations. The first retry happens on the next tick.
+- Pausing while the pacer waits for a tick discards that tick (no frame, no tick count).
+- The BGRA pool rotates through its 3 textures: each acquire writes the next slot, so a failed or timed-out acquire leaves the
+  last image intact for repeats.
+Why: needed by the bench, tests and P05; the rest are the conservative readings of the sketch.
+Impact: P04's Mp4Writer implements `OnFrame` (and may override `OnError`).
+
+## 2026-10-17 · P02 task 2.7 · GPU budget work: zero-copy conversion, compute converter, repeats re-send the texture
+Spec said: crop-copy every new desktop image into a BGRA pool texture, convert it with two pixel-shader passes, and on a
+tick without a new image convert the previous BGRA texture again into a new NV12 texture. Budget: GPU < 8 % at 1080p60.
+Observed with that design (Release, 1080p60, a 60 fps animation on the monitor, Task Manager's per-process "GPU Engine"
+counter): 20-27 % GPU. GPU timestamps, paced at 60 Hz: crop copy 0.85-0.9 ms, two-pass conversion 1.4 ms, video processor
+1.4-1.8 ms. The iGPU stays at low clocks at this load (the same conversion takes 0.27 ms back to back), so every pass is
+expensive. The 8 % budget cannot be met that way.
+Done instead (DECISIONS-worthy API additions marked +):
+- Zero-copy: `+DesktopDuplicator::AcquireDirect/ReleaseDirect/CanAcquireDirect` hand the duplicated surface and the crop box
+  to the capturer, which converts straight from it with `+ColorConverter::ConvertRegion` (crop as uv offset/scale in the
+  constant buffer; the old `inv_src_size`/`pad` fields became `src_offset`/`src_scale`, `pad2` became `dst_size`) before
+  `ReleaseFrame`. The BGRA crop copy (`AcquireInto`) remains for letterboxing, cross-adapter capture, the video processor
+  fallback and `+ScreenCapturer::Config::zero_copy = false`; the BGRA pool (3) is still created.
+- Compute converter: one dispatch, one thread per 2x2 block, R8/R8G8 UAVs on the NV12 planes (`D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE`
+  on NV12, D3D11.3 `CreateUnorderedAccessView1` with `PlaneSlice`). 0.54-0.8 ms paced vs 1.4-1.8 ms for the two passes,
+  bit-exact to the CPU reference (max |dY| 1, |dUV| 0). Used when supported (`+ColorConverter::Config::allow_compute`,
+  `+UsingCompute()`, `+DstBindFlags()`); the pixel-shader passes stay as the fallback. Shaders split into `nv12_common.hlsli`,
+  `bgra_to_nv12.hlsl` (PS), `bgra_to_nv12_cs.hlsl` (CS) and the two HDR wrappers.
+- Repeats: a tick without a new image re-sends the previous NV12 texture (docs/03 section 4 wording) instead of converting
+  again: `+TexturePool::AddRef(index)` hands the same texture out again, the pool keeps a hand-out count per texture, and the
+  sink releases once per `OnFrame`. Repeats cost no GPU work and no pool texture.
+- `CaptureStats::acquire` measures from max(call time, the image's present time) to return, i.e. the cost of acquiring and not
+  the wait inside `AcquireNextFrame` for the desktop to change (that wait is a kernel wait of up to 3 ms, no CPU). With the
+  spec's definition (whole call), avg was 1.1-1.7 ms on a changing desktop.
+- `+platform::ImageIo::WritePngRgba` (WIC) for `--dump-frame`; P06 extends it.
+- `capture_bench` extras: `--animate` (child process shows a 60 fps animation over 75 % of the monitor as the "video playing"
+  stand-in), `--cursor` (CursorTracker at 120 Hz on the main thread), `--video-processor`, `--copy-path`, `--pixel-shader`,
+  `--debug-layer`. GPU % was read with `Get-Counter "\GPU Engine(pid_<pid>_*)\Utilization Percentage"` (busiest engine,
+  what Task Manager shows) once per second.
+Result (3 x 30 s, animated): GPU 6.4 / 7.0 / 7.8 % avg, 0 drops, 0 late ticks. See PROGRESS.md 2.7.
+Not measured: 4K (the reference machine has two 1080p monitors); lock/unlock recovery (needs a person at the machine).
+Seen once during development (older build, user working on the machine): 3 late ticks in 30 s; not reproduced in the final runs.
+Impact: P04 — the NV12 pool textures carry `D3D11_BIND_UNORDERED_ACCESS` when the compute path is active (check the MF
+encoder accepts them; if not, set `ScreenCapturer::Config::allow_compute = false`), and the same `pool_index` can arrive in
+consecutive `OnFrame` calls (one Release per call). The reuse predicate is consulted only by `Acquire`, never by `AddRef`.

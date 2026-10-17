@@ -43,13 +43,20 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
   - [x] HighResTimer, 1,000 x 2 ms waits (200 us spin): p99 390-640 us over the runs above (500 us target missed in some rounds; the kernel timer fires up to ~1 ms late, see DECISIONS.md); with a 1 ms spin p99 < 170 us
 
 ## P02 Screen capture
-- [ ] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager)
-- [ ] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag)
-- [ ] 2.3 `DesktopDuplicator`: acquire loop, crop copy, timeout/repeat, access-lost recovery
-- [ ] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback
-- [ ] 2.5 `CursorTracker`: 120 Hz position poll + shape capture (color, mask, animated), dedupe by hash
-- [ ] 2.6 Capture pacing: CFR tick emitter, frame repeat, drop accounting, stats
-- [ ] 2.7 Acceptance: `capture_bench --monitor 0 --fps 60 --seconds 30` shows 0 drops, CPU < 3 %, GPU < 8 % at 1080p
+- [x] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager) — AMD Radeon (5700G iGPU): NV12 RT yes, FP16 RT yes, video device yes
+- [x] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag) — reference machine: 2 x 1920x1080 SDR (HP M22f 60 Hz primary, HP 22fw 59 Hz), 96 dpi, one adapter
+- [x] 2.3 `DesktopDuplicator`: acquire loop, crop copy, timeout/repeat, access-lost recovery — first S_OK 22-26 ms after Init (Debug, debug layer), content verified by readback; letterbox path tested
+- [x] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback — GPU vs CPU reference max |dY| 1, |dUV| 1 (all 4 rotations, 10,000 samples); VP fallback max 1/1 on a smooth gradient
+- [x] 2.5 `CursorTracker`: 120 Hz position poll + shape capture (color, mask, animated), dedupe by hash — arrow 32x32 hotspot (0,0); CaptureShape ~0.16 ms (Debug), 0 GDI objects leaked over 2,000 captures
+- [x] 2.6 Capture pacing: CFR tick emitter, frame repeat, drop accounting, stats — 3 s @ 60 fps 1080p: 180 ticks, 0 drops, 0 late (Debug and Release); pause/resume gapless (max step 16667 us)
+- [~] 2.7 Acceptance: `capture_bench --monitor 0 --fps 60 --seconds 30` shows 0 drops, CPU < 3 %, GPU < 8 % at 1080p
+  - [x] `build.cmd debug`/`release` 0 warnings; `build.cmd test`: ct_core_tests + ct_capture_tests (26 tests) pass in Debug and Release (2026-10-17)
+  - [x] 1080p60, monitor 0 (HP M22f 1920x1080 @ 60 Hz), Release, `--animate` (60 fps animation over 75 % of the monitor as the video stand-in), 3 runs of 30 s: 1801/1801/1801 ticks, 1789/1782/1780 new frames, dropped_pool_empty 0, dropped_sink 0, late_ticks 0; acquire avg 0.085/0.118/0.087 ms (max 0.92); convert avg 0.015-0.019 ms CPU (GPU time of the compute conversion ~1.0 ms at the iGPU's low clocks); process CPU 0.13-0.20 % of the machine (2.0-3.2 % of one core); GPU (Task Manager counter, busiest engine) avg 7.8 / 6.4 / 7.0 %, max 10.2 %; RSS 28-31 MB (peak 50 MB)
+  - [x] same with the desktop as it was (browser, 791 new frames / 1009 repeats): 0 drops, 0 late, CPU 0.20 %, GPU 5.4 %, RSS 28 MB
+  - [x] Debug + D3D11 debug layer (`--debug-layer`, 5 s animated and a 30 fps region on monitor 1 with `--cursor`): no debug-layer messages, exit report lists only the device; `--dump-frame 100` PNG checked visually (correct colours)
+  - [x] budget was missed with the spec's design (20-27 % GPU); fixed with zero-copy conversion, a compute converter and texture re-send for repeats (DECISIONS.md 2.7)
+  - [ ] not measurable here: 4K (CPU < 5 %, GPU < 15 %) — the reference machine has only 1080p monitors
+  - [ ] HUMAN: lock (Win+L) and unlock during `capture_bench --monitor 0 --fps 60 --seconds 30`: summary shows `access_lost >= 1`, `reinits >= 1`, ticks keep counting, new frames resume within 1 s of unlocking, no crash
 
 ## P03 Audio capture
 - [x] 3.1 Device enumeration + default device notifications — enumerates 1 render endpoint (Realtek), 0 capture endpoints on this machine; notification delivery on a real default change is part of the 3.5 human check

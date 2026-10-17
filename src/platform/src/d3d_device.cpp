@@ -5,6 +5,7 @@
 #include <ct/core/log.h>
 
 #include <d3d10.h>   // ID3D10Multithread
+#include <mfapi.h>    // MFCreateDXGIDeviceManager
 
 #include <vector>
 
@@ -32,30 +33,57 @@ HRESULT CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, UINT flags, Co
                              context.ReleaseAndGetAddressOf());
 }
 
+// The adapter with an output that is attached to the desktop and contains (0,0): the primary monitor's GPU.
+ComPtr<IDXGIAdapter1> FindPrimaryMonitorAdapter(IDXGIFactory6* factory) {
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT a = 0; factory->EnumAdapters1(a, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++a) {
+        ComPtr<IDXGIOutput> output;
+        for (UINT o = 0; adapter->EnumOutputs(o, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++o) {
+            DXGI_OUTPUT_DESC desc{};
+            if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) continue;
+            const RECT& r = desc.DesktopCoordinates;
+            if (r.left <= 0 && r.top <= 0 && r.right > 0 && r.bottom > 0) return adapter;
+        }
+    }
+    return nullptr;
+}
+
+bool FormatHas(ID3D11Device* device, DXGI_FORMAT format, UINT required) {
+    UINT support = 0;
+    if (FAILED(device->CheckFormatSupport(format, &support))) return false;
+    return (support & required) == required;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- D3DDevice
 
 D3DDevice::D3DDevice() {
     InitializeCriticalSection(&m_context_cs);
+    InitializeCriticalSection(&m_mf_cs);
 }
 
 D3DDevice::~D3DDevice() {
     Shutdown();
     m_info_queue.Reset();
     m_debug.Reset();
+    DeleteCriticalSection(&m_mf_cs);
     DeleteCriticalSection(&m_context_cs);
 }
 
 HRESULT D3DDevice::Init(bool enable_debug_layer) {
     CT_RETURN_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(m_factory.ReleaseAndGetAddressOf())));
 
-    ComPtr<IDXGIAdapter1> adapter;
-    HRESULT hr = m_factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                       IID_PPV_ARGS(adapter.GetAddressOf()));
-    if (FAILED(hr)) {
-        CT_LOG_WARN("EnumAdapterByGpuPreference failed: %s", HrToString(hr).c_str());
-        adapter.Reset();
+    // Desktop duplication is fastest on the adapter that scans out the monitor, so prefer the primary monitor's GPU.
+    HRESULT hr = S_OK;
+    ComPtr<IDXGIAdapter1> adapter = FindPrimaryMonitorAdapter(m_factory.Get());
+    if (!adapter) {
+        hr = m_factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                   IID_PPV_ARGS(adapter.GetAddressOf()));
+        if (FAILED(hr)) {
+            CT_LOG_WARN("EnumAdapterByGpuPreference failed: %s", HrToString(hr).c_str());
+            adapter.Reset();
+        }
     }
 
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -107,12 +135,43 @@ HRESULT D3DDevice::Init(bool enable_debug_layer) {
         DXGI_ADAPTER_DESC1 desc{};
         if (SUCCEEDED(actual.As(&actual1)) && SUCCEEDED(actual1->GetDesc1(&desc))) {
             m_adapter_name = WideToUtf8Local(desc.Description);
+            m_adapter_luid = desc.AdapterLuid;
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) m_is_warp = true;
         }
+        CT_LOG_IF_FAILED(actual.As(&m_adapter));
     }
+
+    const UINT rt = D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+    m_nv12_rt = FormatHas(m_device.Get(), DXGI_FORMAT_NV12, rt) &&
+                FormatHas(m_device.Get(), DXGI_FORMAT_R8_UNORM, rt) && FormatHas(m_device.Get(), DXGI_FORMAT_R8G8_UNORM, rt);
+    m_fp16_rt = FormatHas(m_device.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, rt);
+    if (FAILED(m_device.As(&m_video_device))) m_video_device.Reset();
+    if (FAILED(m_context.As(&m_video_context))) m_video_context.Reset();
+    CT_LOG_INFO("D3D11 caps: NV12 render target %s, FP16 render target %s, video device %s", m_nv12_rt ? "yes" : "no",
+                m_fp16_rt ? "yes" : "no", m_video_device ? "yes" : "no");
     CT_LOG_INFO("D3D11 device: %s, feature level %u.%u%s%s", m_adapter_name.c_str(), (static_cast<unsigned>(level) >> 12) & 0xFu,
                 (static_cast<unsigned>(level) >> 8) & 0xFu, m_is_warp ? ", WARP" : "", m_debug_layer ? ", debug layer" : "");
     return S_OK;
+}
+
+HRESULT D3DDevice::InitMfManager() {
+    if (!m_device) return E_UNEXPECTED;
+    EnterCriticalSection(&m_mf_cs);
+    HRESULT hr = S_OK;
+    if (!m_mf_mgr) {
+        ComPtr<IMFDXGIDeviceManager> mgr;
+        UINT token = 0;
+        hr = MFCreateDXGIDeviceManager(&token, mgr.GetAddressOf());
+        if (SUCCEEDED(hr)) hr = mgr->ResetDevice(m_device.Get(), token);
+        if (SUCCEEDED(hr)) {
+            m_mf_mgr = mgr;
+            m_mf_token = token;
+        } else {
+            LogHr(hr, "MFCreateDXGIDeviceManager/ResetDevice", __FILE__, __LINE__);
+        }
+    }
+    LeaveCriticalSection(&m_mf_cs);
+    return hr;
 }
 
 HRESULT D3DDevice::CheckRemoved() const {
@@ -125,7 +184,12 @@ void D3DDevice::Shutdown() {
         m_context->ClearState();
         m_context->Flush();
     }
+    m_mf_mgr.Reset();
+    m_mf_token = 0;
+    m_video_context.Reset();
+    m_video_device.Reset();
     m_context.Reset();
+    m_adapter.Reset();
     m_device.Reset();   // m_debug / m_info_queue keep the device alive for ReportLiveObjects()
     m_factory.Reset();
 }
