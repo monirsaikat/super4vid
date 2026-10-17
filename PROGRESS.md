@@ -43,7 +43,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
   - [x] HighResTimer, 1,000 x 2 ms waits (200 us spin): p99 390-640 us over the runs above (500 us target missed in some rounds; the kernel timer fires up to ~1 ms late, see DECISIONS.md); with a 1 ms spin p99 < 170 us
 
 ## P02 Screen capture
-- [ ] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager)
+- [x] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager) — AMD Radeon (5700G iGPU): NV12 RT yes, FP16 RT yes, video device yes
 - [ ] 2.2 Monitor/region model (`DisplayInfo`, virtual screen, DPI, HDR flag)
 - [ ] 2.3 `DesktopDuplicator`: acquire loop, crop copy, timeout/repeat, access-lost recovery
 - [ ] 2.4 `ColorConvert`: BGRA->NV12 HLSL pass (+ HDR FP16 tone-map variant), Video Processor fallback

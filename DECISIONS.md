@@ -218,3 +218,20 @@ Done instead:
 Why: keep the caller's cost to a memcpy and make every line accounted for.
 Impact: the app should call `Trace::Register()` at startup, `Stats::SetScopeTimings(true)` with --stats, and keep calling
 `Log::Shutdown()` last. `Log::Tick()` may be removed from the UI loop later; it is a no-op.
+
+## 2026-10-17 · P02 task 2.1 · D3DDevice/TexturePool/GpuTimer details
+Spec said: `TexturePool` hands out indices through an SPSC queue; `SupportsNv12RenderTarget()` checks
+`CheckFormatSupport(DXGI_FORMAT_NV12)`; `GpuTimer` is double-buffered.
+Done instead (additions only, specified signatures unchanged):
+- `TexturePool` keeps one atomic in-use flag per texture instead of an SPSC queue of free indices. Acquire scans round robin
+  from the slot after the last one handed out, so the longest-released texture comes first, and skips any slot the reuse
+  predicate refuses. With a queue, a refused index would have to be popped and pushed back by the producer, which an SPSC
+  queue does not allow. Same thread contract: Acquire on one thread, Release on one other. Added `Shutdown()` and the
+  `ReusePredicate` typedef; `Init` accepts 1..64 textures.
+- `SupportsNv12RenderTarget()` also requires R8_UNORM and R8G8_UNORM render-target support (the per-plane RTV formats).
+- `GpuTimer` rotates 4 query sets (not 2), so a span is not skipped when the GPU runs 2-3 frames behind; added `Shutdown()`.
+- `InitMfManager()` is guarded by its own critical section (ct_media may call it from a worker thread).
+- D3DDevice/TexturePool/GpuTimer tests live in `tests/capture/d3d_test.cpp` (there is no platform test exe). `ct_capture_tests`
+  has its own `main()` that sets per-monitor-v2 DPI awareness before running the tests.
+Why: the reuse predicate and the SPSC contract cannot both hold with a queue; the rest is robustness.
+Impact: P04 uses the specified API unchanged.
