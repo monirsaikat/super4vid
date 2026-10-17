@@ -46,3 +46,23 @@ target `ct_ui` that only exposes `ct_imconfig.h` and links `imgui` in P00). Empt
 folders contain a `.gitkeep` so git keeps them. `git rev-parse` runs with `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}` and falls back to `"nogit"` (docs/01 section 8).
 Why: `ct_add_test` needs a `ct_test` target, and P00 lists `ui` as one of the modules that gets a CMake target.
 Impact: P09 replaces `src/ui/CMakeLists.txt` with `ct_add_module(ui ...)`, keeps the target name `ct_ui`, and deletes the `.gitkeep` files it no longer needs.
+
+## 2026-10-17 · P00 task 0.3 · CT_FATAL goes through a handler registered by ct_platform
+Spec said: `CT_FATAL(msg)` logs, flushes and calls `ct::CrashHandler::WriteDumpAndExit(msg)`.
+Done instead: `<ct/core/assert.h>` declares `ct::SetFatalHandler(FatalHandler)` and `ct::Fatal(msg, file, line)`.
+`CT_FATAL` calls `ct::Fatal`, which logs, flushes and calls the registered handler. `ct::platform::CrashHandler::Install()`
+registers `WriteDumpAndExit`. With no handler registered (unit tests, tools), it calls `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`.
+Why: `ct_core` sits below `ct_platform` in the dependency order and cannot call into it.
+Impact: none for callers; `CT_FATAL` behaves as specified once the crash handler is installed.
+
+## 2026-10-17 · P00 task 0.3 · Small additions to the core/test headers
+Spec said: the exact signatures in P00 for `log.h`, `assert.h` and `ct_test.h`.
+Done instead (additions only, nothing removed or renamed):
+- `ct::Log::Level()` getter. `CT_LOG_CATEGORY` is wrapped in `#ifndef` so modules can define it before the include, as the spec intends, without a C4005 redefinition warning.
+- Release `CT_ASSERT(cond)` is `((void)sizeof(!(cond)))` instead of `((void)0)`. The condition still is not evaluated, but variables used only in asserts no longer trigger C4189 at `/W4 /WX`.
+- Asserts are keyed on `_DEBUG` (set by `/MTd`), not `CT_DEBUG`, so ImGui's `IM_ASSERT -> CT_ASSERT` is active in Debug even though the `imgui` target does not get `CT_DEBUG`.
+- The `ct_test` library includes a default `main()` in its own object file (`ct_test_main.cpp`). A test exe gets it only when it defines no `main()` of its own.
+- `ct::test::HrFailed()` keeps `CT_CHECK_HR(constant)` free of C4127.
+- `core` gained `src/types.cpp` and `src/assert.cpp`. P00 listed only `error.cpp` and `log.cpp`.
+Why: required for zero warnings and for the dependency order.
+Impact: P01 keeps these when it rewrites the logger internals.

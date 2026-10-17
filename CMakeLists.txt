@@ -60,3 +60,6 @@ target_link_libraries(ct_winlibs INTERFACE
 include(cmake/CtModule.cmake)
 
 # One line per module, in dependency order. Phases append their module here and nothing else.
+add_subdirectory(src/core)
+add_subdirectory(src/test)
+add_subdirectory(tests)
