@@ -20,8 +20,6 @@ int64_t ReadQpc() {
 // Reading QPC has no side effects, so this one dynamic initializer is acceptable (docs/02 section 1).
 const int64_t g_process_start_qpc = ReadQpc();
 
-constexpr int64_t kSpinUs = 200;
-
 std::string Stamp(const SYSTEMTIME& st) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u-%02u-%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
@@ -94,7 +92,7 @@ bool HighResTimer::ArmAbsoluteQpc(int64_t qpc) {
 }
 
 bool HighResTimer::WaitUntilQpc(int64_t qpc, HANDLE abort_event) {
-    const int64_t spin_qpc = detail::MulDivFloor(kSpinUs, Clock::QpcFrequency(), 1'000'000);
+    const int64_t spin_qpc = detail::MulDivFloor(m_spin_us, Clock::QpcFrequency(), 1'000'000);
     if (m_timer && qpc - ReadQpc() > spin_qpc) {
         if (!ArmAbsoluteQpc(qpc - spin_qpc)) return false;
         HANDLE handles[2] = {m_timer, abort_event};

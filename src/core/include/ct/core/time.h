@@ -43,13 +43,17 @@ public:
     bool IsHighResolution() const { return m_high_res; }
     // Arms the timer for an absolute QPC value (converted to a negative relative due time at arm time).
     bool ArmAbsoluteQpc(int64_t qpc);
-    // Waits until QpcNow() >= qpc: kernel wait to 200 us before the target, then spins. Returns false if
-    // abort_event was signaled first (or the wait failed).
+    // Waits until QpcNow() >= qpc: kernel wait to SpinUs() (default 200 us) before the target, then spins. Returns
+    // false if abort_event was signaled first (or the wait failed).
     bool WaitUntilQpc(int64_t qpc, HANDLE abort_event = nullptr);
+    // Longer spins trade CPU for accuracy where the kernel timer fires late (see DECISIONS.md, P01 task 1.5).
+    void SetSpinUs(int64_t us) { m_spin_us = us < 0 ? 0 : us; }
+    int64_t SpinUs() const { return m_spin_us; }
 
 private:
     HANDLE m_timer = nullptr;
     bool m_high_res = false;
+    int64_t m_spin_us = 200;
 };
 
 class Stopwatch {
