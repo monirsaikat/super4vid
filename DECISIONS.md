@@ -1160,3 +1160,16 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · Review fix (P04) · Mp4Writer never frees its state under a live ct-encode thread
+Spec said: `Abort()` returns after at most 3 s and does not join; the destructor finalizes and releases the writer.
+Done instead: the destructor joins ct-encode (no timeout) before releasing anything when `Finalize`'s 60 s join timed out.
+After `Abort()`, if ct-encode is still running (stuck in `IMFSinkWriter::Finalize`), the destructor logs a warning and
+deliberately leaks the internal state (sink writer, buffers, events, thread) instead of freeing it under the thread or
+blocking the crash path. To make that safe, the state ct-encode publishes (`Stats`, last error, accepting flag) moved from
+`Mp4Writer` into its Impl (`GetStats`/`LastError`/`Accepting` are no longer inline; same signatures), `Impl::thread` is
+declared last (destroyed, i.e. joined, first), and the listener is not called once Abort was requested.
+Added `SetFinalizeDelayForTest(ms)` (test `mp4_writer_abort_during_slow_finalize_then_destroy`).
+Why: the old destructor reset the sink writer while ct-encode could still be inside Finalize (use-after-free), and the
+events/atomics were destroyed before `~Thread` joined.
+Impact: P05 can destroy the writer right after `Abort()` on the crash path; the NV12 pool must still outlive the writer.
