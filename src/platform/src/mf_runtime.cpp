@@ -1,5 +1,5 @@
 #define CT_LOG_CATEGORY "media"
-#include <ct/media/mf_runtime.h>
+#include <ct/platform/mf_runtime.h>
 
 #include <ct/core/error.h>
 #include <ct/core/log.h>
@@ -7,21 +7,38 @@
 
 #include <mfapi.h>
 
-namespace ct::media {
+namespace ct::platform {
 
 namespace {
 SRWLOCK g_lock = SRWLOCK_INIT;
 int g_refs = 0;
-} // namespace
+bool g_process_ref = false;   // EnsureForProcess() holds its one reference
 
-HRESULT MfRuntime::Ensure() {
-    AcquireSRWLockExclusive(&g_lock);
+HRESULT EnsureLocked() {
     HRESULT hr = S_OK;
     if (g_refs == 0) {
         hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
         if (FAILED(hr)) CT_LOG_ERROR("MFStartup failed: %s", HrToString(hr).c_str());
     }
     if (SUCCEEDED(hr)) ++g_refs;
+    return hr;
+}
+} // namespace
+
+HRESULT MfRuntime::Ensure() {
+    AcquireSRWLockExclusive(&g_lock);
+    const HRESULT hr = EnsureLocked();
+    ReleaseSRWLockExclusive(&g_lock);
+    return hr;
+}
+
+HRESULT MfRuntime::EnsureForProcess() {
+    AcquireSRWLockExclusive(&g_lock);
+    HRESULT hr = S_OK;
+    if (!g_process_ref) {
+        hr = EnsureLocked();
+        g_process_ref = SUCCEEDED(hr);
+    }
     ReleaseSRWLockExclusive(&g_lock);
     return hr;
 }
@@ -45,4 +62,4 @@ MfScope::~MfScope() {
     if (SUCCEEDED(m_hr)) MfRuntime::Shutdown();
 }
 
-} // namespace ct::media
+} // namespace ct::platform

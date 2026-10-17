@@ -6,6 +6,7 @@ ct_add_module(platform
           src/tray_icon.cpp
           src/layered_window.cpp
           src/nv12_blit.cpp
+          src/mf_runtime.cpp
   DEPS ct_core)
 ct_compile_shaders(ct_platform SHADERS
   shaders/nv12_blit.hlsl:vs_5_0:vs_main

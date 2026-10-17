@@ -7,7 +7,9 @@
 // NowMediaUs/QpcToMediaUs/HnsToMediaUs/IsPaused from any thread, lock-free (a sequence counter guards the
 // paused/offset/pause-start triple so a reader never mixes the state before and after a transition).
 // Pauses() is the log for meta.json; read it on the controlling thread (or after the session stopped).
+// It is a capture::MediaTimeSource, so WebcamSource::Start takes it directly.
 
+#include <ct/capture/media_time_source.h>
 #include <ct/core/types.h>
 
 #include <atomic>
@@ -21,7 +23,7 @@ struct PauseSpan {
     TimeUs duration_us = 0;   // wall time spent paused (0 while the pause is still open)
 };
 
-struct SessionClock {
+struct SessionClock final : capture::MediaTimeSource {
     int64_t epoch_qpc = 0;
     std::atomic<int64_t> pause_offset_us{0};     // accumulated wall time of finished pauses
     std::atomic<bool> paused{false};
@@ -30,12 +32,13 @@ struct SessionClock {
     // Sets the epoch and clears the pause state and log. RecordingSession::StartNow calls Start(Clock::QpcNow()).
     void Start(int64_t epoch);
 
-    TimeUs NowMediaUs() const;                   // QpcToMediaUs(Clock::QpcNow())
+    TimeUs NowMediaUs() const override;          // QpcToMediaUs(Clock::QpcNow())
     // Media time of a QPC value: QpcToUs(qpc, epoch) - pause offset. A qpc inside the current pause maps to the
     // pause start. Values before the epoch give negative times.
     TimeUs QpcToMediaUs(int64_t qpc) const;
     // WASAPI positions: u64QPCPosition is the QPC converted to 100 ns units.
     TimeUs HnsToMediaUs(uint64_t qpc_hns) const;
+    TimeUs QpcHnsToMediaUs(uint64_t qpc_hns) const override { return HnsToMediaUs(qpc_hns); }   // MediaTimeSource
 
     void Pause();    // PauseAt(Clock::QpcNow())
     void Resume();   // ResumeAt(Clock::QpcNow())

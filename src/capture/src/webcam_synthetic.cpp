@@ -7,6 +7,7 @@
 #include <ct/core/log.h>
 #include <ct/core/sync.h>
 #include <ct/core/time.h>
+#include <ct/platform/mf_runtime.h>
 
 #include <mfapi.h>
 #include <mferror.h>
@@ -157,7 +158,7 @@ private:
 
 std::unique_ptr<WebcamReader> CreateSyntheticWebcamReader(platform::D3DDevice& dev, SizeI size, int fps, bool dxgi_buffers) {
     if (size.IsEmpty() || (size.w & 1) || (size.h & 1)) return nullptr;
-    if (FAILED(internal::EnsureMfStarted())) return nullptr;
+    if (FAILED(platform::MfRuntime::EnsureForProcess())) return nullptr;
     return std::make_unique<SyntheticReader>(dev, size, fps, dxgi_buffers);
 }
 
