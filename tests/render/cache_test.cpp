@@ -22,6 +22,24 @@ namespace {
 
 constexpr SizeI kCanvas{640, 360};
 
+// A solid BGRA texture and its SRV.
+bool MakeSolid(platform::D3DDevice& dev, SizeI size, uint32_t bgra, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& out) {
+    std::vector<uint32_t> px(static_cast<size_t>(size.w) * static_cast<size_t>(size.h), bgra);
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(size.w);
+    td.Height = static_cast<UINT>(size.h);
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init{px.data(), static_cast<UINT>(size.w * 4), 0};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(dev.Device()->CreateTexture2D(&td, &init, tex.GetAddressOf()))) return false;
+    return SUCCEEDED(dev.Device()->CreateShaderResourceView(tex.Get(), nullptr, out.ReleaseAndGetAddressOf()));
+}
+
 events::KeyPayload KeyDown(uint16_t vk, const char* label, bool down) {
     events::KeyPayload k;
     k.vk = vk;
@@ -174,4 +192,30 @@ CT_TEST(render_keystroke_badge_alpha_does_not_dip) {
     CT_CHECK_EQ(Compositor::KeystrokeBadgeAlpha(log, 4'030'000, kHold), 0.f);
     // After the gap the next stroke fades in from its own time.
     CT_CHECK_NEAR(Compositor::KeystrokeBadgeAlpha(log, 5'060'000, kHold), 0.5f, 1e-4);
+}
+
+// Finding 4: the blurred wallpaper was cached by the SRV's address; a new wallpaper allocated at the freed address of
+// the old one showed the old blur.
+CT_TEST_DEVICE(render_wallpaper_blur_follows_a_new_image) {
+    Fixture fx;
+    if (!fx.Init(kCanvas)) CT_SKIP("no D3D11 device");
+    project::Project p = render_test::MakeProject(kCanvas);
+    p.clips.clear();
+    p.canvas.background.kind = project::Background::Kind::Image;
+    p.canvas.background.blur = 6.f;
+    const SizeI img{96, 64};
+    const size_t centre = (static_cast<size_t>(kCanvas.h / 2) * kCanvas.w + kCanvas.w / 2) * 4;   // RGBA
+    std::vector<uint8_t> px;
+    for (int round = 0; round < 8; ++round) {
+        const bool red = round % 2 == 0;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        CT_REQUIRE(MakeSolid(fx.dev, img, red ? 0xFFFF0000u : 0xFF0000FFu, srv));
+        render::FrameInputs in;
+        in.background_image = srv.Get();
+        in.background_image_size = img;
+        CT_REQUIRE(fx.Render(p, 0, in, px));
+        if (red) CT_CHECK(px[centre] > 240 && px[centre + 2] < 15);
+        else CT_CHECK(px[centre + 2] > 240 && px[centre] < 15);
+        // srv (and its texture) is released here: the next image may get the same address.
+    }
 }

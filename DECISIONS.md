@@ -1191,3 +1191,9 @@ the continuous run of visible strokes (a stroke shows during [t, t + hold); the 
 was still showing when the next one arrived). The fade-out is unchanged (200 ms before the newest stroke expires).
 Why: when the oldest stroke expired or a 4th stroke pushed it out of the badge, the opacity dropped mid-display.
 Impact: none for callers.
+
+## 2026-10-17 · P08 review fix · Wallpaper blur cache holds a reference to its source SRV
+Spec said: Image background with an optional cached blur.
+Done instead: the cache key is a `ComPtr<ID3D11ShaderResourceView>` (plus blur and size) instead of a raw pointer.
+Why: a freed wallpaper's address could be reused by the next one, which then showed the old blur.
+Impact: the compositor keeps the last blurred wallpaper's SRV alive until the wallpaper changes or Shutdown.

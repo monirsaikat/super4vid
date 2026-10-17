@@ -280,7 +280,7 @@ void Compositor::DrawBackground(const Project& p, const FrameInputs& in, const R
         ID3D11ShaderResourceView* src = in.background_image;
         if (bg.blur > 0.5f) {
             const SizeI is = in.background_image_size;
-            if (m_bg_key_srv != src || m_bg_key_blur != bg.blur || m_bg_blur.size.w != is.w || m_bg_blur.size.h != is.h) {
+            if (m_bg_key_srv.Get() != src || m_bg_key_blur != bg.blur || m_bg_blur.size.w != is.w || m_bg_blur.size.h != is.h) {
                 D3D11_TEXTURE2D_DESC td{};
                 td.Width = static_cast<UINT>(is.w);
                 td.Height = static_cast<UINT>(is.h);

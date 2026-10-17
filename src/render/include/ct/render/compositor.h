@@ -102,9 +102,10 @@ private:
     std::vector<std::string> m_keys;          // scratch for the badge
     size_t m_key_count = 0;
     std::vector<const project::Clip*> m_done;   // clips already drawn by a transition this frame
-    // Blurred wallpaper (Background::Kind::Image with blur > 0), cached by (srv, size, blur).
+    // Blurred wallpaper (Background::Kind::Image with blur > 0), cached by (srv, size, blur). The key holds a reference:
+    // a raw pointer could be freed and its address reused by a different wallpaper (stale blur).
     RenderContext::TempRT m_bg_blur;
-    const void* m_bg_key_srv = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_bg_key_srv;
     float m_bg_key_blur = 0;
 };
 
