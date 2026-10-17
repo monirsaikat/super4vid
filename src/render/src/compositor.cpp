@@ -647,6 +647,10 @@ HRESULT Compositor::RenderFrame(const Project& p, TimeUs t, const FrameInputs& i
     m_rc->UnbindSrvs();
     ctx->OMSetRenderTargets(0, nullptr, nullptr);
     m_target_res = nullptr;
+    // No text layer is in use any more: evict idle rasters and enforce the cache cap.
+    m_ann.clear();
+    m_badge = nullptr;
+    m_text.EndFrame();
     if (opt.gpu_timing) {
         m_rc->Timer(3).End(ctx);
         m_rc->Timer(0).End(ctx);

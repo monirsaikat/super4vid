@@ -1160,3 +1160,13 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · P08 review fix · Text raster cache: per-frame eviction, O(1) lookup
+Spec said: `TextRenderer::Trim(max_bytes = 64 MB)` evicts least recently used layers (nothing called it).
+Done instead: `TextRenderer::EndFrame(max_idle_frames = kIdleFrames (60), max_bytes = kMaxBytes (64 MB))`, called at the end
+of `Compositor::RenderFrame` (no Layer* in use then), drops rasters not looked up for more than 60 frames, then Trims to
+64 MB. Entries live in an `unordered_map` by cache key; `CachedBytes` is a running total.
+Why: an animated annotation (rect/text/colour/scale) or a changing keystroke combo made a new texture + D2D bitmap every
+frame that was never freed.
+Impact: Layer pointers are valid until the end of the frame (EndFrame), not until the next Trim. Measured: 1000 frames of
+a moving annotation keep at most 61 layers (1.9 MB).
