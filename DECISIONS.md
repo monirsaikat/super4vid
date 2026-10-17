@@ -620,3 +620,26 @@ Done instead:
 Why: found while running `build.cmd package` and the silent install/uninstall test on this machine.
 Impact: `build.cmd doctor` still only checks `%ProgramFiles(x86)%` and prints Inno "MISSING" for a per-user install
 (doctor is outside this task's file ownership; fix when convenient).
+
+## 2026-10-17 · P10 task 10.1 · Preset without ct_media; JSON shape and validation
+Spec said: `Preset::video` uses `media::VideoCodec` / `media::RateControl`; `LoadUser()` / `SaveUser(Err*)`;
+`EstimateBytes(TimeUs)`; JSON as the docs/04 section 5 example.
+Done instead:
+- `ct::exportng::VideoCodec { H264, Hevc }` and `RateControl { Quality, Vbr, Cbr }` mirror the P04 enums (same
+  enumerators, same order). P04 runs in parallel and ct_media is not on master; ExportJob converts with `static_cast`
+  (or a `static_assert`ed mapping once both exist).
+- Added `video.profile` (the docs/04 JSON has `"profile"`), `FindBuiltin(id)`, `UserDir()`, and the testable
+  `LoadUserFrom(dir)` / `SaveUserTo(dir, Err*)`. `EstimateBytes(duration, canvas = 1920x1080, canvas_fps = 60)`:
+  the defaults keep the spec call valid; presets with size/fps 0 (= canvas) need the canvas to estimate.
+- `ToJson` always writes every section (video, audio, gif) whatever the container, so JSON round trips are lossless.
+  `"fps"` is `"source"` (0), an integer, or `"num/den"`. `audio.codec` is always `"aac"`.
+- `FromJson` is strict: missing keys keep defaults, but wrong types, unknown enum names and out-of-range values fail
+  with a message naming the key (no clamping), and `out` is untouched on failure. `id` must match `[a-z0-9_-]{1,64}`
+  because it is the user preset file name (no path traversal). `SaveUserTo` refuses presets `FromJson` would reject.
+- Built-in values chosen here (docs/04 lists only ids): H.264 720p 5/8 Mbps, 1080p 10/16, 1440p 16/25, 4K 35/50;
+  HEVC 1080p 6/10, 4K 20/32 (profile main); GIF 720p 20 fps, GIF 480p (854x480) 15 fps, 256 colors, dither;
+  PNG/M4A at canvas size. `assets/presets/*.json` are generated from `Builtin()` (`ct_export_tests --update-golden`)
+  and a test requires them byte-identical.
+Why: P10 is split; the CPU part lands before P04/P08/P09.
+Impact: ExportJob (P10 rest) maps the enums to ct_media; the export dialog uses `UserDir`/`SaveUser`/`EstimateBytes`
+with the canvas size.

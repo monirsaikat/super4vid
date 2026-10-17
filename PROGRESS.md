@@ -124,7 +124,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 9.7 Acceptance: section-8 editor budgets met; every shortcut in `docs/05` works; no ImGui ID collisions in Debug
 
 ## P10 Export
-- [ ] 10.1 Export dialog + presets (`assets/presets/*.json`)
+- [~] 10.1 Export dialog + presets (`assets/presets/*.json`) — presets done (`exportng::Preset`: 10 built-ins = `assets/presets/*.json`, JSON, user presets, EstimateBytes); dialog pending (needs P09)
 - [ ] 10.2 Offline render loop (frame-accurate, audio mix, progress, cancel, background thread)
 - [ ] 10.3 MP4 (H.264/HEVC) via `Mp4Writer`, fast-start moov
 - [ ] 10.4 GIF encoder (quantization, dithering, LZW, frame diff)
