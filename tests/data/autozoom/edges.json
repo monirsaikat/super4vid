@@ -1,0 +1,96 @@
+{
+  "description": "Clamping at both ends: a click at 0.1 s and one at 5.2 s leave less than min_hold after the ramps are fitted and are dropped; the clicks at 0.7 s and 3.5 s are kept (the first loses part of its lead).",
+  "duration_us": 6000000,
+  "params": {
+    "zoom": 2,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 100000,
+      "x": 0.9,
+      "y": 0.1,
+      "kind": "click"
+    },
+    {
+      "t_us": 700000,
+      "x": 0.1,
+      "y": 0.9,
+      "kind": "click"
+    },
+    {
+      "t_us": 3500000,
+      "x": 0.9,
+      "y": 0.9,
+      "kind": "click"
+    },
+    {
+      "t_us": 5200000,
+      "x": 0.5,
+      "y": 0.5,
+      "kind": "click"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 0,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 650000,
+      "zoom": 2,
+      "cx": 0.25,
+      "cy": 0.75,
+      "ease": "hold"
+    },
+    {
+      "t_us": 1900000,
+      "zoom": 2,
+      "cx": 0.25,
+      "cy": 0.75,
+      "ease": "inout"
+    },
+    {
+      "t_us": 2550000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    },
+    {
+      "t_us": 2700000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 3350000,
+      "zoom": 2,
+      "cx": 0.75,
+      "cy": 0.75,
+      "ease": "hold"
+    },
+    {
+      "t_us": 4700000,
+      "zoom": 2,
+      "cx": 0.75,
+      "cy": 0.75,
+      "ease": "inout"
+    },
+    {
+      "t_us": 5350000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

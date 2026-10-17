@@ -3,6 +3,8 @@
 #include <ct/core/fs.h>
 #include <ct/core/json.h>
 #include <ct/core/strings.h>
+#include <ct/events/event_log.h>
+#include <ct/project/auto_zoom.h>
 #include <ct/project/edit_ops.h>
 
 #include <algorithm>
@@ -144,6 +146,19 @@ bool ImportRecording(Project& p, std::string_view bundle_path, Err* err, ImportO
         c.fps_num = meta.fps_num;
         c.fps_den = meta.fps_den;
         if (!ops::SetCanvas(q, c, err)) return false;
+    }
+
+    if (options.auto_zoom && meta.has_events) {
+        // A damaged events file does not block the import; the recording simply gets no generated camera.
+        events::EventLog log;
+        if (log.Load(meta.events_file, nullptr)) {
+            if (const Clip* sc = q.FindClip(screen_clip)) {
+                const std::vector<CameraKey> keys =
+                    AutoZoom::ForClip(*sc, log, SizeI{meta.width, meta.height}, q.camera.auto_params);
+                AutoZoom::AppendKeys(q.camera, keys);
+                q.camera.mode = Camera::Mode::Auto;
+            }
+        }
     }
 
     std::string why;

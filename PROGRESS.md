@@ -93,7 +93,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test
 - [x] 7.4 Undo/redo (snapshot stack, coalescing), dirty flag, autosave, crash recovery file
 - [x] 7.5 `.ctrec` import -> project (tracks, cursor track from `.ctev`, keystrokes)
-- [ ] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
+- [x] 7.6 Auto-Zoom generator from click/typing events; Auto-Follow
 - [ ] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical
 
 ## P08 Compositor

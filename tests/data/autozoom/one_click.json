@@ -1,0 +1,50 @@
+{
+  "description": "A single click in the middle of a recording: zoom in before it, hold, zoom out. Exactly 4 keys.",
+  "duration_us": 20000000,
+  "params": {
+    "zoom": 2,
+    "min_hold_us": 1200000,
+    "lead_us": 150000,
+    "ease_ms": 650,
+    "follow": false,
+    "follow_deadzone": 0.15
+  },
+  "events": [
+    {
+      "t_us": 5000000,
+      "x": 0.3,
+      "y": 0.4,
+      "kind": "click"
+    }
+  ],
+  "expected_keys": [
+    {
+      "t_us": 4200000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "inout"
+    },
+    {
+      "t_us": 4850000,
+      "zoom": 2,
+      "cx": 0.3,
+      "cy": 0.4,
+      "ease": "hold"
+    },
+    {
+      "t_us": 6200000,
+      "zoom": 2,
+      "cx": 0.3,
+      "cy": 0.4,
+      "ease": "inout"
+    },
+    {
+      "t_us": 6850000,
+      "zoom": 1,
+      "cx": 0.5,
+      "cy": 0.5,
+      "ease": "hold"
+    }
+  ]
+}

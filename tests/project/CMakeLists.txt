@@ -4,4 +4,5 @@ ct_add_test(ct_project_tests DEPS ct_project SOURCES
   ops_test.cpp
   fuzz_test.cpp
   undo_test.cpp
-  importer_test.cpp)
+  importer_test.cpp
+  auto_zoom_test.cpp)

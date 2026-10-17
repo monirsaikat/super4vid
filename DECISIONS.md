@@ -345,3 +345,25 @@ Done instead:
 - `ImportOptions::auto_zoom` is honoured from task 7.6 on (the generator lands there).
 Why: no sample recording yet; keep the project consistent on failure.
 Impact: P05 must write meta.json exactly as docs/04 section 1 (format, duration_us, screen.width/height/fps, audio.*.stream_index, events.file).
+
+## 2026-10-17 · P07 task 7.6 · Auto-Zoom interpretation: ramp room, merge vs pan, two-key follow moves
+Spec said: free functions `ExtractInterest` / `Generate`; step 2 "merge consecutive segments with gap < 2 * ease_ms; drop
+segments shorter than min_hold; clamp to [0, duration]"; step 3 "adjacent segments share the transition (pan c1 -> c2 over
+ease_ms) if the gap is < 2 * ease_ms"; step 4 "emit a key moving centre toward the cursor ... with Ease::Out".
+Done instead:
+- The functions are static members of `struct AutoZoom` (the importer spec calls `AutoZoom::Generate`), plus `ForClip`
+  (events inside a clip's in/out, mapped to timeline time) and `AppendKeys` (adds without replacing keys at equal times).
+- Steps 2/3 conflict as written (after merging every gap < 2 * ease, there is nothing left to pan between). Resolution:
+  neighbours closer than 2 * ease are merged when their centres are within 0.25 (or a pan cannot fit after the previous
+  zoom-in), otherwise both are kept and the camera pans from c1 to c2 over exactly ease_ms, ending at t_in2.
+- Clamping is to [ease, duration - ease] so both ramps fit inside the recording (a ramp cut short would be a jump); it runs
+  before the "drop shorter than min_hold" step, so clicks in the first/last ~0.8 s may produce no zoom (fixture edges.json).
+- Keys use Hold for the zoomed hold and the zoomed-out rest, so every follow move is two keys: (t, current centre, Out) and
+  (t + 300 ms, new centre, Hold); a single Out key after a Hold key would jump. "At most one key per 400 ms" became at most
+  one follow move per 400 ms. Follow normalizes the cursor by the events region size.
+- `Camera::At` continuity: fixtures with the default ease meet the spec bound (0.02 zoom / 0.01 centre per ms). The random
+  property test scales the bound with the parameters (a 100 ms ease at zoom 4 legitimately moves faster than 0.02/ms).
+- Fixtures `tests/data/autozoom/*.json` (8 files: one_click, cluster_merge, far_pan, separate, edges, typing, follow, dense)
+  were written by this implementation with `--update-golden` and reviewed against the descriptions in each file.
+Why: the spec text is internally inconsistent; these choices keep the camera continuous.
+Impact: P08 plays the keys with Camera::At; P09's "Regenerate" = `Camera::ReplaceGenerated(AutoZoom::ForClip(...))`.
