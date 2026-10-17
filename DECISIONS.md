@@ -329,3 +329,19 @@ Done instead:
 Why: robustness and testability; budget.
 Impact: P09 owns an UndoStack + Autosave per document, calls `Autosave::SetDirectory(Paths...)` at startup, `MarkSaved`
 after Save/Load, and `Clear()` on save/close.
+
+## 2026-10-17 · P07 task 7.5 · Importer details; synthetic bundles instead of tests/data/sample.ctrec
+Spec said: `ImportRecording(Project&, bundle_path, Err*, ImportOptions)`; tests import `tests/data/sample.ctrec`.
+Done instead:
+- No real recording exists before P05, so the tests build bundles at run time (`tests/project/bundle_util.h`): meta.json
+  is the docs/04 section 1 sample (adjusted per test) and events.ctev is written with `EventWriter`. screen.mp4/cam.mp4
+  are absent: the importer reads only meta.json and events.ctev; the media files are referenced by the bundle path and
+  opened later by playback (P06), which reports them offline if they are missing.
+- Added `RecordingMeta` + `ReadRecordingMeta` (the editor needs the same fields for the media panel). meta.json is
+  rejected when `format != "ctrec"`, duration <= 0, or the screen size/frame rate is not positive.
+- Existing tracks are reused by (kind, name); missing ones are appended on top in the order Screen, Camera, Mic, System,
+  Callouts. A new project also gets `name` = bundle stem and a UUID `id` when it has none. Odd recording sizes become
+  the next lower even canvas size. The import is all-or-nothing (works on a copy; e.g. a locked Screen track fails it).
+- `ImportOptions::auto_zoom` is honoured from task 7.6 on (the generator lands there).
+Why: no sample recording yet; keep the project consistent on failure.
+Impact: P05 must write meta.json exactly as docs/04 section 1 (format, duration_us, screen.width/height/fps, audio.*.stream_index, events.file).
