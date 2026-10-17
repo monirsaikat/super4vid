@@ -1160,3 +1160,45 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · P10 task 10.2 (prerequisite) · render::TimelinePlayer details
+Spec said: P09 "Core structures" `TimelinePlayer { Init(RenderContext&, AudioDevices&); SetProject; Cache(media); Resolve;
+ResolveExact; Clock; Audio; Play/Pause/Seek/SetRate/StepFrames; HintScrub; RenderAudio }`, mixing "active audio-bearing clips".
+Done instead (every specified member exists with its signature; additions only):
+- `ct_render` now depends on `ct_playback` (DEPS line in src/render/CMakeLists.txt). frame_inputs.h/compositor.h stay
+  playback-free (the P08 entry still holds for them).
+- Additions: `Options { audio_output, async_open }` + `Init(rc, AudioDevices*, Options)` (export/tests run without WASAPI),
+  `Tick()` (per UI frame: returns the playhead, pauses at the end, refreshes the audio plan), `Now`, `Playing`, `Rate`,
+  `Duration`, `HasAudioOutput`, `MediaPending`, `CameraCache`, `Events`, `WaitMediaOpen`, `ProjectChanged`, static
+  `AudioFramesBetween/AudioSampleIndex` (floor(t * 48000 / 1e6), so per-frame chunks add up exactly).
+- Media: one slot per media id. Recordings (`.ctrec`) open `<bundle>/<meta screen.file>` (Screen clips, mic/system audio)
+  and `<bundle>/<meta camera.file>` (Camera clips) as two MediaCaches, and load events.ctev for Screen clips. Resolve opens
+  media on the IO pool (`all_exact = false` meanwhile); ResolveExact opens synchronously. Images: `is_rgba`,
+  `rgba_premultiplied = true` (ImageIo decodes premultiplied). The Image background is decoded once per path.
+- Frame requests ask for the *middle of the nominal frame slot* of the clip's media time (`FrameIndexAt` on the media fps):
+  decoded durations are rounded (16666 us at 60 fps), and asking for a time in the 1 us hole after a frame (e.g. a clip's
+  last frame at `out_us - 1` on a frame boundary) made the prefetcher drop that frame forever (MediaCache skips frames that
+  end at or before the target). `VideoLayerInput::media_t_us` keeps the exact media time (events). When a file's decode
+  ends before its container duration (AAC padding), ResolveExact remembers the time after one timeout and shows the last
+  frame from then on.
+- One cache hint per file per Resolve (the first clip using it): two clips of the same file far apart in media time (a
+  transition between distant parts of one recording) fight over one prefetch window; the second clip's frame comes from
+  its miss/wait. Acceptable for transitions (0.5 s); per-clip caches would double decoder count.
+- SRV lifetime: the views of the last Resolve are AddRef'ed until the next Resolve, and MediaCache pins the last 4 frames per
+  file; more than 4 simultaneous frames from one file in one Resolve is unsupported.
+- Audio-bearing clips = clips on unmuted *audio* tracks (Recording/Video/Audio media); clips on video tracks are silent. The
+  editor adds a linked audio clip when a video with audio is dropped. Stream: Mic/System via `Media::audio_streams` labels,
+  else the first audio stream (index into `MediaInfo::AudioStreams()`, file order).
+- Mix (src/render/src/audio_mixer.*, shared by playback and RenderAudio): one AudioDecoder per clip, re-seeked only on a
+  discontinuity; speed via `audio::Resampler` (48000 * speed -> 48000: pitch follows speed, like varispeed; clips outside
+  0.125..8x are silent: the resampler's ratio limit); gain = dB(static or `audio.gain_db` keys) * linear fades * normalize,
+  evaluated exactly every 256 frames and ramped linearly in between. Normalize = -1 dBFS peak target from the waveform
+  peaks of the clip's range, capped at +20 dB; playback takes peaks from the MediaCache (unity until built), RenderAudio
+  loads/builds them itself (blocking).
+- Playback feed: "ct-audio-mix" thread (above normal) mixes 10 ms chunks into a 300 ms AudioRing; `Pull` follows
+  playback::Player's protocol (try-lock, catch-up drop, silence until the requested generation has data) but counts in
+  samples, not microseconds (no rounding drift). Edits are picked up by the mixer at the next chunk (<= 300 ms latency, no
+  restart). Decoders of clips starting within 1 s are opened ahead.
+Why: P09 interface gaps; MediaCache rounding behaviour; real-time constraints of the audio thread.
+Impact: P09b drives `Tick()` each frame, calls `Resolve(playhead)` and re-renders while `all_exact` is false, and adds
+audio clips on audio tracks for dropped video media.
