@@ -153,8 +153,8 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 11.2 Startup profile < 500 ms cold; lazy MF init; prewarm encoder on hover
 - [ ] 11.3 Memory audit (pools, cache limits, leak check at exit)
 - [ ] 11.4 Multi-monitor, mixed DPI, monitor hot-plug, sleep/resume, UAC desktop, fullscreen games (access lost)
-- [ ] 11.5 Error UX (disk full, device lost, encoder missing, mic in use) with recovery
-- [ ] 11.6 Settings UI, first-run, keyboard-only navigation of main actions
+- [~] 11.5 Error UX (disk full, device lost, encoder missing, mic in use) with recovery — `ui::ErrorBanner` (red non-modal banner, Details: HRESULT via HrToString + log folder, Open log folder, Copy details), `ui::ErrorMessage(ErrorKind, drive/path)` and the six `kErr*` strings, tested in `ct_ui_tests`. Pending: wiring into recorder/editor OnError paths with recovery and forcing each condition (full disk, mic held, TDR)
+- [~] 11.6 Settings UI, first-run, keyboard-only navigation of main actions — `ui::SettingsWindow` (8 sections, immediate apply + `on_changed`, 500 ms debounced background save, hotkey recorder with duplicate/other-app conflict checks, devices/encoders/presets enumerated on the IO pool; `Camtesia.exe --settings-demo [--section name]`), `ui::FirstRun`/`IsFirstRun()` (folders + one-time F9 toast). Pending: gear button / Preferences menu wiring (P05b/P09b), first-run call in the app modes, live mic meter test, keyboard-only pass over bar/editor
 - [ ] 11.7 Acceptance: every section-8 number measured and recorded here
 
 ## P12 Installer & release
