@@ -146,7 +146,15 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 10.3 MP4 (H.264/HEVC) via `Mp4Writer`, fast-start moov — H.264/HEVC + one AAC stream via `WriteVideoSync/WriteAudioSync` (pool/queue 16); fast start is **ignored** (Mp4Writer cannot, DECISIONS P04 4.3 / P10): moov stays at the end. HEVC not exercised by a test here (no HEVC decoder for the round trip)
 - [x] 10.4 GIF encoder (quantization, dithering, LZW, frame diff) — `gif_demo` 720p20 5 s worst case (full-frame moving gradient + text, dither, 256 colors, frame diff): 2.65-2.9x real time end to end incl. frame generation (Release, Ryzen 7 5700G under load), 18.4 MB; static background + typing/scrolling text: 6.8x, 869 KB; decoded frame matches PIL's decode exactly
 - [x] 10.5 PNG still, M4A audio-only — PNG (JPEG q 0.92 for .jpg) at the playhead equals the preview readback byte for byte; M4A 2 s project decodes to 2.0053 s (AAC padding), RMS 0.177 (the -12 dBFS pattern tone)
-- [ ] 10.6 Acceptance: export speed budget met; PNG export identical to the preview; MP4 export PSNR >= 42 dB vs preview at quality 90; GIF 720p20 >= 2x real time
+- [~] 10.6 Acceptance: export speed budget met; PNG export identical to the preview; MP4 export PSNR >= 42 dB vs preview at quality 90; GIF 720p20 >= 2x real time
+  - PNG identical to the preview: PASS (export_png_identical_to_preview, byte-equal pixels).
+  - MP4 PSNR vs the preview at quality 90: PASS, 58.12 dB (Y 59.44, UV 56.28; export_mp4_psnr_vs_preview).
+  - Speed (Release export_demo, 60 s project: screen + camera PIP + scaled overlay + cursor + 2 annotations + mic) on a
+    LOADED machine (Ryzen 7 5700G iGPU, other agents' builds running, CPU 23-44 % at the start and up to 100 % during):
+    1080p60 H.264 1.05x real time (62.9 fps, 0 inexact frames); same without the camera layer 1.43x (85.9 fps);
+    GIF 720p20 1.41x (28.3 fps; the CPU GIF encoder takes 31 ms/frame). Both speed budgets are missed under this load.
+    The bottlenecks are the second DXVA decoder (camera) contending on the D3D lock, and the encoder and GIF CPU stages.
+    Re-measure on an idle machine before ticking. An earlier run alongside two builds and the test suites stalled.
 
 ## P11 Performance & polish
 - [ ] 11.1 Idle power: 0 redraws, timers coalesced, no busy waits (verify with WPR)

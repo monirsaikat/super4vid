@@ -1429,3 +1429,18 @@ Done instead:
   encoder only). The committed pattern files use the README counter layout, read by tests/common/pattern_counter.h.
 Why: Mp4Writer limits; encoder back-pressure measured with export_demo; the P08 temp-pool change.
 Impact: the export dialog fills `ExportRequest` (playhead as range_start for PNG) and polls `GetProgress()`.
+
+## 2026-10-17 · P10 task 10.6 · Export acceptance on a loaded machine, exact-frame waits, cache budget during export
+Spec said: 1080p60 export >= 1.5x real time; GIF 720p20 >= 2x real time; export frames match the preview.
+Done instead: speed measured on a shared, loaded machine (other agents' builds): 1080p60 H.264 1.05x (1.43x without
+  the camera layer), GIF 720p20 1.41x. PNG identical and MP4 PSNR 58.12 dB pass. 10.6 stays [~] until it is re-measured
+  on an idle machine. To keep export exact under load, `TimelinePlayer::ResolveExact` retries a wait when the frame is
+  evicted between the wait and the lookup, for up to `frame_timeout_ms` (10 s). Within 250 ms of a file's end it waits
+  at most 2 s and then treats the last frame as the end (decoded stream shorter than the container). A mid-file timeout
+  renders the frame and counts `inexact_frames`. ExportJob grows the global CacheBudget while it runs by
+  w*h*1.5*50 frames per media file (twice for a recording with a camera), and restores it at the end. ExportJob keeps
+  its own TimelinePlayer (audio_output=false, async_open=false), separate from the editor's.
+Why: the second DXVA decoder (camera) contends on the D3D multithread lock (RenderFrame CPU 1 -> 6 ms); the GIF encoder
+  is CPU-bound (31 ms/frame); with the default budget the preview's caches evicted export frames before use.
+Impact: follow-up: give MediaCache a configurable prefetch depth for export, and consider one shared decoder per
+  recording; re-run `export_demo --seconds 60` and `--preset gif-720p` on an idle machine.
