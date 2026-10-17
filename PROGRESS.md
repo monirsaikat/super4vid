@@ -52,12 +52,14 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 2.7 Acceptance: `capture_bench --monitor 0 --fps 60 --seconds 30` shows 0 drops, CPU < 3 %, GPU < 8 % at 1080p
 
 ## P03 Audio capture
-- [ ] 3.1 Device enumeration + default device notifications
-- [ ] 3.2 `WasapiCapture` (mic, event-driven) -> float 48 kHz stereo with QPC timestamps
-- [ ] 3.3 `WasapiLoopback` (system audio, polled) + silence-fill for gaps + silent render keep-alive
-- [ ] 3.4 `Resampler` (polyphase windowed-sinc), `Mixer`, `Meters` (peak/RMS, atomics)
-- [ ] 3.5 Device hot-swap and format change without timeline gaps
-- [ ] 3.6 Acceptance: `audio_bench` records 60 s of a 1 kHz test tone through loopback: no gaps, drift < 5 ms, CPU < 1 %
+- [x] 3.1 Device enumeration + default device notifications — enumerates 1 render endpoint (Realtek), 0 capture endpoints on this machine; notification delivery on a real default change is part of the 3.5 human check
+- [x] 3.2 `WasapiCapture` (mic, event-driven) -> float 48 kHz stereo with QPC timestamps — StreamAligner unit scenarios pass (perfect, pad from 0, 15 ms gap = 720 frames, 3 ms overlap = 144 frames, +/-50 ppm over 10 min converges with <= 1 frame per 10 ms, discontinuity); this machine has no capture endpoint, so `wasapi_capture_default_mic_1s` SKIPs (the shared capture engine is exercised by the loopback tests in 3.3)
+- [x] 3.3 `WasapiLoopback` (system audio, polled) + silence-fill for gaps + silent render keep-alive — 2 s loopback of a -12 dBFS tone: inserted 0 after the first packet, delivered frames == last device frame time (+-1 packet), peak -12.00 dB, drift 0.05 ms; keep-alive alone keeps ~100 packets/s flowing; pause shifts the timeline (0 inserted, 74 frames dropped at the boundary)
+- [x] 3.4 `Resampler` (polyphase windowed-sinc), `Mixer`, `Meters` (peak/RMS, atomics) — 44.1->48 kHz SNR 91.3 dB (-6 dBFS 1 kHz; 85.2 dB against the unfitted ideal sine, zero group delay), 96->48 kHz alias at 30 kHz -90.4 dB, 18.5 us per 10 ms stereo block (Release); AVX2 kernels bit-exact with scalar for MixAdd/FloatToPcm16/Pcm16ToFloat/channel conversion/PeakAbs on 1 M values, MixAdd 57 ns per 480-frame stereo block; "Mixer" = `dsp::MixAdd`/`ApplyGainRamp` (see DECISIONS)
+- [~] 3.5 Device hot-swap and format change without timeline gaps
+  - [x] automated: listener (default change / removal / state change), AUDCLNT_E_DEVICE_INVALIDATED and `SwitchDevice` share one reopen path on the capture thread; reopen of the loopback + keep-alive took 22.9 ms and became 960 frames of silence at the right position (stream end == device clock +-1 packet afterwards); a missing endpoint keeps time running with silence, reports `OnAudioError` once, retries every 500 ms and recovers (`hotswap_*` tests)
+  - [ ] human: unplug a USB mic mid-recording (expect silence then the new default mic, no shift) and change the default output device while recording system audio (this machine has no mic and one output)
+- [x] 3.6 Acceptance: `audio_bench` records 60 s of a 1 kHz test tone through loopback: no gaps, drift < 5 ms, CPU < 1 % — `audio_bench --seconds 60 --tone` (Release, 2026-10-17): gaps 0 (longest quiet run 0.02 ms), frequency 999.9899 Hz, stream end vs last device frame (QPC) -0.993 ms, max |drift| 1.003 ms (device clock ~25 ppm slow: 29 single frames inserted, 0 dropped, 0 ring overflows), process CPU 0.055 % of the machine (16 logical CPUs) = 0.885 % of one core, peak -12.00 dBFS; 2,882,506 frames for a 60.037 s run (the +15.6 ms vs the stop time is the loopback presentation offset, see DECISIONS)
 
 ## P04 Encode & mux
 - [ ] 4.1 MF lifetime (`MfRuntime`), encoder enumeration (HW first), capability report

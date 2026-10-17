@@ -218,3 +218,70 @@ Done instead:
 Why: keep the caller's cost to a memcpy and make every line accounted for.
 Impact: the app should call `Trace::Register()` at startup, `Stats::SetScopeTimings(true)` with --stats, and keep calling
 `Log::Shutdown()` last. `Log::Tick()` may be removed from the UI loop later; it is a no-op.
+
+## 2026-10-17 · P03 task 3.4 · Resampler/dsp/wav details; "Mixer" is the dsp kernels
+Spec said: `Resampler` with `Process/Flush/Ratio/Latency`; `dsp` functions with scalar + AVX2 paths; PROGRESS 3.4 names a `Mixer`.
+Done instead:
+- `Resampler` places output frame j exactly at input position j * in / out (centred filter, 15 frames of silent history),
+  so it has zero group delay; `Latency()` is the 16-frame look-ahead in *input* frames, not a timestamp offset. `Ratio()`
+  is out/in. Added `Reset()`, `InRate()`, `OutRate()`. `Flush` must be called until it returns less than the capacity.
+  Each phase row is normalized to unity DC gain. Init accepts ratios within [1/8, 8].
+- `dsp` adds `UsingAvx2()`, `Kernels`, `ScalarKernels()`, `Avx2Kernels()` (tests compare both sets directly) and
+  `struct GateState { envelope, gain }`. `FloatToPcm16` scales by 32768 and saturates (so `Pcm16ToFloat` = x/32768 is its
+  exact inverse) instead of 32767. AVX2 paths use mul + add (never FMA) so MixAdd/FloatToPcm16 are bit-exact with
+  scalar. `NoiseGate` is a per-frame recursion; its "AVX2" entry is the scalar kernel. `DownmixToStereo` for > 2 channels
+  is a strided copy in both sets.
+- There is no separate `Mixer` class in P03: mixing is `dsp::MixAdd` + `ApplyGainRamp`. The timeline mixer (clips, gain
+  keyframes, fades) is P06's `AudioEngine` / P10's export mix, which build on these kernels.
+- `WavReader` adds `Seek()`; `WavWriter` adds `FramesWritten()` and closes in its destructor.
+Why: testability and exact int16 round trips; a mixer object has nothing to own until there is a timeline.
+Impact: P04 converts with `dsp::FloatToPcm16`; P06/P10 implement mixing on top of `dsp`.
+## 2026-10-17 · P03 tasks 3.1-3.5 · Audio API additions
+Spec said: the `ct::audio` interfaces in docs/phases/P03 (AudioDevices, WasapiCapture/Loopback/Render, AudioPacket/AudioSink, CaptureConfig).
+Done instead (additions only; every specified member exists with its specified signature):
+- `audio_sink.h` holds `AudioPacket`, `AudioSink`, `CaptureConfig`, plus `kSampleRate = 48000`, `kChannels = 2` and
+  `CaptureStats` (device packets, delivered packets/frames, leading pad, inserted/dropped frames, discontinuities, reinits,
+  drift, media time of the last device frame, last reopen time, device open).
+- `WasapiCapture`/`WasapiLoopback`: `GetStats()`, `SetPaused(bool, int64_t at_qpc = 0)` (the session passes the same pause/resume
+  QPC to every stream; the pause duration is subtracted from media time), `SwitchDevice(id)` (move a running stream; empty = default).
+  `Stop()` delivers the last partially filled packet; `Start()` may be called again after `Stop()`. `Init` must run on an MTA thread.
+  `OnAudio` returning false counts the packet as dropped (`audio.mic.dropped` / `audio.sys.dropped`).
+- `AudioDevices`: `NameOf(id)`, `AddListener/RemoveListener` (several streams plus the app's `SetListener` slot listen at once);
+  `OnDeviceStateChanged` to a non-ACTIVE state is forwarded as `OnDeviceRemoved` (unplugging fires only that; `OnDeviceRemoved`
+  itself fires on uninstall). Capture threads open endpoints with their own enumerator (no cross-apartment use).
+- `WasapiRender`: `Init(id, buffer_ms, thread_name = "ct-audio-out")`, `LastError()`, `DeviceName()`, `IsRunning()`, virtual
+  destructor on `Callback`. `GetClock` returns QPC *ticks* (converted from IAudioClock's 100 ns value). `device_position_frames`
+  = frames written before this buffer. On a device error the render thread stops calling back and sets `LastError()`.
+Why: P04/P05 need counters, a shared pause QPC and device switching from the UI; the rest is needed for correctness.
+Impact: P04 consumes `AudioPacket` (always 48 kHz stereo, contiguous `t_us`); P05 uses `SetPaused(.., qpc)`, `SwitchDevice`,
+`GetStats`, `Levels()`; P06 uses `WasapiRender` + `GetClock`.
+
+## 2026-10-17 · P03 tasks 3.2/3.3/3.5 · StreamAligner thresholds, starvation and thread loops
+Spec said: the aligner inserts silence for gaps > 1 ms and trims single frames every 10 ms while |drift| > 1 ms; the mic loop
+waits 2000 ms; the "+50 ppm over 10 min" test expects "inserted ~ 30 frames".
+Done instead:
+- Exact resync (silence for a gap, dropped frames for an overlap) when |d| > 2 ms, or for the first packet, a
+  DATA_DISCONTINUITY packet, the first packet after a device switch / resume / starvation fill (there at >= 1 frame).
+  1 ms < |d| <= 2 ms is drift: one frame repeated or dropped per 10 ms of output. With a 1 ms threshold for both, slow drift
+  reaching 1 ms would be "filled" with a 48-frame jump, which the drift test forbids.
+- 50 ppm over 10 min is 30 ms = 1440 frames, so the test asserts 1392 +- 60 inserted (the aligner holds |drift| at ~1 ms); the
+  spec's "~30 frames" matches what the 60 s bench measured (29 frames at ~25 ppm). `TotalInserted()` excludes the leading pad
+  (`LeadingPadFrames()`). Added `FillSilenceUntil`, `FramesEmitted`, `Started` and a `start_us` argument to `Reset`.
+- Starvation (failure matrix "no packets"): no device packet for 100 ms -> silence up to now - 50 ms, repeated while starving;
+  a reopen that fails retries every 500 ms and reports `OnAudioError` once. The mic thread therefore waits with a 20 ms timeout.
+- The loopback poll is a `HighResTimer` with `SetSpinUs(0)` armed every 5 ms (a 200 us spin would cost ~4 % of a core). The
+  keep-alive render stream runs on its own thread "ct-audio-sys-keepalive" with a 50 ms buffer.
+- Loopback QPC positions are presentation times: the last packet's timestamp is ~10-20 ms *after* the moment it is read. The
+  device tests and audio_bench compare the delivered frames with the media time of the last device frame (|delta| < 1 packet;
+  bench: -0.993 ms) and report the offset to the stop time separately (+15.6 ms in the bench).
+Why: smooth drift correction without audible jumps, and a stream that keeps time when a device is gone.
+Impact: P04/P05 must not assume the audio stream ends at "now"; it can run ~20 ms ahead (loopback) or behind (mic).
+
+## 2026-10-17 · P03 task 3.2/3.6 · Paths not exercised on this machine
+Spec said: device test `WasapiCapture` default mic 1 s; fallback to the mix format + `Resampler` when the 48 kHz float request
+is rejected; manual unplug / default-device-change checks.
+Done instead: this machine has no capture endpoint (`wasapi_capture_default_mic_1s` SKIPs; the mic shares `CaptureEngine` with
+the loopback, which is tested) and its Realtek endpoint accepts float 48 kHz, so the mix-format/resampler fallback runs only in
+unit tests of its parts. The unplug and default-change checks are listed for a human under 3.5 in PROGRESS.md.
+Why: hardware availability.
+Impact: run `ct_audio_tests --verbose` and `audio_bench --seconds 60 --tone --mic` on a machine with a USB mic before P05 sign-off.
