@@ -11,11 +11,23 @@
 // --pixel-shader two pixel-shader passes instead of the compute conversion (Config::allow_compute = false).
 // Prints the capture stats every second and a summary: ticks, new frames, repeats, drops, acquire/convert/GPU times,
 // process CPU % and RSS. GPU % is read from Task Manager or the "GPU Engine" performance counters.
+//
+// P04 encode options:
+//   --encode out.mp4   the frames go to ct::media::Mp4Writer (hardware H.264) instead of the checksum sink
+//   --mic / --system   record the default microphone / system audio (loopback) as AAC streams 1.. in that order
+//   --rc quality|vbr|cbr  --bitrate bps   rate control (default quality 70 with the table bitrate as peak cap)
+// After the run the file is probed: frame count vs ticks, duration, size vs bitrate * seconds, first/last timestamps.
 
 #include <ct/capture/cursor_tracker.h>
 #include <ct/capture/desktop_duplicator.h>
 #include <ct/capture/display.h>
 #include <ct/capture/screen_capturer.h>
+#include <ct/audio/devices.h>
+#include <ct/audio/wasapi_capture.h>
+#include <ct/audio/wasapi_loopback.h>
+#include <ct/media/mf_runtime.h>
+#include <ct/media/mp4_writer.h>
+#include <ct/media/probe.h>
 #include <ct/core/error.h>
 #include <ct/core/log.h>
 #include <ct/core/stats.h>
@@ -59,6 +71,10 @@ struct Args {
     bool copy_path = false;
     bool pixel_shader = false;
     bool debug_layer = false;
+    std::string encode;
+    bool mic = false, system = false;
+    media::RateControl rc = media::RateControl::Quality;
+    uint32_t bitrate = 0;
     int animator_monitor = -1;   // internal: run as the animation window
     int animator_seconds = 0;
 };
@@ -88,6 +104,17 @@ bool ParseArgs(int argc, char** argv, Args& a) {
         else if (s == "--copy-path") a.copy_path = true;
         else if (s == "--pixel-shader") a.pixel_shader = true;
         else if (s == "--debug-layer") a.debug_layer = true;
+        else if (s == "--encode" && next(v)) a.encode = v;
+        else if (s == "--mic") a.mic = true;
+        else if (s == "--system") a.system = true;
+        else if (s == "--bitrate" && next(v)) a.bitrate = static_cast<uint32_t>(std::atoll(v));
+        else if (s == "--rc" && next(v)) {
+            const std::string m = v;
+            if (m == "quality") a.rc = media::RateControl::Quality;
+            else if (m == "vbr") a.rc = media::RateControl::Vbr;
+            else if (m == "cbr") a.rc = media::RateControl::Cbr;
+            else return false;
+        }
         else if (s == "--animator" && next(v)) {
             a.animator_monitor = std::atoi(v);
             if (!next(v)) return false;
@@ -292,6 +319,149 @@ private:
     HRESULT m_error = S_OK;
 };
 
+// ---- encode (P04) ------------------------------------------------------------------------------------------------
+
+struct EncodeRun {
+    audio::AudioDevices devices;
+    audio::WasapiCapture mic;
+    audio::WasapiLoopback sys;
+    media::Mp4Writer writer;
+    media::Mp4Writer::Config cfg;
+    bool use_mic = false, use_sys = false;
+    uint32_t mic_stream = 0, sys_stream = 0;
+
+    HRESULT Init(D3DDevice& dev, ScreenCapturer& cap, const Args& a) {
+        CT_RETURN_IF_FAILED(devices.Init());
+        use_mic = a.mic && !devices.DefaultId(true).empty();
+        if (a.mic && !use_mic) std::printf("no microphone on this machine: --mic ignored\n");
+        use_sys = a.system;
+        cfg.path = a.encode;
+        cfg.video.size = cap.OutputSize();
+        cfg.video.fps_num = a.fps;
+        cfg.video.rc = a.rc;
+        cfg.video.bitrate_bps = a.bitrate;
+        uint32_t n = 0;
+        if (use_mic) {
+            mic_stream = n++;
+            media::AudioEncodeConfig ac;
+            ac.label = "mic";
+            cfg.audio.push_back(ac);
+        }
+        if (use_sys) {
+            sys_stream = n++;
+            media::AudioEncodeConfig ac;
+            ac.label = "system";
+            cfg.audio.push_back(ac);
+        }
+        const HRESULT hr = writer.Init(dev, cfg, &cap.Nv12Pool());
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "Mp4Writer::Init: %s\n", writer.ErrorMessage().c_str());
+            return hr;
+        }
+        std::printf("encoder %s (%s), %s, mean %.2f Mbps, peak %.2f Mbps, %zu audio stream(s)\n", writer.EncoderName().c_str(),
+                    writer.IsHardware() ? "hardware" : "software",
+                    a.rc == media::RateControl::Quality ? "quality 70" : a.rc == media::RateControl::Vbr ? "VBR" : "CBR",
+                    media::EffectiveBitrate(cfg.video) / 1e6, media::EffectiveMaxBitrate(cfg.video) / 1e6, cfg.audio.size());
+        audio::CaptureConfig cc;
+        if (use_mic) {
+            cc.stream_id = mic_stream;
+            CT_RETURN_IF_FAILED(mic.Init(cc, devices));
+        }
+        if (use_sys) {
+            cc.stream_id = sys_stream;
+            CT_RETURN_IF_FAILED(sys.Init(cc, devices));
+            std::printf("system audio: %s\n", sys.DeviceName().c_str());
+        }
+        return S_OK;
+    }
+
+    bool StartAudio(int64_t epoch) {
+        if (use_mic && !mic.Start(epoch, writer)) return false;
+        if (use_sys && !sys.Start(epoch, writer)) return false;
+        return true;
+    }
+
+    void StopAudio() {
+        if (use_mic) mic.Stop();
+        if (use_sys) sys.Stop();
+    }
+
+    void PrintSecond() const {
+        const auto& s = writer.GetStats();
+        std::printf("        encode: written %llu rejected %llu queue %llu textures-in-MF max %u | latency %.3f/%.3f WriteSample %.3f/%.3f ms",
+                    static_cast<unsigned long long>(s.video_written.load()), static_cast<unsigned long long>(s.video_rejected.load()),
+                    static_cast<unsigned long long>(s.queue_depth.load()), s.max_textures_in_mf.load(), s.video_latency.AvgMs(),
+                    s.video_latency.MaxMs(),
+                    s.video_write.AvgMs(), s.video_write.MaxMs());
+        for (size_t i = 0; i < cfg.audio.size(); ++i)
+            std::printf(" | %s %llu frames (rej %llu)", cfg.audio[i].label, static_cast<unsigned long long>(s.audio_written[i].load()),
+                        static_cast<unsigned long long>(s.audio_rejected_frames[i].load()));
+        std::printf("\n");
+    }
+
+    // Probes the finished file; returns false when a check failed.
+    bool Report(const CaptureStats& cs, const Args& a, double wall_s) {
+        const auto& s = writer.GetStats();
+        bool ok = true;
+        std::printf("encode: written %llu rejected %llu, finalize %lld ms; latency avg %.3f max %.3f ms; WriteSample avg %.3f max %.3f ms\n",
+                    static_cast<unsigned long long>(s.video_written.load()), static_cast<unsigned long long>(s.video_rejected.load()),
+                    static_cast<long long>(s.finalize_ms.load()), s.video_latency.AvgMs(), s.video_latency.MaxMs(), s.video_write.AvgMs(),
+                    s.video_write.MaxMs());
+        for (size_t i = 0; i < cfg.audio.size(); ++i) {
+            std::printf("  audio %s: %llu frames written (%.3f s), lead pad %llu, rejected %llu", cfg.audio[i].label,
+                        static_cast<unsigned long long>(s.audio_written[i].load()), s.audio_written[i].load() / 48000.0,
+                        static_cast<unsigned long long>(s.audio_lead_pad_frames[i].load()),
+                        static_cast<unsigned long long>(s.audio_rejected_frames[i].load()));
+            const audio::CaptureStats as = (use_sys && i == sys_stream) ? sys.GetStats() : mic.GetStats();
+            std::printf("; capture: inserted %llu dropped %llu discontinuities %llu drift %.2f ms\n",
+                        static_cast<unsigned long long>(as.frames_inserted), static_cast<unsigned long long>(as.frames_dropped),
+                        static_cast<unsigned long long>(as.discontinuities), as.drift_ms);
+            if (s.audio_rejected_frames[i].load() != 0) ok = false;
+        }
+        media::ProbeResult p;
+        if (FAILED(media::Probe(cfg.path, p))) {
+            std::printf("PROBE FAILED for %s\n", cfg.path.c_str());
+            return false;
+        }
+        media::StreamScan v;
+        media::ScanStream(cfg.path, 0, v);
+        WIN32_FILE_ATTRIBUTE_DATA fa{};
+        GetFileAttributesExW(Utf8ToWide(cfg.path).c_str(), GetFileExInfoStandard, &fa);
+        const uint64_t size = (static_cast<uint64_t>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
+        const double dur_s = p.duration_us / 1e6;
+        std::printf("file %s: %.2f MB, duration %.3f s, %dx%d %s @ %d/%d, %d video + %d audio\n", cfg.path.c_str(), size / 1048576.0,
+                    dur_s, p.video_width, p.video_height, p.video_codec.c_str(), p.fps_num, p.fps_den, p.video_streams, p.audio_streams);
+        const uint64_t expected = static_cast<uint64_t>(a.fps) * static_cast<uint64_t>(a.seconds);
+        const uint64_t delivered = cs.new_frames.load() + cs.repeats.load();
+        std::printf("  video: %llu frames in the file (delivered %llu, ticks %llu, expected fps*seconds %llu), first %lld us, last %lld us, "
+                    "max step %lld us, %llu keyframes, %.2f MB\n",
+                    static_cast<unsigned long long>(v.samples), static_cast<unsigned long long>(delivered),
+                    static_cast<unsigned long long>(cs.ticks.load()), static_cast<unsigned long long>(expected),
+                    static_cast<long long>(v.first_us), static_cast<long long>(v.last_us), static_cast<long long>(v.max_gap_us),
+                    static_cast<unsigned long long>(v.keyframes), v.bytes / 1048576.0);
+        if (v.samples != delivered) ok = false;
+        if (v.samples + 1 < expected || v.samples > expected + 1) ok = false;
+        uint64_t audio_bytes = 0;
+        for (size_t i = 0; i < cfg.audio.size(); ++i) {
+            media::StreamScan as;
+            media::ScanStream(cfg.path, static_cast<uint32_t>(1 + i), as);
+            audio_bytes += as.bytes;
+            std::printf("  audio %s: first %lld us, end %lld us (video end %lld us, delta %+.1f ms), %.2f MB\n", cfg.audio[i].label,
+                        static_cast<long long>(as.first_us), static_cast<long long>(as.end_us), static_cast<long long>(v.end_us),
+                        (as.end_us - v.end_us) / 1000.0, as.bytes / 1048576.0);
+        }
+        const double target = media::EffectiveBitrate(cfg.video) * (v.end_us - v.first_us) / 1e6 / 8.0;
+        std::printf("  video bitrate %.3f Mbps vs target %.3f Mbps: video bytes %.1f %% of target (%s mode)\n",
+                    v.bytes * 8.0 / ((v.end_us - v.first_us) / 1e6) / 1e6, media::EffectiveBitrate(cfg.video) / 1e6,
+                    100.0 * v.bytes / target,
+                    a.rc == media::RateControl::Quality ? "quality" : a.rc == media::RateControl::Vbr ? "VBR" : "CBR");
+        std::printf("  file bytes incl. audio/container: %.1f %% of (video + audio bitrate) * duration\n",
+                    100.0 * size / (target + audio_bytes));
+        (void)wall_s;
+        return ok;
+    }
+};
+
 // ---- reporting ---------------------------------------------------------------------------------------------------
 
 void PrintSecond(int second, const CaptureStats& s) {
@@ -419,6 +589,12 @@ int main(int argc, char** argv) {
         }
         BenchSink sink;
         if (FAILED(sink.Init(dev, cap.Nv12Pool(), a.dump_frame))) return 1;
+        std::unique_ptr<EncodeRun> enc;
+        if (!a.encode.empty()) {
+            enc = std::make_unique<EncodeRun>();
+            if (FAILED(enc->Init(dev, cap, a)) || !enc->writer.Start()) return 1;
+        }
+        FrameSink& frame_sink = enc ? static_cast<FrameSink&>(enc->writer) : static_cast<FrameSink&>(sink);
 
         auto samples = std::make_unique<SpscQueue<CursorSample, 4096>>();
         auto shapes = std::make_unique<SpscQueue<CursorShape, 64>>();
@@ -430,16 +606,25 @@ int main(int argc, char** argv) {
         timer.SetSpinUs(0);   // the main thread only needs coarse waits
         const int64_t freq = Clock::QpcFrequency();
         const int64_t epoch = Clock::QpcNow();
+        if (enc) std::printf("epoch_qpc %lld (QPC frequency %lld)\n", static_cast<long long>(epoch), static_cast<long long>(freq));
         const int64_t cpu0 = ProcessCpu100ns();
-        if (!cap.Start(epoch, sink)) return 1;
+        if (!cap.Start(epoch, frame_sink)) return 1;
+        if (enc && !enc->StartAudio(epoch)) {
+            std::fprintf(stderr, "audio capture did not start\n");
+            return 1;
+        }
         const int64_t end = epoch + freq * a.seconds;
         int64_t next_print = epoch + freq;
         int second = 0;
         const int64_t cursor_step = freq / 120;
         int64_t next_cursor = epoch;
-        while (Clock::QpcNow() < end && cap.IsRunning()) {
+        // Stop after exactly fps * seconds ticks (poll every 1 ms over the last 20 ms), so the file has that many frames.
+        const uint64_t target_ticks = static_cast<uint64_t>(a.fps) * static_cast<uint64_t>(a.seconds);
+        const int64_t near_end = end - freq / 50;
+        while (cap.Stats().ticks.load() < target_ticks && cap.IsRunning()) {
             const int64_t wake = a.cursor ? std::min(next_cursor, next_print) : next_print;
-            timer.WaitUntilQpc(std::min(wake, end));
+            const int64_t t_now = Clock::QpcNow();
+            timer.WaitUntilQpc(t_now >= near_end ? t_now + freq / 1000 : std::min(wake, near_end));
             const int64_t now = Clock::QpcNow();
             if (a.cursor && now >= next_cursor) {
                 cursor.Poll(Clock::QpcToUs(now, epoch), cap.Region(), *samples, *shapes);
@@ -451,10 +636,17 @@ int main(int argc, char** argv) {
             }
             if (now >= next_print) {
                 PrintSecond(++second, cap.Stats());
+                if (enc) enc->PrintSecond();
                 next_print += freq;
             }
         }
         cap.Stop();
+        HRESULT enc_hr = S_OK;
+        if (enc) {
+            enc->StopAudio();
+            enc_hr = enc->writer.Finalize();
+            if (FAILED(enc_hr)) std::fprintf(stderr, "Mp4Writer::Finalize: %s\n", enc->writer.ErrorMessage().c_str());
+        }
         const double wall_s = static_cast<double>(Clock::QpcNow() - epoch) / static_cast<double>(freq);
         const double cpu_s = static_cast<double>(ProcessCpu100ns() - cpu0) / 1e7;
         double rss = 0, peak = 0;
@@ -481,6 +673,10 @@ int main(int argc, char** argv) {
             else rc = 1;
         }
         if (FAILED(sink.Error())) rc = 1;
+        if (enc) {
+            if (FAILED(enc_hr) || !enc->Report(s, a, wall_s)) rc = 1;
+            enc.reset();   // before the capturer: the writer detaches from its pool
+        }
     }
 
     if (animator.hProcess) {

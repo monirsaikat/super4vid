@@ -518,3 +518,31 @@ Done instead:
 - `Abort()` returned after 16 ms in the test (ct-encode drops queued input and calls IMFSinkWriter::Finalize).
 Why: keep the sink single-purpose; hardware availability.
 Impact: P05 implements `Mp4Writer::Listener` (finalize + user message) and the fps retry.
+
+## 2026-10-17 · P04 task 4.6 · Acceptance run shortened; clap test measured by avsync_source --analyze; A/V findings
+Spec said: 10 min `capture_bench --encode --mic --system`; files play in Movies & TV and VLC; clap test (docs/06 section 4,
+analysis in P06's `player_demo --avsync`) |offset| < 20 ms; size within 10 % of bitrate * 600 s / 8 in VBR/CBR mode.
+Done instead:
+- 2 min run (the machine is shared with parallel agents' builds); no microphone exists, so only system audio. Numbers in
+  PROGRESS 4.6. capture_bench now stops after exactly fps * seconds ticks (it used to overshoot by a few ticks under load)
+  and prints `epoch_qpc` for the analyzer; `--rc quality|vbr|cbr`, `--bitrate`.
+- Size check uses CBR (100.0 %). PeakConstrainedVBR undershoots on a mostly static desktop (40 % in 10 s): VBR's mean
+  bitrate is a ceiling, not a target, for screen content.
+- `avsync_source` (P04) also analyzes (`--analyze rec.mp4 --log events.csv --epoch QPC`): flash = mean luma of the window
+  region > 128, beep = 1 ms RMS onset confirmed by a 2 kHz Goertzel. The source logs, per event, the predicted play QPC of
+  the beep (IAudioClock mapping) and the vsync QPC of the white frame (DXGI frame statistics when the present count matches
+  exactly, else present + median latency), so the analyzer reports each stream's error against what was really emitted:
+  the source itself emits flash and beep 5-57 ms apart (window composition latency of a layered topmost window, 41 ms
+  median), which makes the raw "video - audio" in the file meaningless as a recorder metric. The flash lasts 3 frames
+  instead of 1 (a 1-frame flash was coalesced away by the 60 Hz capture under load).
+- Findings for later phases:
+  1. Video timestamps lag the display by +14..17 ms (one tick of quantization plus duplication latency; +31 ms when a frame
+     is late): ScreenCapturer stamps a new image with the tick at which it was acquired. Stamping it with the tick that
+     precedes its `present_qpc` (available from `AcquireDirect`) would remove most of this bias. Owner: P02 code, decide in
+     P05/P11 (not changed in P04).
+  2. The system-audio track moved 10 ms later at ~68 s after a loopback DATA_DISCONTINUITY where the StreamAligner inserted
+     585 frames; the beeps after it are +10.4 ms against their emission (before: +0.4..1.3 ms). Owner: P03 aligner (P11).
+  Result: A/V offset +15.9 ms before, +4 ms after the audio shift; 38 of 46 events < 20 ms, 7 at +20.5..20.8 ms, one 37.5 ms.
+Why: machine availability; a headless and source-corrected measurement instead of the P06 tool that does not exist yet.
+Impact: P05/P11 rerun the 10 min recording and the clap test with a person at the machine (Movies & TV / VLC playback,
+USB mic) and address findings 1-2 to meet the 20 ms budget reliably.

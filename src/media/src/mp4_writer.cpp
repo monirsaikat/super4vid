@@ -500,6 +500,13 @@ struct Mp4Writer::Impl {
         }
         s.Reset();                 // drop our reference before the slot can be reused
         pool->Release(it.index);   // the reuse predicate still blocks the texture until MF released it
+        uint32_t held = 0;
+        for (const auto& b : vbufs) {
+            b->AddRef();
+            held += b->Release() > 1 ? 1u : 0u;
+        }
+        if (held > self->m_stats.max_textures_in_mf.load(std::memory_order_relaxed))
+            self->m_stats.max_textures_in_mf.store(held, std::memory_order_relaxed);
         if (SUCCEEDED(hr)) {
             self->m_stats.video_written.fetch_add(1, std::memory_order_relaxed);
             self->m_stats.last_video_us.store(it.t_us, std::memory_order_relaxed);
