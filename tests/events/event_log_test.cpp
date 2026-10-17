@@ -3,6 +3,7 @@
 #include <ct/events/event_log.h>
 #include <ct/test/ct_test.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -154,6 +155,31 @@ CT_TEST(event_log_typing_bursts_derived_from_keys) {
     CT_CHECK(log.IsTyping(1'500'000));
     CT_CHECK(!log.IsTyping(2'000'000));
     CT_CHECK(log.IsTyping(4'000'000));
+}
+
+// Review fix: garbage timestamps at the int64 limits must not overflow (it wrapped: MAX - MIN became -1).
+CT_TEST(event_log_extreme_timestamps_saturate) {
+    constexpr TimeUs kMin = INT64_MIN, kMax = INT64_MAX;
+    EventWriter w;
+    w.OpenMemory(Header1080());
+    w.CursorMove(kMin, 0, 0, 1, true);
+    w.CursorMove(kMax, 1000, 1000, 1, true);
+    w.MouseButton(kMin, Button::Left, true, 5, 5);
+    w.Key(kMin, MakeKey(0x41, true, 0, "A"));
+    w.Key(kMax, MakeKey(0x42, true, 0, "B"));
+    EventLog log = FromWriter(w);
+    CT_REQUIRE(log.Cursor().size() == 2);
+    const CursorState c = log.CursorAt(0);
+    CT_CHECK(c.valid);
+    CT_CHECK(c.x >= 0.0f && c.x <= 1000.0f);
+    CT_CHECK_NEAR(c.x, 500.0, 1.0);
+    CT_CHECK(log.LastMouseDown(kMax, 1000) == nullptr);   // ~2^64 us old, not "-1 us"
+    CT_CHECK(log.LastMouseDown(kMin, 1000) != nullptr);
+    CT_CHECK_EQ(log.TypingBursts().size(), size_t(2));    // not merged into one burst
+    CT_CHECK_EQ(log.StrokesVisibleAt(kMax, 1'200'000).size(), size_t(1));
+    CT_CHECK_EQ(log.StrokesVisibleAt(kMin, 1'200'000).size(), size_t(1));
+    CT_CHECK_EQ(log.StrokesVisibleAt(kMax, kMax).size(), size_t(1));
+    CT_CHECK_EQ(log.StrokesVisibleAt(0, kMin).size(), size_t(0));
 }
 
 CT_TEST(event_log_typing_bursts_from_records) {
