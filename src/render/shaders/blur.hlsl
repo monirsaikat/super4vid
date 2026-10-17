@@ -10,7 +10,7 @@ float4 ps_blur(VsOut i) : SV_Target {
     float wsum = 0;
     [loop] for (int k = -r; k <= r; ++k) {
         float w = exp(k2 * (float)(k * k));
-        acc += w * g_tex0.SampleLevel(g_lin, i.uv + g_p0.xy * (float)k, 0);
+        acc += w * g_tex0.SampleLevel(g_lin, SrcUv0(i.uv + g_p0.xy * (float)k), 0);
         wsum += w;
     }
     return acc / wsum;
@@ -18,5 +18,5 @@ float4 ps_blur(VsOut i) : SV_Target {
 
 // 2x downsample: the destination pixel centre lies between 4 source texels, so one bilinear tap averages them.
 float4 ps_copy(VsOut i) : SV_Target {
-    return g_tex0.SampleLevel(g_lin, i.uv, 0);
+    return g_tex0.SampleLevel(g_lin, SrcUv0(i.uv), 0);
 }

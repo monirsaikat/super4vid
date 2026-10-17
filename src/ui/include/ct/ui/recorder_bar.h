@@ -30,7 +30,7 @@ class RecorderBar {
 public:
     struct Hooks {
         std::function<void(const std::string& bundle_path)> open_editor;   // empty path = the editor without a file
-        std::function<void()> open_settings;                              // the settings window (another module)
+        std::function<void()> open_settings;                              // empty: the built-in ui::SettingsWindow
         std::function<void()> quit;                                       // leave the message loop
     };
     struct Options {
@@ -77,6 +77,8 @@ public:
     double LastStartLatencyMs() const;
     int64_t LastTriggerQpc() const;                        // QPC of the last REC / hotkey trigger
     void ShowBar(bool show);
+    void PushToast(const std::string& text, float seconds = 6);   // info toast (first run)
+    void OpenSettings();   // hooks.open_settings, else the built-in SettingsWindow
 
 private:
     struct Impl;

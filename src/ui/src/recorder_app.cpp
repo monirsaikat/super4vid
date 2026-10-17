@@ -12,7 +12,9 @@
 #include <ct/platform/paths.h>
 #include <ct/platform/single_instance.h>
 #include <ct/platform/window.h>
+#include <ct/ui/first_run.h>
 #include <ct/ui/fonts.h>
+#include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 
 #include <imgui.h>
@@ -40,6 +42,7 @@ struct Extra {
     bool synthetic_camera = false;
     bool bar_record = false;
     bool bar_toast = false;
+    bool bar_settings = false;
     bool no_exclude = false;
     int countdown = -1;
     int bench_hotkey = 0;
@@ -56,6 +59,7 @@ Extra ParseExtra() {
         if (!wcscmp(a, L"--synthetic-camera")) e.synthetic_camera = true;
         else if (!wcscmp(a, L"--bar-record")) e.bar_record = true;
         else if (!wcscmp(a, L"--bar-toast")) e.bar_toast = true;
+        else if (!wcscmp(a, L"--bar-settings")) e.bar_settings = true;
         else if (!wcscmp(a, L"--no-exclude")) e.no_exclude = true;
         else if (!wcscmp(a, L"--countdown") && next) e.countdown = _wtoi(argv[++i]);
         else if (!wcscmp(a, L"--bench-hotkey") && next) e.bench_hotkey = _wtoi(argv[++i]);
@@ -90,6 +94,7 @@ struct App {
     bool quit = false;
     bool drop_invokes = false;
     bool exclude = true;
+    HICON icon = nullptr;
     uint32_t redraws = 0, messages = 0;
     UINT last_message = 0;
 };
@@ -110,7 +115,15 @@ void CreateViewportWindow(ImGuiViewport* vp) {
     DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark));
     if (g_app && g_app->exclude && !SetWindowDisplayAffinity(hwnd, 0x11 /*WDA_EXCLUDEFROMCAPTURE*/))
         CT_LOG_WARN("popover: WDA_EXCLUDEFROMCAPTURE failed (%lu)", GetLastError());
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (vp->Flags & ImGuiViewportFlags_NoDecoration) {
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    } else {   // the settings window: a normal titled top-level window
+        SetWindowTextW(hwnd, L"Camtesia Settings");
+        if (g_app && g_app->icon) {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_app->icon));
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_app->icon));
+        }
+    }
 }
 
 void ApplyDpi(App& app) {
@@ -345,6 +358,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     g_app = &app;
     const bool screenshot = !options.screenshot.empty();
     app.exclude = !(extra.no_exclude || screenshot);
+    app.icon = options.icon;
     int exit_code = 1;
 
 #if defined(CT_DEBUG)
@@ -361,7 +375,8 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         return 1;
     }
 
-    const std::string settings_path = platform::Paths::SettingsDir() + "\\settings.json";
+    const std::string settings_path = SettingsFilePath();
+    const bool first_run = IsFirstRun();
     Settings settings = Settings::Defaults();
     {
         Err err;
@@ -413,8 +428,10 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         RecorderBar::Hooks hooks = options.hooks;
         if (!hooks.open_editor) hooks.open_editor = &LaunchEditor;
         hooks.quit = [&app]() { app.quit = true; };
-        app.bar.Init(app.dev, app.win, settings, settings_path, bo, std::move(hooks));
+        // Diagnostics runs never write the user's settings (the hotkey bench uses its own chord).
+        app.bar.Init(app.dev, app.win, settings, screenshot || bench.runs > 0 ? std::string() : settings_path, bo, std::move(hooks));
         if (!options.tray) ShowWindow(app.win.Hwnd(), SW_SHOWNOACTIVATE);
+        if (first_run && !screenshot && bench.runs == 0 && FirstRun::Run(nullptr, settings, settings_path)) app.bar.PushToast(str::kFirstRunToast, 12.0f);
 
         HANDLE stats_timer = nullptr;
         if (options.stats) {
@@ -491,6 +508,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
                     if (extra.open != RecorderBar::Popup::None) app.bar.OpenPopup(extra.open);
                     if (extra.bar_toast) app.bar.ShowSavedToast(platform::Paths::DefaultRecordingsDir() + "\\2026-10-17 12-03-44.ctrec");
                     if (extra.bar_record) app.bar.ToggleRecording();
+                    if (extra.bar_settings) app.bar.OpenSettings();
                 }
                 const double t_ms = script_started ? static_cast<double>(Clock::QpcNow() - script_t0) * 1000.0 / Clock::QpcFrequency() : 0;
                 const double wait_ms = extra.bar_record ? 3500 : 1500;   // device lists and caps load asynchronously

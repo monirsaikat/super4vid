@@ -17,9 +17,10 @@ HRESULT EnsureMfStarted();
 void FillNv12(uint8_t* y, size_t y_pitch, uint8_t* uv, size_t uv_pitch, SizeI size, uint8_t y_val, uint8_t u_val,
               uint8_t v_val);
 
-// Copies NV12 rows (`src_pitch` apart, UV plane after size.h luma rows) through a CPU-write staging NV12 texture into
-// `dst`. The caller holds D3DDevice::Lock.
+// Copies the top-left `size` of an NV12 buffer (rows `src_pitch` apart, UV plane after `src_rows` luma rows: the media
+// type's frame height, which can exceed size.h when the frame is padded, e.g. 1088 for 1080; 0 = size.h) through a
+// CPU-write staging NV12 texture into `dst`. The caller holds D3DDevice::Lock.
 HRESULT UploadNv12(platform::D3DDevice& dev, ID3D11Texture2D* staging, ID3D11Texture2D* dst, const uint8_t* src,
-                   size_t src_pitch, SizeI size);
+                   size_t src_pitch, SizeI size, int src_rows = 0);
 
 } // namespace ct::capture::internal

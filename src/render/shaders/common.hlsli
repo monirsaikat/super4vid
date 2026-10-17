@@ -13,12 +13,17 @@ cbuffer QuadCb : register(b0) {
     float4 g_color;          // straight-alpha colour (solid fills, tints, dip colour)
     float4 g_p0;             // shader-specific parameters
     float4 g_p1;
+    float4 g_src[2];         // source uv transform of t0/t1: uv clamped to [zw, 1 - zw], then scaled by xy
 }
 
 Texture2D<float4> g_tex0 : register(t0);
 Texture2D<float4> g_tex1 : register(t1);
 SamplerState g_lin : register(s0);
 SamplerState g_pt : register(s1);
+
+// Texture uv of a source whose used area is the top-left part of a larger (pooled) texture; identity by default.
+float2 SrcUv0(float2 uv) { return clamp(uv, g_src[0].zw, 1.0 - g_src[0].zw) * g_src[0].xy; }
+float2 SrcUv1(float2 uv) { return clamp(uv, g_src[1].zw, 1.0 - g_src[1].zw) * g_src[1].xy; }
 
 struct VsOut {
     float4 pos : SV_Position;

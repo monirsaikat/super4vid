@@ -70,6 +70,9 @@ public:
         ct::Stats::Timing video_latency;   // OnFrame -> WriteSample start
         std::atomic<int64_t> finalize_ms{-1};
         std::atomic<uint32_t> max_textures_in_mf{0};   // peak number of pool textures still referenced by MF samples
+        // Review fix: audio frames trimmed because their item started before the data already written (timestamps
+        // never go backwards in the file).
+        std::atomic<uint64_t> audio_overlap_frames[kMaxAudioStreams]{};
     };
 
     Mp4Writer();
@@ -100,27 +103,27 @@ public:
     // Returns the first error (also LastError()). Calling it again returns the same result.
     HRESULT Finalize();
     // Crash path: stop accepting, drop queued input, let ct-encode try IMFSinkWriter::Finalize; returns after at most
-    // 3 s whether or not that finished. Does not join.
+    // 3 s whether or not that finished. Does not join. If ct-encode is still running when the writer is destroyed after
+    // Abort, the destructor leaks the internal state (sink writer, buffers, thread) instead of freeing it under the thread.
     void Abort();
 
-    HRESULT LastError() const { return m_last_error.load(std::memory_order_acquire); }
+    HRESULT LastError() const;
     std::string ErrorMessage() const;    // user-presentable text for LastError() (disk full, missing folder, ...)
     std::string EncoderName() const;     // the video encoder the sink writer loaded, e.g. "AMDh264Encoder"
     bool IsHardware() const { return m_hardware; }
-    const Stats& GetStats() const { return m_stats; }
-    bool Accepting() const { return m_accepting.load(std::memory_order_acquire); }
+    const Stats& GetStats() const;
+    bool Accepting() const;
     uint32_t VideoStreamIndex() const;   // 0, or UINT32_MAX without video
     uint32_t AudioStreamIndex(uint32_t stream) const;
 
     // Tests only: the n-th WriteSample (counting from 0, any stream) fails with `hr` as if the sink had returned it.
     void InjectWriteErrorForTest(uint64_t after_samples, HRESULT hr);
+    // Tests only: ct-encode sleeps `ms` before IMFSinkWriter::Finalize (simulates a slow finalize).
+    void SetFinalizeDelayForTest(uint32_t ms);
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> m_impl;
-    Stats m_stats;
-    std::atomic<HRESULT> m_last_error{0};
-    std::atomic<bool> m_accepting{false};
+    std::unique_ptr<Impl> m_impl;   // holds the stats/error/accepting state too (it may outlive *this after Abort)
     bool m_hardware = false;
 };
 

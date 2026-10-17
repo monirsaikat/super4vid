@@ -20,7 +20,9 @@
 #include <ct/recorder/recording_frame.h>
 #include <ct/recorder/recording_session.h>
 #include <ct/recorder/region_overlay.h>
+#include <ct/ui/error_ux.h>
 #include <ct/ui/fonts.h>
+#include <ct/ui/settings_window.h>
 #include <ct/ui/icons.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
@@ -278,6 +280,9 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     bool preview_has_frame = false;
     float preview_wanted_until = 0;
 
+    // Settings window (its own decorated platform window through the multi-viewport backend).
+    std::unique_ptr<SettingsWindow> settings_win;
+
     // Popups and toasts.
     Popup open_request = Popup::None;
     std::vector<ToastItem> toasts;
@@ -345,9 +350,14 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         if (quit_after_finish) return;
         ShowSavedToastImpl(bundle_path);
     }
-    void OnError(const std::string& message, HRESULT) override {
+    void OnError(const std::string& message, HRESULT hr) override {
+        std::string text = message;
+        if (hr == HRESULT_FROM_WIN32(ERROR_DISK_FULL) || hr == HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL))
+            text = ErrorMessage(ErrorKind::DiskFull, session.BundlePath());
+        else if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+            text = ErrorMessage(ErrorKind::DeviceLost);
         char buf[512];
-        std::snprintf(buf, sizeof(buf), str::kToastRecordingFailed, message.c_str());
+        std::snprintf(buf, sizeof(buf), str::kToastRecordingFailed, text.c_str());
         PushToast(buf, ToastKind::Error, {}, 10);
         if (!visible) tray.Notify(W(str::kAppName).c_str(), W(buf).c_str());
     }
@@ -704,6 +714,22 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         s->Animate();
     }
 
+    bool RegisterHotkeysChecked(std::string* error) {
+        hotkeys.UnregisterAll();
+        const struct { int id; Hotkey hk; } list[] = {{kHkToggle, settings.hotkeys.toggle}, {kHkPause, settings.hotkeys.pause},
+                                                     {kHkMarker, settings.hotkeys.marker}, {kHkCancel, settings.hotkeys.cancel}};
+        bool ok = true;
+        for (const auto& e : list) {
+            if (!e.hk.IsSet()) continue;
+            std::string err;
+            if (!hotkeys.Register(win->Hwnd(), e.id, e.hk.modifiers, e.hk.vk, &err)) {
+                if (error && error->empty()) *error = err;
+                ok = false;
+            }
+        }
+        return ok;
+    }
+
     void RegisterHotkeys() {
         hotkeys.UnregisterAll();
         const struct { int id; Hotkey hk; } list[] = {{kHkToggle, settings.hotkeys.toggle}, {kHkPause, settings.hotkeys.pause},
@@ -750,13 +776,17 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             hooks.open_settings();
             return;
         }
-        // Until the settings window exists: open the settings file in the default editor.
-        const std::string path = settings_path;
-        if (!fs::Exists(path)) {
-            Err err;
-            settings.Save(path, &err);
-        }
-        fs::OpenWithShell(path);
+        if (!settings_win) return;
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(MonitorFromWindow(win->Hwnd(), MONITOR_DEFAULTTOPRIMARY), &mi);
+        const float w = std::min(Dp(840), static_cast<float>(mi.rcWork.right - mi.rcWork.left) - Dp(32));
+        const float h = std::min(Dp(580), static_cast<float>(mi.rcWork.bottom - mi.rcWork.top) - Dp(32));
+        settings_win->SetHostRect(ImVec2((mi.rcWork.left + mi.rcWork.right - w) * 0.5f, (mi.rcWork.top + mi.rcWork.bottom - h) * 0.5f),
+                                  ImVec2(w, h));
+        if (!settings_win->IsOpen()) settings_win->Open(settings);
+        settings_focus = true;
+        Animate();
     }
 
     void Quit() {
@@ -825,6 +855,31 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::End();
         DrawToasts();
         DrawCameraHover();
+        DrawSettings();
+    }
+
+    void DrawSettings() {
+        if (!settings_win || !settings_win->IsOpen()) return;
+        if (ImGuiWindow* w = ImGui::FindWindowByName(SettingsWindow::WindowName())) {
+            ImGuiViewport* vp = w->Viewport;
+            if (vp && vp != ImGui::GetMainViewport() && vp->PlatformWindowCreated) {
+                if (vp->PlatformRequestClose) {
+                    vp->PlatformRequestClose = false;
+                    settings_win->Close();
+                    return;
+                }
+                settings_win->SetHostRect(vp->Pos, vp->Size);   // follow OS moves/resizes of the window
+                if (settings_focus) {
+                    settings_focus = false;
+                    if (vp->PlatformHandle) SetForegroundWindow(static_cast<HWND>(vp->PlatformHandle));
+                }
+            }
+        }
+        ImGuiWindowClass cls;
+        cls.ParentViewportId = 0;   // a normal top-level window, not owned by the topmost bar
+        cls.ViewportFlagsOverrideClear = ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_NoTaskBarIcon;
+        ImGui::SetNextWindowClass(&cls);
+        settings_win->Draw();
     }
 
     // Idle bar ---------------------------------------------------------------------------------------------------
@@ -1141,7 +1196,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     // Popovers ---------------------------------------------------------------------------------------------------
     float monitor_anchor_x = 0, fps_anchor_x = 0, mic_anchor_x = 0, sys_anchor_x = 0, cam_anchor_x = 0;
     ImVec2 cam_chip_min{}, cam_chip_max{};
-    bool camera_hovered = false, hovered_rec = false, close_popups = false;
+    bool camera_hovered = false, hovered_rec = false, close_popups = false, settings_focus = false;
     bool open_fps = false, open_mic = false, open_sys = false, open_cam = false;
 
     static const char* PopupId(Popup p) {
@@ -1534,6 +1589,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
 
     int RedrawIntervalMs() const {
         if (NowS() < anim_until || size_anim_t0 >= 0) return 16;
+        if (settings_win && settings_win->IsOpen() && settings_win->WantsRedraw()) return 16;
         if (state != State::Idle || preparing) return 33;   // timer, pulse, meters
         if (monitor_audio || preview) return 33;            // live meter / camera preview visible
         if (!toasts.empty()) return 250;                    // expiry
@@ -1573,6 +1629,23 @@ bool RecorderBar::Init(platform::D3DDevice& dev, platform::Window& window, const
     if (!s.tray.Add(hwnd, s.icon_normal, W(str::kTrayTip).c_str(), kTrayMsg)) CT_LOG_WARN("tray icon could not be added");
     s.RegisterHotkeys();
     s.DiscoverAsync();
+
+    s.settings_win = std::make_unique<SettingsWindow>(s.settings_path);
+    s.settings_win->SetFillViewport(true);
+    s.settings_win->SetGpuName(dev.AdapterName());
+    Impl* self = &s;
+    s.settings_win->on_changed = [self](const Settings& changed) {
+        const Settings::Hotkeys keep = self->settings.hotkeys;   // hotkeys come through reregister_hotkeys
+        self->settings = changed;
+        self->settings.hotkeys = keep;
+        self->Animate();
+    };
+    s.settings_win->suspend_hotkeys = [self]() { self->hotkeys.UnregisterAll(); };
+    s.settings_win->reregister_hotkeys = [self](const Settings::Hotkeys& h, std::string* error) {
+        self->settings.hotkeys = h;
+        return self->RegisterHotkeysChecked(error);
+    };
+    s.settings_win->request_redraw = [hwnd]() { PostMessageW(hwnd, WM_NULL, 0, 0); };
     return true;
 }
 
@@ -1591,6 +1664,7 @@ void RecorderBar::Shutdown() {
         s.preview->src.Stop();
         s.preview.reset();
     }
+    s.settings_win.reset();   // flushes a pending save
     s.hotkeys.UnregisterAll();
     s.tray.Remove();
     if (s.icon_recording) DestroyIcon(s.icon_recording);
@@ -1698,5 +1772,7 @@ bool RecorderBar::IsIdle() const { return m->state == State::Idle && !m->prepari
 double RecorderBar::LastStartLatencyMs() const { return m->session.LastStartLatencyMs(); }
 int64_t RecorderBar::LastTriggerQpc() const { return m->trigger_qpc; }
 void RecorderBar::ShowBar(bool show) { m->ShowBar(show); }
+void RecorderBar::PushToast(const std::string& text, float seconds) { m->PushToast(text, ToastKind::Info, {}, seconds); }
+void RecorderBar::OpenSettings() { m->OpenSettings(); }
 
 } // namespace ct::ui

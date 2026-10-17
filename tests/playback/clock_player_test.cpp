@@ -11,6 +11,7 @@
 #include <ct/test/ct_test.h>
 
 #include <cstdio>
+#include <vector>
 
 using namespace ct;
 using namespace ct::playback;
@@ -150,4 +151,42 @@ CT_TEST_DEVICE(player_plays_in_sync_and_steps) {
     }
     CT_CHECK(!player.Playing());
     CT_CHECK(now > 4'950'000);
+}
+
+// Review fix: after a seek, the ring is anchored at the first packet's pts, not at the requested time. A stream whose
+// first packet is at 0.5 s (late audio start / gap) plays silence until 0.5 s; an earlier first packet is trimmed.
+CT_TEST(player_feed_anchors_first_packet_after_seek) {
+    constexpr int ch = AudioEngine::kChannels;
+    Player::Feed feed;
+    CT_REQUIRE(feed.ring.Init(48000, ch));
+    feed.discard.assign(static_cast<size_t>(4800) * ch, 0.0f);
+    // Each sample holds its own media time in seconds.
+    auto make = [](TimeUs pts_us, uint32_t frames) {
+        std::vector<float> v(static_cast<size_t>(frames) * ch);
+        for (uint32_t i = 0; i < frames; ++i)
+            for (int c = 0; c < ch; ++c) v[static_cast<size_t>(i) * ch + c] = static_cast<float>((pts_us + i * 1'000'000.0 / 48000) / 1e6);
+        return v;
+    };
+    std::vector<float> out(480 * ch);
+    // Seek to 0; the stream starts at 0.5 s.
+    feed.req_gen.store(1);
+    feed.Reset(0, 1);
+    std::vector<float> late = make(500'000, 4800);
+    feed.Append(late.data(), 4800, 500'000);
+    int early_nonzero = 0;
+    for (int k = 0; k < 50; ++k) {   // 0 .. 0.5 s in 10 ms buffers: silence
+        CT_CHECK_EQ(feed.Pull(out.data(), 480, k * 10'000, 1.0), 480u);
+        for (float s : out) early_nonzero += s != 0.0f ? 1 : 0;
+    }
+    CT_CHECK_EQ(early_nonzero, 0);
+    CT_CHECK_EQ(feed.Pull(out.data(), 480, 500'000, 1.0), 480u);
+    CT_CHECK_NEAR(out[0], 0.5f, 1e-5f);
+    CT_CHECK_NEAR(out[479 * ch], 0.5f + 479.0f / 48000.0f, 1e-5f);
+    // Seek to 0.45 s; the reader's first packet starts at 0.4 s: the 50 ms before the request are dropped.
+    feed.req_gen.store(2);
+    feed.Reset(450'000, 2);
+    std::vector<float> early = make(400'000, 4800);
+    feed.Append(early.data(), 4800, 400'000);
+    CT_CHECK_EQ(feed.Pull(out.data(), 480, 450'000, 1.0), 480u);
+    CT_CHECK_NEAR(out[0], 0.45f, 1e-5f);
 }

@@ -19,7 +19,7 @@ float4 ps_nv12(QuadOut i) : SV_Target {
 
 // t0 = RGBA (straight unless g_premul).
 float4 ps_rgba(QuadOut i) : SV_Target {
-    float4 c = g_tex0.Sample(g_lin, i.uv);
+    float4 c = g_tex0.Sample(g_lin, SrcUv0(i.uv));
     if (g_premul < 0.5) c.rgb *= c.a;
     float a = RoundedMask(i.local) * g_opacity;
     return c * a;

@@ -14,8 +14,11 @@
 #include <mfapi.h>
 #include <mftransform.h>
 
+#include <crtdbg.h>
+
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 using namespace ct;
@@ -192,4 +195,59 @@ CT_TEST_DEVICE(mp4_writer_abort_returns_quickly) {
     std::printf("  Abort returned after %.1f ms\n", sw.ElapsedMs());
     CT_CHECK(sw.ElapsedMs() < 3100);
     CT_CHECK(!w.Accepting());
+}
+
+// Review fix: Abort while ct-encode is inside a slow IMFSinkWriter::Finalize (simulated), then destroy the writer.
+// The destructor must neither free the sink writer/events under the live thread nor block; the thread then finishes
+// in its own (deliberately leaked) state and never writes into the destroyed Mp4Writer. Debug: freed blocks are kept
+// filled (_CRTDBG_DELAY_FREE_MEM_DF), so a late write into freed memory fails _CrtCheckMemory.
+CT_TEST_DEVICE(mp4_writer_abort_during_slow_finalize_then_destroy) {
+    MfScope mf;
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(false)));
+#ifdef _DEBUG
+    const int old_flags = _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG);
+    _CrtSetDbgFlag(old_flags | _CRTDBG_DELAY_FREE_MEM_DF);
+#endif
+    const std::string path = TempPath("abort_slow_finalize.m4a");
+    Mp4Writer::Config c;
+    c.path = path;
+    c.has_video = false;
+    c.audio.push_back(AudioEncodeConfig{});
+    auto w = std::make_unique<Mp4Writer>();
+    CT_REQUIRE(SUCCEEDED(w->Init(dev, c, nullptr)));
+    w->SetFinalizeDelayForTest(4000);
+    CT_REQUIRE(w->Start());
+    std::vector<float> pcm(480 * 2, 0.1f);
+    for (int k = 0; k < 20; ++k) {
+        audio::AudioPacket p;
+        p.t_us = k * 10'000;
+        p.frames = 480;
+        p.data = pcm.data();
+        w->OnAudio(0, p);
+    }
+    Stopwatch sw;
+    sw.Start();
+    w->Abort();
+    const double abort_ms = sw.ElapsedMs();
+    sw.Start();
+    w.reset();   // ct-encode is still sleeping before Finalize
+    const double dtor_ms = sw.ElapsedMs();
+    std::printf("  Abort %.0f ms, destructor %.1f ms\n", abort_ms, dtor_ms);
+    CT_CHECK(abort_ms >= 2900);
+    CT_CHECK(dtor_ms < 500);
+    // The leaked thread wakes ~1 s later, finalizes the file and exits: the file becomes readable.
+    ProbeResult pr;
+    bool probed = false;
+    for (int i = 0; i < 100 && !probed; ++i) {
+        Sleep(50);
+        probed = SUCCEEDED(Probe(path, pr));
+    }
+    std::printf("  file finalized by the leaked thread: %s\n", probed ? "yes" : "no");
+    CT_CHECK(probed);
+    Sleep(200);
+#ifdef _DEBUG
+    CT_CHECK(_CrtCheckMemory() != 0);
+    _CrtSetDbgFlag(old_flags);
+#endif
 }

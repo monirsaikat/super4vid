@@ -48,14 +48,17 @@ void BlurPass(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI size, floa
     cb.p0[1] = horizontal ? 0.f : 1.f / static_cast<float>(size.h);
     cb.p0[2] = sigma;
     cb.p0[3] = std::min(std::ceil(sigma * 3.f), kMaxSigma * 3.f);
+    SetSourceUv(cb, 0, src, size);
     DrawFull(rc, Ps::Blur, cb, src);
 }
 
-void CopyPass(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI dst_size, ID3D11RenderTargetView* dst) {
+// src_size: the used area of src (pooled temps are larger than what they hold).
+void CopyPass(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI src_size, SizeI dst_size, ID3D11RenderTargetView* dst) {
     rc.SetFullscreen(dst, dst_size);
     rc.SetBlendOpaque();
     QuadCb cb;
     ZeroCb(cb);
+    SetSourceUv(cb, 0, src, src_size);
     DrawFull(rc, Ps::Copy, cb, src);
 }
 
@@ -66,7 +69,7 @@ namespace effects {
 void GaussianBlur(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI src_size, float sigma_px, RenderContext::TempRT& dst) {
     if (!src || src_size.IsEmpty() || !dst.rtv) return;
     if (sigma_px < 0.3f) {
-        CopyPass(rc, src, dst.size, dst.rtv.Get());
+        CopyPass(rc, src, src_size, dst.size, dst.rtv.Get());
         return;
     }
     // Downsample by 2 while the blur is wide; each level halves sigma.
@@ -79,7 +82,7 @@ void GaussianBlur(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI src_si
         const SizeI half{(cur_size.w + 1) / 2, (cur_size.h + 1) / 2};
         RenderContext::TempRT* t = rc.AcquireTemp(half);
         if (!t) break;
-        CopyPass(rc, cur, half, t->rtv.Get());
+        CopyPass(rc, cur, cur_size, half, t->rtv.Get());
         levels[n++] = t;
         cur = t->srv.Get();
         cur_size = half;
@@ -94,7 +97,7 @@ void GaussianBlur(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI src_si
         RenderContext::TempRT* out = rc.AcquireTemp(cur_size);
         if (out) {
             BlurPass(rc, tmp->srv.Get(), cur_size, sigma, false, out->rtv.Get());
-            CopyPass(rc, out->srv.Get(), dst.size, dst.rtv.Get());   // bilinear upsample
+            CopyPass(rc, out->srv.Get(), cur_size, dst.size, dst.rtv.Get());   // bilinear upsample
             rc.ReleaseTemp(out);
         }
     }
@@ -116,6 +119,7 @@ void Pixelate(RenderContext& rc, ID3D11ShaderResourceView* src, SizeI src_size, 
     cb.radius = radius_px;
     cb.mask = 1.f;
     cb.opacity = opacity;
+    SetSourceUv(cb, 0, src, src_size);
     DrawQuad(rc, Ps::Pixelate, cb, src);
 }
 
@@ -227,6 +231,8 @@ void Apply(RenderContext& rc, const project::Transition& tr, float u, ID3D11Shad
     cb.p0[2] = dx;
     cb.p0[3] = dy;
     SetColor(cb.color, tr.color);
+    SetSourceUv(cb, 0, a, size);   // a and b may be pooled temps larger than the canvas
+    SetSourceUv(cb, 1, b, size);
     DrawFull(rc, Ps::Transition, cb, a, b);
 }
 
