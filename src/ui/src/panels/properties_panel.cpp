@@ -131,6 +131,10 @@ void HintText(const char* s) {
 } // namespace
 
 void PropertiesPanel::Draw(EditorState& state) {
+    if (m_regen_due >= 0 && ImGui::GetTime() >= m_regen_due && !state.DragActive()) {
+        m_regen_due = -1;
+        if (on_regenerate) on_regenerate(state);
+    }
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, Dp(8, 5));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Dp(8, 4));
     state.PruneSelection();
@@ -139,8 +143,13 @@ void PropertiesPanel::Draw(EditorState& state) {
     } else if (state.selection.marker) {
         DrawMarker(state);
     } else if (state.selection.camera_key) {
+        // Both sections have zoom / ease rows: separate ID scopes so one drag drives one field (review fix).
+        ImGui::PushID("##camkey");
         DrawCameraKey(state);
+        ImGui::PopID();
+        ImGui::PushID("##camsec");
         DrawCameraSection(state);
+        ImGui::PopID();
     } else {
         DrawProjectSections(state);
     }
@@ -156,6 +165,7 @@ void PropertiesPanel::DrawMarker(EditorState& state) {
     if (!SectionHeader(str::kSecMarker)) return;
     std::string label = mk->label;
     if (PropText(str::kLabel, label)) cmd::RenameMarker(state, t, label.c_str());
+    Coalesce(state, str::kUndoProperty);   // one undo entry per typing session (review fix)
     TimeUs nt = t;
     if (PropTime(str::kTime, nt, 0, INT64_MAX / 4) && nt != t) {
         if (state.Edit(str::kUndoMoveMarker, [&](Project& p) { return ops::MoveMarker(p, t, nt); })) state.selection.marker = nt;
@@ -196,6 +206,7 @@ void PropertiesPanel::DrawCameraKey(EditorState& state) {
             return ops::SetCameraKey(p, moved);
         });
         if (ok) state.selection.camera_key = nt;
+        Coalesce(state, str::kUndoCameraKey);   // before returning: a typed time must close its drag (review fix)
         return;
     }
     Coalesce(state, str::kUndoCameraKey);
@@ -250,6 +261,7 @@ void PropertiesPanel::DrawCameraSection(EditorState& state) {
                 p.camera.auto_params = ap;
                 return true;
             });
+            if (on_regenerate) m_regen_due = ImGui::GetTime() + 0.3;   // live regeneration, debounced (P09 9.5)
         }
         ImGui::Dummy(Dp(0, 2));
         ImGui::BeginDisabled(!on_regenerate);

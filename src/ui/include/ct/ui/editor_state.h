@@ -53,6 +53,11 @@ public:
     virtual void HintScrub(TimeUs t) = 0;      // paused prefetch around t
     // Called once per frame by the editor; advances the playhead while playing. Returns true while playing.
     virtual bool Tick(double now_s) = 0;
+    // Output volume (linear 0..2) and mute (P09 second half; players without audio keep the defaults).
+    virtual float Volume() const { return 1.0f; }
+    virtual void SetVolume(float) {}
+    virtual bool Muted() const { return false; }
+    virtual void SetMuted(bool) {}
 };
 
 struct EditorState;

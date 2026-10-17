@@ -66,6 +66,32 @@ void MediaPanel::Draw(EditorState& state) {
         }
         ImGui::EndTabBar();
     }
+    // Remove confirmation for media used by clips.
+    if (!m_confirm.empty() && !ImGui::IsPopupOpen("Remove media?")) {
+        ImGui::OpenPopup("Remove media?");
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    if (ImGui::BeginPopupModal("Remove media?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        const Media* m = state.project.FindMedia(m_confirm);
+        ImGui::Text("%s is used by %d clip%s.", m ? cmd::MediaDisplayName(*m) : "This media", m_confirm_clips, m_confirm_clips == 1 ? "" : "s");
+        ImGui::TextDisabled("Removing it also removes those clips (Undo brings them back).");
+        ImGui::Dummy(Dp(0, 6));
+        if (Button(str::kRemoveUsed, ButtonKind::Danger, Dp(200, 30))) {
+            const Id id = m_confirm;
+            Err err;
+            if (state.Edit(str::kUndoRemoveMedia, [&](Project& pp) { return ops::RemoveMedia(pp, id, true, &err); })) state.PruneSelection();
+            m_confirm.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (Button("Cancel", ButtonKind::Normal, Dp(100, 30)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            m_confirm.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else if (!m_confirm.empty() && !ImGui::IsPopupOpen("Remove media?")) {
+        m_confirm.clear();
+    }
 }
 
 void MediaPanel::DrawMediaTab(EditorState& state) {
@@ -200,8 +226,13 @@ void MediaPanel::DrawMediaTab(EditorState& state) {
             for (const Clip& c : p.clips) used += c.media == m_ctx ? 1 : 0;
             if (ImGui::MenuItem(used ? str::kRemoveUsed : str::kRemove)) {
                 const Id id = m_ctx;
-                Err err;
-                if (state.Edit(str::kUndoRemoveMedia, [&](Project& pp) { return ops::RemoveMedia(pp, id, true, &err); })) state.PruneSelection();
+                if (used) {
+                    m_confirm = id;   // used by clips: confirm first (P09 9.2)
+                    m_confirm_clips = used;
+                } else {
+                    Err err;
+                    if (state.Edit(str::kUndoRemoveMedia, [&](Project& pp) { return ops::RemoveMedia(pp, id, true, &err); })) state.PruneSelection();
+                }
             }
             ImGui::EndPopup();
         }

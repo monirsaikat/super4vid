@@ -28,6 +28,15 @@ NullMediaProvider& NullMediaProvider::Instance() {
 
 namespace {
 
+// End of the closest clip before `c` and start of the closest clip after it on c's track (no allocation).
+void TrackNeighbours(const Project& p, const Clip& c, TimeUs* prev_end, TimeUs* next_start) {
+    for (const Clip& o : p.clips) {
+        if (o.track != c.track || o.id == c.id) continue;
+        if (o.start_us < c.start_us) *prev_end = std::max(*prev_end, o.End());
+        else *next_start = std::min(*next_start, o.start_us);
+    }
+}
+
 ImU32 ToU32(const ColorF& c, float alpha = 1.0f) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a * alpha));
 }
@@ -239,16 +248,33 @@ bool TimelineWidget::ClipRect(const EditorState& state, const Id& id, ImVec2* mn
     return false;
 }
 
-TimeUs TimelineWidget::SnapTime(const EditorState& state, TimeUs t, const std::vector<Id>& ignore) const {
+// Same candidates as ops::Snap (0, clip edges, markers, playhead) without building an ignore vector per call, and
+// with the dragged marker excluded (it would otherwise snap to itself; review fix).
+TimeUs TimelineWidget::SnapTime(const EditorState& state, TimeUs t, const SnapIgnore& ig) const {
     if (!state.snap || ImGui::GetIO().KeyAlt) return t;
-    std::vector<Id> ig = ignore;
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), "playhead:%lld", static_cast<long long>(state.Playhead()));
-    ig.emplace_back(buf);
-    return ops::Snap(state.project, t, m_view.PxToUs(Dp(kTlSnapPx)), ig);
+    const TimeUs tol = m_view.PxToUs(Dp(kTlSnapPx));
+    TimeUs best = t, best_d = tol + 1;
+    auto consider = [&](TimeUs cand) {
+        const TimeUs d = cand > t ? cand - t : t - cand;
+        if (d <= tol && d < best_d) {
+            best = cand;
+            best_d = d;
+        }
+    };
+    consider(0);
+    consider(state.Playhead());
+    for (const Clip& c : state.project.clips) {
+        if (ig.clip && c.id == *ig.clip) continue;
+        if (ig.selection && IsSelected(c.id)) continue;
+        consider(c.start_us);
+        consider(c.End());
+    }
+    for (const Marker& m : state.project.markers)
+        if (m.t_us != ig.marker) consider(m.t_us);
+    return best;
 }
 
-TimeUs TimelineWidget::SnapMove(const EditorState& state, TimeUs start, TimeUs dur, const std::vector<Id>& ignore) const {
+TimeUs TimelineWidget::SnapMove(const EditorState& state, TimeUs start, TimeUs dur, const SnapIgnore& ignore) const {
     const TimeUs s1 = SnapTime(state, start, ignore);
     const TimeUs e1 = SnapTime(state, start + dur, ignore);
     const TimeUs ds = s1 > start ? s1 - start : start - s1;
@@ -621,19 +647,21 @@ void TimelineWidget::HandleDrag(EditorState& state) {
     case Mode::Move: {
         const TimeUs dur = m_drag.orig_end - m_drag.orig_start;
         if (m_drag.group.size() > 1) {
-            std::vector<Id> ignore;
             TimeUs min_start = INT64_MAX;
-            for (const auto& g : m_drag.group) {
-                ignore.push_back(g.first);
-                min_start = std::min(min_start, g.second);
-            }
-            TimeUs cand = SnapMove(state, m_drag.orig_start + dt, dur, ignore);
+            for (const auto& g : m_drag.group) min_start = std::min(min_start, g.second);
+            SnapIgnore sig;
+            sig.selection = true;
+            TimeUs cand = SnapMove(state, m_drag.orig_start + dt, dur, sig);
             TimeUs delta = cand - m_drag.orig_start;
             if (min_start + delta < 0) delta = -min_start;
             const Clip* c = p.FindClip(m_drag.clip);
             if (!c || c->start_us == m_drag.orig_start + delta) break;
+            // Every clip moves by the same shift from where it is now: when shifting right the rightmost goes first
+            // (and vice versa), so no clip of the group lands on another one's current position (review fix: the
+            // order used to follow sign(delta), which failed when dragging back towards the origin).
+            const TimeUs shift = delta - (c->start_us - m_drag.orig_start);
             auto group = m_drag.group;
-            std::sort(group.begin(), group.end(), [&](const auto& a, const auto& b) { return delta > 0 ? a.second > b.second : a.second < b.second; });
+            std::sort(group.begin(), group.end(), [&](const auto& a, const auto& b) { return shift > 0 ? a.second > b.second : a.second < b.second; });
             state.EditCopy(str::kUndoMove, [&](Project& pp) {
                 for (const auto& g : group)
                     if (!ops::MoveClip(pp, g.first, g.second + delta, "", &err)) return false;
@@ -641,7 +669,9 @@ void TimelineWidget::HandleDrag(EditorState& state) {
             });
             break;
         }
-        TimeUs cand = SnapMove(state, std::max<TimeUs>(0, m_drag.orig_start + dt), dur, {m_drag.clip});
+        SnapIgnore sig;
+        sig.clip = &m_drag.clip;
+        TimeUs cand = SnapMove(state, std::max<TimeUs>(0, m_drag.orig_start + dt), dur, sig);
         cand = std::max<TimeUs>(0, cand);
         const Clip* c = p.FindClip(m_drag.clip);
         if (!c) break;
@@ -660,40 +690,43 @@ void TimelineWidget::HandleDrag(EditorState& state) {
         break;
     }
     case Mode::TrimIn: {
-        TimeUs ns = SnapTime(state, m_drag.orig_start + dt, {m_drag.clip});
+        SnapIgnore sig;
+        sig.clip = &m_drag.clip;
+        TimeUs ns = SnapTime(state, m_drag.orig_start + dt, sig);
         ns = std::min(ns, m_drag.orig_end - frame);
         const Clip* c = p.FindClip(m_drag.clip);
-        if (!c || ns == c->start_us) break;
+        if (!c) break;
+        // Clamp analytically at the media start, the previous clip and 0 (review fix: was a bisection over up to 24
+        // project copies per frame); the op's own rounding is absorbed by trying a few microseconds inwards.
+        TimeUs prev_end = 0, next_start = INT64_MAX;
+        TrackNeighbours(p, *c, &prev_end, &next_start);
+        const TimeUs media_lo = c->start_us - static_cast<TimeUs>(std::floor(static_cast<double>(c->in_us) / c->speed));
+        ns = std::max({ns, prev_end, media_lo, TimeUs(0)});
+        if (ns == c->start_us) break;
         const Id id = m_drag.clip;
-        if (!state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimIn(pp, id, ns, &err); })) {
-            // Clamp at the media start / neighbour: try the closest valid start by bisection.
-            TimeUs lo = c->start_us, hi = ns;
-            for (int i = 0; i < 24 && (hi > lo ? hi - lo : lo - hi) > 1; ++i) {
-                const TimeUs mid = lo + (hi - lo) / 2;
-                Project probe = p;
-                if (ops::TrimIn(probe, id, mid, nullptr)) lo = mid;
-                else hi = mid;
-            }
-            if (lo != c->start_us) state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimIn(pp, id, lo, &err); });
-        }
+        for (int k = 0; k < 4 && ns < c->End(); ++k, ++ns)
+            if (state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimIn(pp, id, ns, &err); })) break;
         break;
     }
     case Mode::TrimOut: {
-        TimeUs ne = SnapTime(state, m_drag.orig_end + dt, {m_drag.clip});
+        SnapIgnore sig;
+        sig.clip = &m_drag.clip;
+        TimeUs ne = SnapTime(state, m_drag.orig_end + dt, sig);
         ne = std::max(ne, m_drag.orig_start + frame);
         const Clip* c = p.FindClip(m_drag.clip);
-        if (!c || ne == c->End()) break;
-        const Id id = m_drag.clip;
-        if (!state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimOut(pp, id, ne, &err); })) {
-            TimeUs lo = c->End(), hi = ne;
-            for (int i = 0; i < 24 && (hi > lo ? hi - lo : lo - hi) > 1; ++i) {
-                const TimeUs mid = lo + (hi - lo) / 2;
-                Project probe = p;
-                if (ops::TrimOut(probe, id, mid, nullptr)) lo = mid;
-                else hi = mid;
-            }
-            if (lo != c->End()) state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimOut(pp, id, lo, &err); });
+        if (!c) break;
+        TimeUs prev_end = 0, next_start = INT64_MAX;
+        TrackNeighbours(p, *c, &prev_end, &next_start);
+        const TimeUs max_out = p.MaxOutUs(*c);
+        if (max_out < INT64_MAX / 4) {
+            const TimeUs media_hi = c->start_us + static_cast<TimeUs>(std::floor(static_cast<double>(max_out - c->in_us) / c->speed));
+            ne = std::min(ne, media_hi);
         }
+        ne = std::min(ne, next_start);
+        if (ne == c->End()) break;
+        const Id id = m_drag.clip;
+        for (int k = 0; k < 4 && ne > c->start_us; ++k, --ne)
+            if (state.Edit(str::kUndoTrim, [&](Project& pp) { return ops::TrimOut(pp, id, ne, &err); })) break;
         break;
     }
     case Mode::Slip: {
@@ -711,7 +744,9 @@ void TimelineWidget::HandleDrag(EditorState& state) {
         if (!src) break;
         const TimeUs dur = m_drag.orig_end - m_drag.orig_start;
         Id ignore_dup = m_drag.dup.empty() ? m_drag.clip : m_drag.dup;
-        TimeUs cand = std::max<TimeUs>(0, SnapMove(state, std::max<TimeUs>(0, m_drag.orig_start + dt), dur, {ignore_dup}));
+        SnapIgnore sig;
+        sig.clip = &ignore_dup;
+        TimeUs cand = std::max<TimeUs>(0, SnapMove(state, std::max<TimeUs>(0, m_drag.orig_start + dt), dur, sig));
         Id track = src->track;
         if (const Lane* lane = LaneAt(m_mouse.y); lane && lane->kind == Lane::Kind::Track) {
             const Track& t = p.tracks[static_cast<size_t>(lane->track)];
@@ -744,7 +779,9 @@ void TimelineWidget::HandleDrag(EditorState& state) {
     case Mode::MarkerDrag: {
         if (!moved && !state.DragActive()) break;
         if (!state.DragActive()) state.BeginDrag(str::kUndoMoveMarker);
-        const TimeUs nt = std::max<TimeUs>(0, SnapTime(state, m_view.T(m_mouse.x), {}));
+        SnapIgnore sig;
+        sig.marker = m_drag.marker_t;   // never snap to itself (review fix)
+        const TimeUs nt = std::max<TimeUs>(0, SnapTime(state, m_view.T(m_mouse.x), sig));
         if (nt == m_drag.marker_t) break;
         const TimeUs from = m_drag.marker_t;
         if (state.Edit(str::kUndoMoveMarker, [&](Project& pp) { return ops::MoveMarker(pp, from, nt); })) {
@@ -756,7 +793,7 @@ void TimelineWidget::HandleDrag(EditorState& state) {
     case Mode::CameraKeyDrag: {
         if (!moved && !state.DragActive()) break;
         if (!state.DragActive()) state.BeginDrag(str::kUndoMoveCameraKey);
-        const TimeUs nt = std::max<TimeUs>(0, SnapTime(state, m_view.T(m_mouse.x), {}));
+        const TimeUs nt = std::max<TimeUs>(0, SnapTime(state, m_view.T(m_mouse.x), SnapIgnore{}));
         if (nt == m_drag.marker_t) break;
         const TimeUs from = m_drag.marker_t;
         const bool ok = state.Edit(str::kUndoMoveCameraKey, [&](Project& pp) {
@@ -1470,6 +1507,10 @@ void TimelineWidget::Draw(EditorState& state, ImVec2 size) {
         ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
         ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelX);
     }
+    // Group-move snapping looks the selection up through m_sel_sorted: make it current before input.
+    m_sel_sorted.clear();
+    for (const Id& id : state.selection.clips) m_sel_sorted.emplace_back(id);
+    std::sort(m_sel_sorted.begin(), m_sel_sorted.end());
     HandleDrop(state);
     const bool hover_input = hovered && !ImGui::GetDragDropPayload();
     HandleInput(state, hover_input, active);
