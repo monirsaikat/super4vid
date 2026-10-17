@@ -110,7 +110,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow — NV12 (BT.709 limited) or RGBA, rotation/mirror uv, 1 px analytic SDF edge in target pixels, shadow mask at 1/4 res + separable blur (downsample above sigma 8) + composite over the bounds only, cached (0 mask renders for an unchanged frame)
 - [x] 8.3 Camera (zoom/pan keyframes, easing, auto-zoom playback) — Camera::At -> CameraTransform applied to layers, cursor and annotations (golden camera_zoom_2x)
 - [x] 8.4 Cursor renderer from `.ctev` (interpolation + smoothing, shapes atlas, click effects) — SmoothedPosition (120 Hz resampled Gaussian, click snap), 2048 shelf-packed atlas (2 max) with built-in arrow, ripple/highlight/spotlight/drop shadow, hide-when-idle fade (golden cursor_ripple_t150ms)
-- [ ] 8.5 Annotations via Direct2D/DirectWrite into layer textures (text, callout, arrow, shapes, keystroke badge), blur/pixelate region
+- [x] 8.5 Annotations via Direct2D/DirectWrite into layer textures (text, callout, arrow, shapes, keystroke badge), blur/pixelate region — cached rasters (0 re-rasterizations for an unchanged frame), grayscale AA + fixed DWrite params; blur/pixelate/highlight from a region copy (goldens annotation_callout, annotation_blur, keystroke_badge)
 - [ ] 8.6 Transitions, webcam PIP masks, readback helper for tests
 - [ ] 8.7 Acceptance: golden-image tests pass; `RenderFrame` 1080p with 3 layers + cursor + 2 annotations < 4 ms GPU, < 1 ms CPU
 
