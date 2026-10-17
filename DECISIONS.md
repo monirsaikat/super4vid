@@ -1475,3 +1475,10 @@ Decision: `ui::IsRecorderBarCommandLine` picks the recorder bar unless the comma
 Why: double-clicking a project must open the editor; recorder flags take values. Impact: a double-clicked file while the
 bar runs still forwards to the bar instance through SingleInstance (the bar ignores it) — integration should open the
 editor for a forwarded file argument or exempt editor launches from the single-instance check.
+
+## 2026-10-17 · Integration · Event recorder: no record written after a later one
+Decision: ct-hooks producers (mouse, keyboard, focus, cursor timer) hold an in-flight counter from before they stamp a
+record until after they push it; Drain reads its cutoff, then waits for the counter to reach 0 before popping.
+Why: a hook event stamped just before a Flush cutoff but pushed just after the pop was written in the next drain, after
+records with later times (seen as one out-of-order record under load). The 5 ms hold-back only covered periodic drains.
+Impact: the bundle verifier's constant-fps check now allows the same few dropped frames as its frame-count check.

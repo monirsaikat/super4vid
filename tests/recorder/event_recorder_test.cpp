@@ -267,9 +267,15 @@ CT_TEST_DEVICE(event_recorder_controls_and_hook_events_in_time_order) {
     CT_REQUIRE(reader.Open(path, &err));
     events::RecordView r;
     TimeUs prev = INT64_MIN;
+    uint8_t prev_type = 0;
     size_t markers = 0, wheels = 0, out_of_order = 0;
     while (reader.Next(r)) {
-        if (r.t_us < prev) ++out_of_order;
+        if (r.t_us < prev) {
+            ++out_of_order;
+            std::printf("  out of order: type %u at %lld us after type %u at %lld us\n", static_cast<unsigned>(r.type),
+                        static_cast<long long>(r.t_us), static_cast<unsigned>(prev_type), static_cast<long long>(prev));
+        }
+        prev_type = r.type;
         prev = std::max(prev, r.t_us);
         if (r.type == static_cast<uint8_t>(events::RecordType::Marker)) ++markers;
         if (r.type == static_cast<uint8_t>(events::RecordType::MouseWheel)) ++wheels;

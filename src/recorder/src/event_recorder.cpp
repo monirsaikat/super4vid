@@ -102,11 +102,24 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     std::atomic<uint32_t> flush_failures{0};
 
     // ---- ct-hooks (HooksHandler) ----
+    // Producers on ct-hooks stamp a record and then push it. in_flight covers that gap: Drain reads its cutoff and then
+    // waits for in_flight == 0 before popping, so a record stamped before the cutoff is always in this drain's batch
+    // (otherwise it would be written in the next drain, after records with later times).
+    std::atomic<int> in_flight{0};
+    struct InFlight {
+        std::atomic<int>& n;
+        explicit InFlight(std::atomic<int>& c) : n(c) { n.fetch_add(1, std::memory_order_seq_cst); }
+        ~InFlight() { n.fetch_sub(1, std::memory_order_seq_cst); }
+        InFlight(const InFlight&) = delete;
+        InFlight& operator=(const InFlight&) = delete;
+    };
+
     void Push(const RawEvent& e) {
         if (!ring.Push(e)) ring_dropped.fetch_add(1, std::memory_order_relaxed);
     }
 
     void OnMouseHook(UINT msg, const MSLLHOOKSTRUCT& info) override {
+        InFlight guard(in_flight);
         if (!active.load(std::memory_order_acquire)) return;
         RawEvent e;
         switch (msg) {
@@ -129,6 +142,7 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     }
 
     void OnKeyboardHook(UINT msg, const KBDLLHOOKSTRUCT& info) override {
+        InFlight guard(in_flight);
         if (!active.load(std::memory_order_acquire)) return;
         const bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         const uint16_t vk = static_cast<uint16_t>(info.vkCode & 0xFF);
@@ -160,6 +174,7 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     }
 
     void OnForeground(HWND hwnd) override {
+        InFlight guard(in_flight);
         if (!active.load(std::memory_order_acquire) || !config.focus) return;
         RawEvent e;
         e.kind = Kind::Focus;
@@ -169,6 +184,7 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     }
 
     void OnTimer() override {
+        InFlight guard(in_flight);
         if (!active.load(std::memory_order_acquire)) return;
         tracker.Poll(clock->NowMediaUs(), config.region, samples, shapes);
     }
@@ -343,6 +359,8 @@ struct EventRecorder::Impl final : platform::HooksHandler {
             for (auto& c : controls) batch_controls.push_back(std::move(c));
             controls.clear();
         }
+        // A producer between its stamp and its push: wait for it (microseconds, unless the hook thread is preempted).
+        while (in_flight.load(std::memory_order_seq_cst) != 0) SwitchToThread();
         capture::CursorShape sh;
         while (shapes.Pop(sh)) pending_shapes.push_back(std::move(sh));
         RawEvent e;
