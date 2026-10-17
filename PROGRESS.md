@@ -52,7 +52,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 2.7 Acceptance: `capture_bench --monitor 0 --fps 60 --seconds 30` shows 0 drops, CPU < 3 %, GPU < 8 % at 1080p
 
 ## P03 Audio capture
-- [ ] 3.1 Device enumeration + default device notifications
+- [x] 3.1 Device enumeration + default device notifications — enumerates 1 render endpoint (Realtek), 0 capture endpoints on this machine; notification delivery on a real default change is part of the 3.5 human check
 - [ ] 3.2 `WasapiCapture` (mic, event-driven) -> float 48 kHz stereo with QPC timestamps
 - [ ] 3.3 `WasapiLoopback` (system audio, polled) + silence-fill for gaps + silent render keep-alive
 - [ ] 3.4 `Resampler` (polyphase windowed-sinc), `Mixer`, `Meters` (peak/RMS, atomics)
