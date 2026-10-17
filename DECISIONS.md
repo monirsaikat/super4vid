@@ -643,3 +643,34 @@ Done instead:
 Why: P10 is split; the CPU part lands before P04/P08/P09.
 Impact: ExportJob (P10 rest) maps the enums to ct_media; the export dialog uses `UserDir`/`SaveUser`/`EstimateBytes`
 with the canvas size.
+
+## 2026-10-17 · P10 task 10.4 · GIF encoder details
+Spec said: frame differencing compares quantized indices with the previous frame; global palette from the first frame
+plus every 30th frame; LZW API `LzwEncode(indices, n, min_code_size, out)`; quantization on the IO pool in parallel
+with rendering.
+Done instead:
+- Frame diff runs on the source pixels first: pixels with the same RGB as in the previous input frame keep the
+  transparent index and neither receive nor spread dither error (otherwise Floyd-Steinberg noise from any change makes
+  the whole frame "dirty"). Changed pixels are dithered, then compared with the displayed color (a canvas of palette
+  colors, so it also works with local palettes) and become transparent when equal. The frame is cropped to the
+  bounding box of the remaining opaque pixels. Without dither the decoded frames equal `Quantize(frame)` exactly
+  (tested).
+- A frame with no visible change extends the previous frame's delay instead of emitting a frame; past the 16-bit
+  delay limit a 1x1 transparent frame carries the rest.
+- Two-pass global palette: `AddPaletteSample(bgra, stride)` before the first `AddFrame` adds sampled frames to the
+  histogram; the first frame is always added. `Options::max_colors` includes the transparent slot (255 real colors
+  with `frame_diff`). `per_frame_palette` writes no global table. `loop_count < 0` omits NETSCAPE2.0 (play once).
+- LZW: `out` is the sub-block chain incl. the 0 terminator, without the min-code-size byte; a clear code starts the
+  stream, codes widen when the next free code reaches `1 << size` after emitting (giflib rule), and a clear code is
+  emitted instead of assigning code 4095.
+- The 32x32x32 nearest cache stores the exact nearest entry for the bucket centre ((v5 << 3) | 4). The [-32, 32] clamp
+  applies to the accumulated error added to each pixel.
+- Pipelining: `AddFrame` copies into one of 2 slots (blocks when both are full); one Async job processes frames in
+  order (diff, quantize, canvas) and each frame's LZW runs as a second Async job while the next frame is quantized
+  (the worker runs it inline if it has not started, so a 1-thread pool cannot deadlock). `Close` drains everything.
+- No AVX2 path: the scalar code meets the budget (gif_demo worst case 2.65-2.9x real time at 720p20).
+- Extras: `DelayForFps`, `BytesWritten`, `FramesWritten`, `EncodeBusyMs`, public `Histogram`, `NearestCache`,
+  `QuantizeRegion`.
+Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
+Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
+frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
