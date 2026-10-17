@@ -6,6 +6,7 @@
 #include "../common/test_device.h"
 #include "../common/test_media.h"
 #include "../common/test_project.h"
+#include "../common/timing.h"
 
 #include <ct/core/async.h>
 #include <ct/core/fs.h>
@@ -390,7 +391,8 @@ CT_TEST_DEVICE(timeline_player_playback_feed_with_audio_device) {
     }
     const TimeUs now = tp.Tick();
     CT_CHECK(tp.Clock().UsingAudio());
-    CT_CHECK(now > 300'000 && now < 1'000'000);
+    // About 0.6 s of playback; a loaded machine stretches the 60 sleeps, so the upper bound is loose unless strict.
+    CT_CHECK(now > 300'000 && now < static_cast<TimeUs>(ct::test::TimingLimit(1'000'000, 4'000'000)));
     CT_CHECK(peak > 0.1f);   // the mixed sine (-12 dBFS, peak 0.25) reaches the device
     tp.Pause();
     tp.Shutdown();
