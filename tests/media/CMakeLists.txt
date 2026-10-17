@@ -6,4 +6,5 @@ ct_add_test(ct_media_tests DEPS ct_media SOURCES
   encoder_caps_test.cpp
   mp4_writer_test.cpp
   texture_reuse_test.cpp
-  test_data_test.cpp)
+  test_data_test.cpp
+  errors_test.cpp)

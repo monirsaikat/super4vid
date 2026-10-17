@@ -497,3 +497,24 @@ Done instead:
 Why: correctness of texture lifetime with repeats; no deadlock in export; no corrupt files.
 Impact: P05 passes `ScreenCapturer::Nv12Pool()` to `Init` before `ScreenCapturer::Start` and destroys the writer before the
 capturer. P10 calls `WriteVideoSync`/`WriteAudioSync` from its export thread and `Finalize` at the end; no fast start.
+
+## 2026-10-17 · P04 task 4.5 · Error path details; HEVC decode not checkable here; fps clamp left to the caller
+Spec said: any `WriteSample` failure stores `LastError`, stops input, tries `Finalize` once and reports via `OnError` to the
+owner; disk full gets a specific message; device removed takes the same path; clamp fps by trying 120/60/30 when the
+encoder rejects it; HEVC round trip test.
+Done instead:
+- The owner is notified through `Mp4Writer::Config::listener` (`Listener::OnWriterError(hr)`, once, on ct-encode) since
+  the writer is a sink, not a source, of `FrameSink::OnError`. `ErrorMessage()` gives the user text (disk full, missing
+  folder, access denied, device reset, else the HRESULT). Queued frames are released to the pool, so a capturer keeps running
+  with all textures available until the owner stops it. Verified with `InjectWriteErrorForTest` (ERROR_DISK_FULL on the 40th
+  sample): 40 frames in a playable file, one listener call, pool empty, input refused afterwards. A real full disk and a
+  real device removal were not produced (same code path).
+- A path in a missing folder fails in `Init` (`MFCreateSinkWriterFromURL` -> `HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)`),
+  `LastError()`/`Finalize()` return it, message "The folder does not exist: <folder>".
+- HEVC (`AMDh265Encoder`): encode, codec and frame count are verified; the decode check is skipped because this machine has
+  no HEVC decoder (the Store "HEVC Video Extensions" are not installed). P06/P09 must not assume HEVC files can be previewed.
+- The fps clamp (try 120, 60, 30) is not done inside the writer: changing the rate silently would break the capturer's
+  tick-aligned timestamps. `Init` fails with the encoder's HRESULT; P05 picks the next lower rate and restarts capture+writer.
+- `Abort()` returned after 16 ms in the test (ct-encode drops queued input and calls IMFSinkWriter::Finalize).
+Why: keep the sink single-purpose; hardware availability.
+Impact: P05 implements `Mp4Writer::Listener` (finalize + user message) and the fps retry.
