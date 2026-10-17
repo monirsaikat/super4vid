@@ -1467,3 +1467,11 @@ Decision:
 Why: the bar is tiny and topmost and must stay out of recordings; device LEDs must stay off when idle; diagnostics must
 not touch user data.
 Impact: P09b/P11 may replace the Open-in-editor launch with in-process editor opening.
+
+## 2026-10-17 · P05 task 5.6 · App mode dispatch next to the P09 editor mode
+Decision: `ui::IsRecorderBarCommandLine` picks the recorder bar unless the command line has `--editor`,
+`--editor-demo`, `--settings-demo` or a `.ctproj`/`.ctrec` file argument (then P09's `ParseEditorLaunch` runs).
+`ParseEditorLaunch` alone cannot decide it, because it treats any bare value (`--countdown 1`, `--bar-open mic`) as a file.
+Why: double-clicking a project must open the editor; recorder flags take values. Impact: a double-clicked file while the
+bar runs still forwards to the bar instance through SingleInstance (the bar ignores it) — integration should open the
+editor for a forwarded file argument or exempt editor launches from the single-instance check.
