@@ -1,33 +1,31 @@
 #pragma once
 // src/ui/src/editor_player.h (private to ct_ui)
-// The editor's project player and the PlaybackControl the panels drive. `EditorPlayer` is the local stand-in until
-// render::TimelinePlayer (P10b) is on master; then this alias switches and local_timeline_player.* go away.
+// The editor's project player (render::TimelinePlayer, P10b) and the PlaybackControl the panels drive.
 // Thread model: UI thread.
 
-#include "local_timeline_player.h"
-
+#include <ct/render/timeline_player.h>
 #include <ct/ui/editor_state.h>
 
 #include <algorithm>
 
 namespace ct::ui::detail {
 
-using EditorPlayer = LocalTimelinePlayer;
+using EditorPlayer = render::TimelinePlayer;
 
-// PlaybackControl over the player's clock: the playhead follows Clock().Now() while playing; loop (I/O) wraps; the
-// end (or 0 in reverse) pauses.
+// PlaybackControl over TimelinePlayer: the playhead follows Tick() while playing (which pauses at the end / at 0 in
+// reverse); the loop range (I/O) wraps.
 class PlayerTransport final : public PlaybackControl {
 public:
     PlayerTransport(EditorState& s, EditorPlayer& p) : m_s(s), m_p(p) {}
 
-    bool Playing() const override { return m_p.Clock().Playing(); }
-    double Rate() const override { return Playing() ? m_p.Clock().Rate() : 0.0; }
+    bool Playing() const override { return m_p.Playing(); }
+    double Rate() const override { return Playing() ? m_p.Rate() : 0.0; }
     void Play(double rate) override {
         const TimeUs end = m_s.project.Duration();
         TimeUs t = m_s.Playhead();
-        if (rate > 0 && t >= end) t = 0;               // play at the end restarts
+        if (rate > 0 && t >= end) t = 0;   // play at the end restarts
         if (rate < 0 && t <= 0) t = end;
-        const TimeUs now = m_p.Clock().Now();
+        const TimeUs now = m_p.Now();
         if (now - t > m_s.FrameUs() || t - now > m_s.FrameUs()) m_p.Seek(t);
         m_p.SetRate(rate);
         if (!Playing()) m_p.Play();
@@ -43,21 +41,14 @@ public:
     }
     void HintScrub(TimeUs t) override { m_p.HintScrub(t); }
     bool Tick(double) override {
-        if (!Playing()) return false;
-        TimeUs t = m_p.Clock().Now();
-        const double rate = m_p.Clock().Rate();
-        const TimeUs end = m_s.project.Duration();
+        if (!Playing()) {
+            m_p.Tick();   // picks up audio edits while paused
+            return false;
+        }
+        TimeUs t = m_p.Tick();
         const auto& loop = m_s.project.ui.loop;
-        if (loop && loop->second > loop->first && rate > 0 && t >= loop->second) {
+        if (loop && loop->second > loop->first && m_p.Rate() > 0 && t >= loop->second) {
             t = loop->first;
-            m_p.Seek(t);
-        } else if (rate > 0 && t >= end) {
-            t = end;
-            m_p.Pause();
-            m_p.Seek(t);
-        } else if (rate < 0 && t <= 0) {
-            t = 0;
-            m_p.Pause();
             m_p.Seek(t);
         }
         m_s.SetPlayhead(t);

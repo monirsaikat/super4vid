@@ -99,7 +99,7 @@ void HandlePoints(const ImVec2 q[4], ImVec2 out[8]) {
 void DrawHandle(ImDrawList* dl, ImVec2 c, bool hot) {
     const float h = Dp(4);
     dl->AddRectFilled(c - ImVec2(h, h), c + ImVec2(h, h), hot ? col::accent : Rgb(0xFFFFFF), Dp(1.5f));
-    dl->AddRect(c - ImVec2(h, h), c + ImVec2(h, h), col::accent, Dp(1.5f), 0, Dp(1.5f));
+    dl->AddRect(c - ImVec2(h, h), c + ImVec2(h, h), col::accent, Dp(1.5f), Dp(1.5f));
 }
 
 void DashedLine(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thick) {
@@ -314,7 +314,7 @@ void PreviewPanel::DrawPlaceholder(const EditorState& state, ImVec2 mn, ImVec2 m
         }
         dl->AddRectFilled(sa, sb, Rgb(0x0B0D11), sr);
         const float bar = std::max(6.0f, (sb.y - sa.y) * 0.06f);
-        dl->AddRectFilled(sa, ImVec2(sb.x, sa.y + bar), Rgb(0x1A1E26), sr, ImDrawFlags_RoundCornersTop);
+        dl->AddRectFilled(sa, ImVec2(sb.x, sa.y + bar), Rgb(0x1A1E26), sr, ImDrawFlags_RoundTop);
         for (int i = 0; i < 3; ++i)
             dl->AddCircleFilled(ImVec2(sa.x + bar * (0.8f + 0.7f * i), sa.y + bar * 0.5f), bar * 0.18f,
                                 i == 0 ? Rgb(0xFF5F57) : i == 1 ? Rgb(0xFEBC2E) : Rgb(0x28C840));
@@ -333,8 +333,8 @@ void PreviewPanel::DrawOverlays(ImDrawList* dl, ImVec2 mn, ImVec2 mx) {
     const ImVec2 sz = mx - mn;
     if (safe_areas) {
         // Action safe 90 %, title safe 80 %.
-        dl->AddRect(mn + sz * 0.05f, mx - sz * 0.05f, WithAlpha(col::text, 0.45f), 0, 0, 1.0f);
-        dl->AddRect(mn + sz * 0.10f, mx - sz * 0.10f, WithAlpha(col::warn, 0.45f), 0, 0, 1.0f);
+        dl->AddRect(mn + sz * 0.05f, mx - sz * 0.05f, WithAlpha(col::text, 0.45f), 0, 1.0f);
+        dl->AddRect(mn + sz * 0.10f, mx - sz * 0.10f, WithAlpha(col::warn, 0.45f), 0, 1.0f);
         const ImVec2 c = (mn + mx) * 0.5f;
         dl->AddLine(c - Dp(8, 0), c + Dp(8, 0), WithAlpha(col::text, 0.45f));
         dl->AddLine(c - Dp(0, 8), c + Dp(0, 8), WithAlpha(col::text, 0.45f));
@@ -394,7 +394,7 @@ void PreviewPanel::DrawAnnotationGizmo(EditorState& state, ImDrawList* dl, const
         return;
     }
     const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y)), hi(std::max(a.x, b.x), std::max(a.y, b.y));
-    dl->AddRect(lo, hi, col::accent, 0, 0, Dp(1.5f));
+    dl->AddRect(lo, hi, col::accent, 0, Dp(1.5f));
     const ImVec2 q[4] = {lo, ImVec2(hi.x, lo.y), ImVec2(lo.x, hi.y), hi};
     ImVec2 h[8];
     HandlePoints(q, h);
@@ -882,7 +882,7 @@ void PreviewPanel::DrawImage(EditorState& state, ImVec2 origin, ImVec2 area) {
         const float t = static_cast<float>(ImGui::GetTime());
         const ImVec2 c(m_img_max.x - Dp(14), m_img_min.y + Dp(14));
         dl->PathArcTo(c, Dp(5), t * 6.0f, t * 6.0f + 4.0f, 12);
-        dl->PathStroke(WithAlpha(col::text, 0.8f), 0, Dp(1.5f));
+        dl->PathStroke(WithAlpha(col::text, 0.8f), Dp(1.5f));
     }
     dl->PopClipRect();
     DrawInlineText(state);

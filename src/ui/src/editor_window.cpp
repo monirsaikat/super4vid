@@ -26,6 +26,7 @@
 #include <ct/render/compositor.h>
 #include <ct/render/render_context.h>
 #include <ct/ui/dialogs.h>
+#include <ct/ui/editor_commands.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
@@ -168,12 +169,11 @@ struct EditorWindow::Impl {
 
     // --- document -----------------------------------------------------------------------------------------------
     void Install(Project p, bool mark_dirty) {
-        player.Shutdown();
-        if (gpu_ok) player.Init(rc, *devices_or_dummy());
         provider->Clear();
         st().autosave.Clear();
         events.clear();
         st().SetProject(std::move(p));
+        player.SetProject(nullptr);   // a new document in the same object: drop the old caches and plan
         player.SetProject(&st().project);
         transport->Seek(st().project.ui.playhead_us);
         st().autosave.Init(st().project.id, autosave_interval);
@@ -187,16 +187,6 @@ struct EditorWindow::Impl {
         if (!st().project.path.empty()) AddRecent(st().project.path);
         shell().Timeline().Fit(st());
         LoadEventLogs();
-    }
-    audio::AudioDevices* devices_or_dummy() {
-        static audio::AudioDevices* none = nullptr;
-        if (!devices) {
-            // The stand-in player ignores the device list; keep one inert object for the interface.
-            static audio::AudioDevices inert;
-            none = &inert;
-            return none;
-        }
-        return devices;
     }
 
     Project NewProject() {
@@ -306,6 +296,38 @@ struct EditorWindow::Impl {
                         return;
                     }
                     Id id;
+                    if (ProjectEmpty() && !st().IsDirty() && m.kind != Media::Kind::Image) {
+                        // Opening a media file into an empty editor: a project around it (canvas from the video, the
+                        // clip on the timeline, its sound on an audio track).
+                        const bool ok = st().EditCopy("Import media", [&](Project& p) {
+                            if (!ops::AddMedia(p, m, &id)) return false;
+                            p.name = dialogs::FileStem(path);
+                            if (m.width > 0 && m.height > 0) {
+                                Canvas cv = p.canvas;
+                                cv.width = std::clamp((m.width + 1) & ~1, kMinCanvas, kMaxCanvas);
+                                cv.height = std::clamp((m.height + 1) & ~1, kMinCanvas, kMaxCanvas);
+                                if (m.fps_num > 0) {
+                                    cv.fps_num = m.fps_num;
+                                    cv.fps_den = m.fps_den;
+                                }
+                                ops::SetCanvas(p, cv, nullptr);
+                            }
+                            const bool audio_only = m.kind == Media::Kind::Audio;
+                            Id tid;
+                            if (!ops::AddTrack(p, audio_only ? Track::Kind::Audio : Track::Kind::Video, audio_only ? "Audio" : "Video", &tid, -1)) return false;
+                            Clip c;
+                            if (!MakeClipForTrack(p, *p.FindMedia(id), *p.FindTrack(tid), 0, &c)) return false;
+                            Id cid;
+                            if (!ops::AddClip(p, c, &cid, nullptr)) return false;
+                            if (const Clip* v = p.FindClip(cid)) cmd::AddLinkedAudioClip(p, *v);
+                            return true;
+                        });
+                        if (ok) {
+                            shell().Timeline().Fit(st());
+                            Toast("Opened " + dialogs::FileStem(path), ToastKind::Success);
+                            return;
+                        }
+                    }
                     if (st().Edit("Import media", [&](Project& p) { return ops::AddMedia(p, m, &id); }))
                         Toast("Imported " + dialogs::FileStem(path), ToastKind::Success);
                 });
@@ -756,16 +778,17 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     if (SUCCEEDED(hr)) hr = I.comp.Init(I.rc);
     I.gpu_ok = SUCCEEDED(hr);
     if (!I.gpu_ok) I.Banner(BannerPanel::Preview, "The preview renderer could not start; editing still works.", HrToString(hr));
-    if (I.gpu_ok) I.player.Init(I.rc, *I.devices_or_dummy());
-    I.player.on_media_ready = [this] {
-        m_impl->last_rev = ~0ull;   // re-render with the frames that just became available
-        m_shell->State().needs_render = true;
-    };
+    if (I.gpu_ok) {
+        render::TimelinePlayer::Options po;
+        po.audio_output = I.devices != nullptr;
+        const HRESULT phr = I.player.Init(I.rc, I.devices, po);
+        if (FAILED(phr)) CT_LOG_WARN("editor: TimelinePlayer::Init %s", HrToString(phr).c_str());
+    }
     I.transport = std::make_unique<detail::PlayerTransport>(s, I.player);
     s.playback = I.transport.get();
     I.provider = std::make_unique<detail::CacheMediaProvider>(&s.project, [this](const Id& id, bool* failed) {
         playback::MediaCache* c = m_impl->player.Cache(id);
-        if (!c) *failed = m_impl->player.CacheFailed(id);
+        if (!c) *failed = !m_impl->player.MediaPending();   // nothing opening any more: it has no (openable) file
         return c;
     });
     m_shell->SetMediaProvider(I.provider.get());
@@ -892,8 +915,8 @@ void EditorWindow::Frame() {
     }
     m_shell->status.autosave_age_s = I.autosave_at >= 0 ? ImGui::GetTime() - I.autosave_at : -1;
     m_stats.cache_mb = static_cast<double>(playback::CacheBudget::Used()) / (1 << 20);
-    m_stats.open_caches = I.player.OpenCaches();
-    m_stats.pending_opens = I.player.PendingOpens();
+    m_stats.open_caches = static_cast<int>(s.project.media.size());
+    m_stats.pending_opens = I.player.MediaPending() ? 1 : 0;
     m_shell->status.cache_mb = m_stats.cache_mb;
     m_shell->status.cache_budget_mb = static_cast<double>(playback::CacheBudget::Bytes()) / (1 << 20);
     m_shell->status.gpu_ms = I.comp.LastTiming().gpu_total_ms;
@@ -909,7 +932,7 @@ void EditorWindow::Frame() {
 
 bool EditorWindow::WantsContinuousRedraw() const {
     const Impl& I = *m_impl;
-    return m_shell->WantsContinuousRedraw() || I.busy > 0 || I.saving || I.player.PendingOpens() > 0 || I.unsaved_prompt ||
+    return m_shell->WantsContinuousRedraw() || I.busy > 0 || I.saving || I.player.MediaPending() || I.unsaved_prompt ||
            !I.deferred.empty();
 }
 

@@ -357,4 +357,28 @@ const char* MediaDisplayName(const Media& m) {
     return name;
 }
 
+bool AddLinkedAudioClip(Project& p, const Clip& video, Id* out) {
+    const Media* m = p.FindMedia(video.media);
+    const Track* vt = p.FindTrack(video.track);
+    if (!m || !vt || vt->kind != Track::Kind::Video || m->kind != Media::Kind::Video || m->audio_streams.empty()) return false;
+    Clip a;
+    a.media = video.media;
+    a.source = Clip::Source::Default;
+    a.start_us = video.start_us;
+    a.in_us = video.in_us;
+    a.out_us = video.out_us;
+    a.speed = video.speed;
+    for (const Track& t : p.tracks) {
+        if (t.kind != Track::Kind::Audio || t.locked) continue;
+        a.track = t.id;
+        if (ops::AddClip(p, a, out, nullptr)) return true;
+    }
+    Id tid;
+    if (!ops::AddTrack(p, Track::Kind::Audio, "Audio", &tid, -1)) return false;
+    a.track = tid;
+    if (ops::AddClip(p, a, out, nullptr)) return true;
+    ops::RemoveTrack(p, tid, nullptr);
+    return false;
+}
+
 } // namespace ct::ui::cmd

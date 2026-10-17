@@ -909,9 +909,12 @@ void TimelineWidget::HandleDrop(EditorState& state) {
             m_drop_min = ImVec2(m_view.X(start), ly + Dp(1));
             m_drop_max = ImVec2(m_view.X(start + dur), ly + lh - Dp(1));
             if (track_idx >= 0) {
-                Project probe = p;
+                // Free on the track? (no project copy per hover frame)
                 clip.track = p.tracks[static_cast<size_t>(track_idx)].id;
-                m_drop_ok = ops::AddClip(probe, clip, nullptr, nullptr);
+                const TimeUs end = start + clip.Duration();
+                m_drop_ok = !p.tracks[static_cast<size_t>(track_idx)].locked;
+                for (const Clip& o : p.clips)
+                    if (m_drop_ok && o.track == clip.track && o.start_us < end && start < o.End()) m_drop_ok = false;
             }
             if (pl->IsDelivery()) {
                 Err err;
@@ -927,7 +930,10 @@ void TimelineWidget::HandleDrop(EditorState& state) {
                         if (!ops::AddTrack(pp, new_kind, name, &tid, -1)) return false;
                         c.track = tid;
                     }
-                    return ops::AddClip(pp, std::move(c), &added, &err);
+                    if (!ops::AddClip(pp, std::move(c), &added, &err)) return false;
+                    // A video file's sound lives on an audio track (only audio-track clips play; DECISIONS P10).
+                    if (const Clip* v = pp.FindClip(added)) cmd::AddLinkedAudioClip(pp, *v);
+                    return true;
                 });
                 if (done) state.selection.Set(added);
                 else state.last_error = err.message;

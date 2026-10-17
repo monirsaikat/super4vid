@@ -216,7 +216,12 @@ void MediaPanel::DrawMediaTab(EditorState& state) {
                     if (mm && !ok && MakeClipForTrack(p, *mm, t, state.Playhead(), &clip)) ok = true;
                 Err err;
                 Id added;
-                if (ok && state.Edit(str::kUndoAddClip, [&](Project& pp) { return ops::AddClip(pp, clip, &added, &err); })) state.selection.Set(added);
+                if (ok && state.EditCopy(str::kUndoAddClip, [&](Project& pp) {
+                        if (!ops::AddClip(pp, clip, &added, &err)) return false;
+                        if (const Clip* v = pp.FindClip(added)) cmd::AddLinkedAudioClip(pp, *v);   // sound on an audio track
+                        return true;
+                    }))
+                    state.selection.Set(added);
                 else if (!ok || !err.Ok()) state.last_error = err.message.empty() ? "No compatible track with room at the playhead" : err.message;
             }
             if (ImGui::MenuItem(str::kReveal, nullptr, false, static_cast<bool>(on_reveal))) on_reveal(m_ctx);

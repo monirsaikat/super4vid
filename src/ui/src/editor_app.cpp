@@ -438,11 +438,13 @@ int Loop(App& app) {
 bool ParseEditorLaunch(const wchar_t* cmdline, EditorLaunch* out) {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(cmdline ? cmdline : L"", &argc);
-    bool editor = false;
+    bool editor = false, demo = false;
     for (int i = 1; argv && i < argc; ++i) {
         const wchar_t* a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? WideToUtf8(argv[++i]) : std::string(); };
         if (wcscmp(a, L"--editor") == 0) editor = true;
+        else if (wcscmp(a, L"--editor-demo") == 0) demo = true;
+        else if (wcscmp(a, L"--project") == 0) ++i;   // --editor-demo's value
         else if (wcscmp(a, L"--screenshot") == 0) out->screenshot = next();
         else if (wcscmp(a, L"--frames") == 0) out->frames = std::atoi(next().c_str());
         else if (wcscmp(a, L"--stats") == 0) out->stats = true;
@@ -464,7 +466,7 @@ bool ParseEditorLaunch(const wchar_t* cmdline, EditorLaunch* out) {
         }
     }
     if (argv) LocalFree(argv);
-    return editor;
+    return editor && !demo;
 }
 
 int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
