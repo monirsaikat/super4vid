@@ -1,0 +1,40 @@
+// Camtesia.exe resources: icon and version info. Strings come from the generated ct/version.h.
+#include <winresrc.h>
+#include <ct/version.h>
+#include "resource.h"
+
+IDI_APP ICON "assets/icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION CT_VERSION_MAJOR,CT_VERSION_MINOR,CT_VERSION_PATCH,0
+ PRODUCTVERSION CT_VERSION_MAJOR,CT_VERSION_MINOR,CT_VERSION_PATCH,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef CT_DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Camtesia"
+            VALUE "FileDescription", "Camtesia Screen Recorder and Editor"
+            VALUE "FileVersion", CT_VERSION_STRING
+            VALUE "InternalName", "Camtesia"
+            VALUE "LegalCopyright", "Copyright (C) 2026"
+            VALUE "OriginalFilename", "Camtesia.exe"
+            VALUE "ProductName", "Camtesia"
+            VALUE "ProductVersion", CT_VERSION_STRING
+            VALUE "Comments", "Build " CT_GIT_HASH " " CT_BUILD_DATE
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
