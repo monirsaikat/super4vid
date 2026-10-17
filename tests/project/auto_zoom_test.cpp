@@ -170,6 +170,23 @@ CT_TEST(auto_zoom_one_click_is_four_keys) {
     CT_CHECK(AutoZoom::Generate({{5'000'000, 0.3f, 0.4f, InterestEvent::Kind::Click}}, 20'000'000, p, nullptr).empty());
 }
 
+// Review fix: segments exactly 2 * ease apart put the zoom-out Hold key and the next zoom-in InOut key at the same
+// time; keeping the Hold made the camera jump to full zoom at the second t_in.
+CT_TEST(auto_zoom_segments_two_eases_apart_stay_continuous) {
+    AutoZoomParams p;
+    p.follow = false;
+    // Click 1 at 5.0 s: zoom-out ends at 6.85 s. Click 2 at 7.65 s: t_in 7.5 s, zoom-in ramp starts at 6.85 s.
+    const std::vector<CameraKey> keys = AutoZoom::Generate({{5'000'000, 0.3f, 0.4f, InterestEvent::Kind::Click},
+                                                            {7'650'000, 0.7f, 0.6f, InterestEvent::Kind::Click}},
+                                                           20'000'000, p, nullptr);
+    CT_REQUIRE(keys.size() == 7);
+    CT_CHECK_EQ(keys[3].t_us, TimeUs(6'850'000));
+    CT_CHECK_EQ(keys[3].zoom, 1.0f);
+    CT_CHECK(keys[3].ease == Ease::InOut);   // the later (zoom-in) key's ease wins
+    std::string why;
+    if (!WellFormed(keys, p.zoom, &why) || !Continuous(keys, 20'000'000, &why)) CT_FAIL(why);
+}
+
 CT_TEST(auto_zoom_random_inputs_stay_continuous) {
     uint64_t s = 99;
     auto next = [&] {
