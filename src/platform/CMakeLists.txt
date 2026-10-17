@@ -4,4 +4,5 @@ ct_add_module(platform
           src/hooks_thread.cpp
           src/hotkeys.cpp
           src/tray_icon.cpp
+          src/layered_window.cpp
   DEPS ct_core)
