@@ -660,6 +660,8 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(s.access_lost.load()), static_cast<unsigned long long>(s.reinits.load()));
         std::printf("acquire avg %.3f max %.3f ms | convert avg %.3f max %.3f ms | gpu convert avg %.3f max %.3f ms\n",
                     s.acquire.AvgMs(), s.acquire.MaxMs(), s.convert.AvgMs(), s.convert.MaxMs(), s.gpu.AvgMs(), s.gpu.MaxMs());
+        std::printf("present lag (tick - desktop present) avg %.3f max %.3f ms over %llu new images\n", s.present_lag.AvgMs(),
+                    s.present_lag.MaxMs(), static_cast<unsigned long long>(s.present_lag.Count()));
         std::printf("process CPU %.2f %% of the machine (%d logical CPUs; %.1f %% of one core) | RSS %.1f MB (peak %.1f MB)\n",
                     100.0 * cpu_s / wall_s / CpuCount(), CpuCount(), 100.0 * cpu_s / wall_s, rss, peak);
         std::printf("frames delivered %llu; luma checksums %zu distinct of %zu sampled (every 60th frame)%s\n",

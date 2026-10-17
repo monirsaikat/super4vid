@@ -7,8 +7,9 @@
 //       the QPC at which the beep's first frame is predicted to play (IAudioClock mapping) and the QPC of the vsync that
 //       showed the white frame (DXGI frame statistics).
 //   avsync_source --analyze rec.mp4 [--log events.csv --epoch QPC] [--audio-track N] [--region x,y,w,h]
-//       Decodes the recording: flash frames (mean luma of the region > 128) and beep onsets (1 ms RMS > 0.05 after
-//       >= 300 ms of quiet, confirmed by a 2 kHz Goertzel over the next 10 ms) in audio track N (default: the last one),
+//       Decodes the recording: flash frames (mean luma of the region > 128) and beep onsets (a rise of the 2 kHz
+//       amplitude over 10 ms windows, refined to the sample with the 2 kHz envelope, so other sound playing on the
+//       output does not hide them) in audio track N (default: the last one),
 //       pairs them, prints the offset per event (video - audio, ms) and the drift slope. With --log/--epoch it also
 //       prints each stream's error against the source's logged emission time (removes the source's own vsync jitter).
 //       Exit code 0 when every |offset| < 20 ms (after correction when a log is given).
@@ -293,35 +294,56 @@ bool BeepTimes(const std::string& path, int track, std::vector<int64_t>& beeps, 
         b->Unlock();
     }
     if (first_us < 0) first_us = 0;
-    // 1 ms RMS envelope; onset after >= 300 ms of quiet, confirmed at 2 kHz.
-    int64_t quiet = 0;
-    for (size_t i = 0; i + 48 <= mono.size(); i += 48) {
-        double e = 0;
-        for (size_t k = 0; k < 48; ++k) e += double(mono[i + k]) * mono[i + k];
-        const double rms = std::sqrt(e / 48);
-        if (rms > 0.05 && quiet >= 300) {
-            // Goertzel at 2 kHz vs 1 kHz over the next 10 ms.
-            auto power = [&](double hz) {
-                const double c = 2.0 * std::cos(2.0 * kPi * hz / 48000.0);
-                double s1 = 0, s2 = 0;
-                for (size_t k = i; k < i + 480 && k < mono.size(); ++k) {
-                    const double s0 = mono[k] + c * s1 - s2;
-                    s2 = s1;
-                    s1 = s0;
+    // Narrowband detection, so other sound on the system output (music, a video) does not hide the beeps: the 2 kHz
+    // amplitude over 10 ms windows stepped by 1 ms; a beep is a window above 0.03 whose next window is above 0.1,
+    // dominates its neighbours (1.5 / 2.5 kHz) and is 4x the window before. The onset is
+    // then refined to the sample with the 2 kHz envelope over one period.
+    auto amplitude = [&](size_t i, double hz) {
+        const double c = 2.0 * std::cos(2.0 * kPi * hz / 48000.0);
+        double s1 = 0, s2 = 0;
+        for (size_t k = i; k < i + 480; ++k) {
+            const double s0 = mono[k] + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        return 2.0 * std::sqrt(std::max(0.0, s1 * s1 + s2 * s2 - c * s1 * s2)) / 480.0;
+    };
+    size_t next_allowed = 480;   // a beep needs the 10 ms before it
+    for (size_t i = 480; i + 1500 <= mono.size(); i += 48) {
+        if (i < next_allowed) continue;
+        const double a2 = amplitude(i, 2000);
+        const size_t full = i + 480;   // a window lying inside the beep: a pure 2 kHz tone dominates its neighbours
+        const double a_full = a2 > 0.03 ? amplitude(full, 2000) : 0.0;
+        if (a_full > 0.1 && amplitude(i - 480, 2000) < 0.25 * a_full &&
+            a_full > 3 * std::max(amplitude(full, 1500), amplitude(full, 2500))) {
+            // The plateau: the strongest 10 ms window in the next 20 ms lies inside the beep. Walk back from inside
+            // it along the 2 kHz envelope over one period (24 samples, which also cancels the 4 kHz product term):
+            // it rises linearly from the first beep sample s to s + 23, so the last sample still at half the
+            // plateau is s + 11. (A forward search could stop early on other sound: a 24-sample window is wideband.)
+            size_t peak = i;
+            double plateau = 0;
+            for (size_t j = i; j <= i + 960; j += 24) {
+                const double aj = amplitude(j, 2000);
+                if (aj > plateau) {
+                    plateau = aj;
+                    peak = j;
                 }
-                return s1 * s1 + s2 * s2 - c * s1 * s2;
-            };
-            if (power(2000) > 4 * power(1000)) {
-                // Refine to the first sample above 0.05 within the window.
-                size_t on = i;
-                while (on < i + 48 && std::fabs(mono[on]) < 0.05f) ++on;
-                beeps.push_back(first_us + static_cast<int64_t>(on) * 1'000'000 / 48000);
             }
-            quiet = 0;
-        } else if (rms < 0.01) {
-            ++quiet;
-        } else {
-            quiet = 0;
+            const double w = 2.0 * kPi * 2000.0 / 48000.0;
+            auto envelope = [&](size_t n) {   // over [n - 23, n]
+                double re = 0, im = 0;
+                for (size_t m = n - 23; m <= n; ++m) {
+                    re += mono[m] * std::cos(w * static_cast<double>(m));
+                    im -= mono[m] * std::sin(w * static_cast<double>(m));
+                }
+                return 2.0 * std::sqrt(re * re + im * im) / 24.0;
+            };
+            size_t n = peak + 240;
+            const size_t lowest = n > 1440 + 24 ? n - 1440 : 24;
+            while (n > lowest && envelope(n - 1) >= 0.5 * plateau) --n;
+            const size_t best = n - 11;
+            beeps.push_back(first_us + static_cast<int64_t>(best) * 1'000'000 / 48000);
+            next_allowed = best + 4800;   // 100 ms: a false detection in other sound cannot hide the next beep
         }
     }
     return true;
@@ -387,7 +409,22 @@ int Analyze(const std::string& path, const std::string& log_path, int64_t epoch,
     double max_abs = 0, max_corr = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
     size_t bi = 0;
     for (size_t fi = 0; fi < flashes.size(); ++fi) {
-        while (bi < beeps.size() && beeps[bi] < flashes[fi] - 500'000) ++bi;
+        // With a log: the event whose nominal time is nearest to the flash, and the beep nearest to that event's
+        // emission (another sound on the output can produce a false beep; a missed flash must not shift the pairs).
+        const Ev* best = nullptr;
+        if (!log.empty() && epoch) {
+            for (const Ev& e : log)
+                if (!best || std::llabs(to_media_us(e.nominal) - flashes[fi]) < std::llabs(to_media_us(best->nominal) - flashes[fi])) best = &e;
+            if (best && !best->beep) best = nullptr;
+        }
+        if (best) {
+            bi = 0;
+            for (size_t k = 1; k < beeps.size(); ++k)
+                if (std::llabs(beeps[k] - to_media_us(best->beep)) < std::llabs(beeps[bi] - to_media_us(best->beep))) bi = k;
+            if (bi >= beeps.size() || std::llabs(beeps[bi] - to_media_us(best->beep)) > 100'000) continue;
+        } else {
+            while (bi < beeps.size() && beeps[bi] < flashes[fi] - 500'000) ++bi;
+        }
         if (bi >= beeps.size() || std::llabs(beeps[bi] - flashes[fi]) > 500'000) continue;
         const double off = (flashes[fi] - beeps[bi]) / 1000.0;
         ++pairs;
@@ -398,11 +435,7 @@ int Analyze(const std::string& path, const std::string& log_path, int64_t epoch,
         sxy += (flashes[fi] / 1e6) * off;
         std::printf("  event at %9.3f s: video - audio %+7.2f ms", flashes[fi] / 1e6, off);
         if (!log.empty() && epoch) {
-            // Match the log entry by nominal time.
-            const Ev* best = nullptr;
-            for (const Ev& e : log)
-                if (!best || std::llabs(to_media_us(e.nominal) - flashes[fi]) < std::llabs(to_media_us(best->nominal) - flashes[fi])) best = &e;
-            if (best && best->beep) {
+            if (best) {
                 const double v_err = (flashes[fi] - to_media_us(best->display)) / 1000.0;
                 const double a_err = (beeps[bi] - to_media_us(best->beep)) / 1000.0;
                 const double corr = v_err - a_err;
@@ -415,7 +448,7 @@ int Analyze(const std::string& path, const std::string& log_path, int64_t epoch,
             ++bad;
         }
         std::printf("\n");
-        ++bi;
+        if (!best) ++bi;
     }
     const double slope = pairs > 1 ? (pairs * sxy - sx * sy) / (pairs * sxx - sx * sx) : 0;   // ms per second
     std::printf("pairs %d, max |video - audio| %.2f ms%s, drift slope %+.4f ms/s (%+.2f ms over the recording)\n", pairs, max_abs,

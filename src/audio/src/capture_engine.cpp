@@ -214,6 +214,7 @@ bool CaptureEngine::Start(int64_t epoch_qpc, AudioSink& sink) {
     m_pending = nullptr;
     m_pending_frames = 0;
     m_force_resync = false;
+    m_have_prev = false;
     m_device_lost = !m_client;
     m_error_reported = false;
     m_stop.Reset();
@@ -328,9 +329,23 @@ void CaptureEngine::ReadPackets() {
         const bool ts_error = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0;
         const bool disc = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
         if (ts_error || disc) m_st_disc.fetch_add(1, std::memory_order_relaxed);
+        const int64_t abs_us = static_cast<int64_t>(qpc_hns / 10);
+        if ((ts_error || disc) && m_have_prev) [[unlikely]] {
+            // Compare the device position and the QPC time with what continued from the previous packet.
+            const int64_t pos_jump = static_cast<int64_t>(dev_pos) - static_cast<int64_t>(m_prev_pos_end);
+            CT_LOG_INFO("%s: discontinuity (flags 0x%lx) at media %.3f s: device position %+lld frames (%.2f ms), "
+                        "QPC time %+.2f ms vs the previous packet's end, %u frames",
+                        StatsPrefix(), static_cast<unsigned long>(flags),
+                        static_cast<double>(abs_us - m_epoch_us) / 1e6, static_cast<long long>(pos_jump),
+                        static_cast<double>(pos_jump) * 1000.0 / m_dev_rate,
+                        static_cast<double>(abs_us - m_prev_end_us) / 1000.0, frames);
+        }
+        m_have_prev = true;
+        m_prev_pos_end = dev_pos + frames;
+        m_prev_end_us = abs_us + static_cast<int64_t>(frames) * kUsPerSecond / m_dev_rate;
         // QPCPosition is in 100 ns units, not QPC ticks.
         ProcessDeviceFrames(data, frames, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0, !ts_error,
-                            static_cast<int64_t>(qpc_hns / 10), disc);
+                            abs_us, disc);
         m_capture->ReleaseBuffer(frames);   // always, even for silent packets; data is invalid afterwards
     }
     if (FAILED(hr)) [[unlikely]] {
@@ -558,6 +573,7 @@ void CaptureEngine::Reopen() {
     m_device_lost = false;
     m_error_reported = false;
     m_force_resync = true;   // the switch gap becomes silence at the correct position
+    m_have_prev = false;
     m_last_packet_qpc = Clock::QpcNow();
     m_st_reopen_ms.store(sw.ElapsedMs(), std::memory_order_relaxed);
     CT_LOG_INFO("%s: switched to \"%s\" in %.1f ms", StatsPrefix(), DeviceName().c_str(), sw.ElapsedMs());

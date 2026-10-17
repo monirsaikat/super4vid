@@ -77,6 +77,7 @@ void ScreenCapturer::ResetStats() {
     m_stats.acquire.Reset();
     m_stats.convert.Reset();
     m_stats.gpu.Reset();
+    m_stats.present_lag.Reset();
     m_stats.first_frame_us.store(-1, std::memory_order_relaxed);
     m_stats.last_new_frame_qpc.store(0, std::memory_order_relaxed);
 }
@@ -171,6 +172,7 @@ void ScreenCapturer::Run() {
                     next_reinit_qpc = now + reinit_interval_qpc;
                 }
             }
+            int64_t got_present_qpc = 0;
             bool got = false;                       // a new desktop image this tick
             ID3D11Texture2D* direct_src = nullptr;  // zero-copy: the acquired desktop image (held until the end of the tick)
             D3D11_BOX direct_box{};
@@ -199,6 +201,7 @@ void ScreenCapturer::Run() {
                     const int64_t t1 = Clock::QpcNow();
                     m_stats.acquire.AddUs(Clock::QpcToUs(t1, std::max(t0, std::min(present_qpc, t1))));
                     got = true;
+                    got_present_qpc = present_qpc;
                     m_stats.new_frames.fetch_add(1, std::memory_order_relaxed);
                     m_stats.last_new_frame_qpc.store(t1, std::memory_order_relaxed);
                 } else if (hr == E_NOTIMPL) {
@@ -234,6 +237,9 @@ void ScreenCapturer::Run() {
                         last_idx = idx;
                         int64_t expected = -1;
                         m_stats.first_frame_us.compare_exchange_strong(expected, t_us, std::memory_order_relaxed);
+                        // (A fresh duplication's first image can be seconds old: not a latency.)
+                        if (got && tick_qpc - got_present_qpc < freq)
+                            m_stats.present_lag.AddUs(Clock::QpcToUs(tick_qpc, got_present_qpc));
                         if (!m_sink->OnFrame(nv12, idx, t_us)) {
                             m_nv12_pool.Release(idx);
                             m_stats.dropped_sink.fetch_add(1, std::memory_order_relaxed);

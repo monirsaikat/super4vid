@@ -33,6 +33,7 @@ struct CaptureStats {
                              // wait for the desktop to change (AcquireNextFrame + crop copy submission + ReleaseFrame)
     Stats::Timing convert;   // CPU time of the NV12 conversion of new images (command submission)
     Stats::Timing gpu;       // GPU time of the NV12 conversion of new images (GpuTimer; resolved a few frames late)
+    Stats::Timing present_lag;   // new images: tick time - the image's desktop present time (negative = tick before it)
     std::atomic<int64_t> first_frame_us{-1};   // t_us of the first frame delivered (tick-aligned), -1 before
     std::atomic<int64_t> last_new_frame_qpc{0};   // QPC when the last new desktop image arrived
 };
