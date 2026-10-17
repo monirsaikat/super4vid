@@ -1,0 +1,4 @@
+#pragma once
+#define CT_VERSION_STRING "@PROJECT_VERSION@"
+#define CT_GIT_HASH "@CT_GIT_HASH@"
+#define CT_BUILD_DATE "@CT_BUILD_DATE@"

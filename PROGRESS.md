@@ -7,7 +7,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 
 ## P00 Toolchain & skeleton
 - [x] 0.1 Toolchain verified (`build.cmd doctor` prints all green) — MSVC 14.44.35207, CMake 3.31.6, Ninja 1.12.1, SDK 10.0.26100.0; Inno Setup MISSING (deferred to P12, see DECISIONS)
-- [ ] 0.2 Repository scaffold, root CMake, presets, `build.cmd`/`build.ps1`
+- [x] 0.2 Repository scaffold, root CMake, presets, `build.cmd`/`build.ps1`
 - [ ] 0.3 `ct_core` stub + `ct_test` harness + first test runs under ctest
 - [ ] 0.4 Dear ImGui vendored and compiled as `imgui` target (W3, no WX)
 - [ ] 0.5 `camtesia.exe`: Win32 window, D3D11 device, flip-model swapchain, ImGui demo renders, resizes, HiDPI correct
