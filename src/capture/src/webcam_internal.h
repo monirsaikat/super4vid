@@ -10,9 +10,6 @@
 
 namespace ct::capture::internal {
 
-// MFStartup(MF_VERSION, MFSTARTUP_LITE) once per process, never shut down. Becomes media::MfRuntime::Ensure (P04).
-HRESULT EnsureMfStarted();
-
 // Solid NV12 fill (tests and the synthetic source build on it).
 void FillNv12(uint8_t* y, size_t y_pitch, uint8_t* uv, size_t uv_pitch, SizeI size, uint8_t y_val, uint8_t u_val,
               uint8_t v_val);

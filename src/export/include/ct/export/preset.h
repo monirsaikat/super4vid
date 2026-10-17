@@ -8,6 +8,7 @@
 #include <ct/core/error.h>
 #include <ct/core/json.h>
 #include <ct/core/types.h>
+#include <ct/media/encode_config.h>
 
 #include <cstdint>
 #include <string>
@@ -16,10 +17,9 @@
 
 namespace ct::exportng {
 
-// Same enumerators, in the same order, as ct::media::VideoCodec / ct::media::RateControl (P04). ct_export does not
-// link ct_media for presets; ExportJob converts with static_cast (see DECISIONS.md, P10 task 10.1).
-enum class VideoCodec { H264, Hevc };
-enum class RateControl { Quality, Vbr, Cbr };
+// The encoder's own enums (P04); the JSON names ("h264"/"hevc", "quality"/"vbr"/"cbr") are mapped in preset.cpp.
+using media::RateControl;
+using media::VideoCodec;
 
 struct Preset {
     enum class Container { Mp4, Gif, Png, M4a };

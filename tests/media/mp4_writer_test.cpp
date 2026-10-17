@@ -1,6 +1,8 @@
 // ct/media/mp4_writer.h, ct/media/probe.h: synthetic recordings through the real encoder.
 #include "media_test_util.h"
 
+#include "../common/timing.h"
+
 #include <ct/core/strings.h>
 #include <ct/core/time.h>
 #include <ct/media/encoder_caps.h>
@@ -160,7 +162,7 @@ CT_TEST_DEVICE(mp4_writer_2s_1080p60_two_audio_streams) {
                     st.video_latency.AvgMs(), st.video_latency.MaxMs(), static_cast<long long>(st.finalize_ms.load()));
         CT_CHECK_EQ(r.frames_sent, 120);
         CT_CHECK_EQ(r.frames_rejected, 0);
-        CT_CHECK_EQ(r.pool_empty, 0);
+        if (test::StrictTiming()) CT_CHECK_EQ(r.pool_empty, 0);   // real time: the encoder kept up (loaded box: report only)
         CT_CHECK_EQ(r.audio_rejected, 0);
         CT_CHECK_EQ(st.video_written.load(), 120ull);
         CT_CHECK_EQ(st.audio_written[0].load(), 96000ull);

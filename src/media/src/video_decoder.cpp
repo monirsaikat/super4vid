@@ -44,7 +44,7 @@ HRESULT VideoDecoder::Init(platform::D3DDevice& dev, const Config& cfg) {
     Shutdown();
     m_dev = &dev;
     m_cfg = cfg;
-    CT_RETURN_IF_FAILED(detail::EnsureMfStarted());
+    CT_RETURN_IF_FAILED(platform::MfRuntime::EnsureForProcess());
 
     ComPtr<IMFAttributes> attrs;
     CT_RETURN_IF_FAILED(MFCreateAttributes(attrs.GetAddressOf(), 4));

@@ -1,5 +1,6 @@
 #include <ct/core/thread.h>
 #include <ct/core/time.h>
+#include <ct/capture/webcam_source.h>
 #include <ct/recorder/session_clock.h>
 #include <ct/test/ct_test.h>
 
@@ -88,4 +89,22 @@ CT_TEST(session_clock_monotonic_across_transitions) {
     CT_CHECK_EQ(regressions.load(), 0);
     CT_CHECK_EQ(c.Pauses().size(), static_cast<size_t>(cycles));
     CT_CHECK(reads.load() > 0);
+}
+
+CT_TEST(session_clock_is_a_media_time_source) {
+    // The webcam takes the session clock directly (capture::MediaTimeSource); both mappings agree, pauses included.
+    SessionClock c;
+    const int64_t e = Clock::QpcNow() - Sec(10);
+    c.Start(e);
+    c.PauseAt(e + Sec(1));
+    c.ResumeAt(e + Sec(1.5));
+    const capture::MediaTimeSource& src = c;
+    const int64_t q = e + Sec(9.5);   // 0.5 s ago: a plausible device timestamp
+    const uint64_t hns = static_cast<uint64_t>(Clock::QpcToUs(q, 0)) * 10;
+    CT_CHECK_NEAR(src.QpcHnsToMediaUs(hns), c.QpcToMediaUs(q), 1);
+    CT_CHECK_NEAR(src.QpcHnsToMediaUs(hns), 9'000'000, 2);
+    CT_CHECK_NEAR(src.NowMediaUs(), c.NowMediaUs(), 100'000);
+    bool used_device = false;
+    CT_CHECK_NEAR(capture::WebcamFrameTimeUs(src, true, hns, &used_device), 9'000'000, 2);
+    CT_CHECK(used_device);
 }

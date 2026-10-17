@@ -1,6 +1,7 @@
 #include <ct/media/video_decoder.h>
 
 #include "../common/frame_index.h"
+#include "../common/timing.h"
 #include "../common/nv12_readback.h"
 #include "../common/test_device.h"
 #include "../common/test_media.h"
@@ -126,7 +127,7 @@ CT_TEST_DEVICE(video_decoder_seek_exact_1080p) {
     CT_CHECK_EQ(SeekToExact(*dev, dec, 2'500'000, ms), 150);
     std::printf("    seek to 2.5 s (30 frames after the keyframe): %.1f ms\n", ms);
 #ifndef CT_DEBUG
-    CT_CHECK(ms < 400.0);   // 52-70 ms in Release when idle; real-time checks are Release-only (Debug under load misses)
+    CT_CHECK(ms < test::TimingLimit(400.0, 2000.0));   // 52-70 ms in Release when idle (Debug under load misses)
 #endif
     // Random exact seeks, p95 reported (budget 150 ms).
     std::mt19937 rng(1234);
@@ -145,7 +146,7 @@ CT_TEST_DEVICE(video_decoder_seek_exact_1080p) {
     // 1080p frame independent of bitrate, so a seek to the end of a 2 s GOP (119 frames) takes ~210 ms
     // (DECISIONS.md P06 6.2). The MediaCache prefetch window hides this while playing and scrubbing nearby.
     if (times[18] >= 150.0) std::printf("    WARNING: p95 %.1f ms is over the 150 ms budget\n", times[18]);
-    CT_CHECK(times[18] < 400.0);
+    CT_CHECK(times[18] < test::TimingLimit(400.0, 2000.0));
 }
 
 CT_TEST_DEVICE(video_decoder_software_path) {

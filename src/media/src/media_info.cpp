@@ -64,7 +64,7 @@ HRESULT MediaInfo::Load(std::string_view path, MediaInfo& out) {
     out = MediaInfo{};
     if (IsImagePath(path)) return LoadImageInfo(path, out);
 
-    CT_RETURN_IF_FAILED(detail::EnsureMfStarted());
+    CT_RETURN_IF_FAILED(platform::MfRuntime::EnsureForProcess());
     ComPtr<IMFAttributes> attrs;
     CT_RETURN_IF_FAILED(MFCreateAttributes(attrs.GetAddressOf(), 2));
     attrs->SetUINT32(MF_SOURCE_READER_DISABLE_DXVA, TRUE);

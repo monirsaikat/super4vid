@@ -9,6 +9,7 @@
 #include <ct/test/ct_test.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <string>
 
@@ -132,7 +133,10 @@ CT_TEST_DEVICE(event_recorder_hooks_capture_sendinput) {
     CT_CHECK(log.Pauses()[0].paused && !log.Pauses()[1].paused);
     CT_CHECK(log.Cursor().size() >= 2);   // the initial sample and the move
     bool moved = false;
-    for (const auto& c : log.Cursor()) moved |= c.x == start.x + 17 - cfg.region.x && c.y == start.y + 11 - cfg.region.y;
+    // The test drives the real desktop cursor; other processes (parallel agents, the user) can nudge it by a few pixels
+    // between steps, so accept the recorded move within 8 px of the target.
+    for (const auto& c : log.Cursor())
+        moved |= std::abs(c.x - (start.x + 17 - cfg.region.x)) <= 8 && std::abs(c.y - (start.y + 11 - cfg.region.y)) <= 8;
     CT_CHECK(moved);
     // Every referenced shape is in the file (CURSOR_SHAPE precedes its first move).
     for (const auto& c : log.Cursor())

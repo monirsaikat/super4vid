@@ -1319,3 +1319,41 @@ Done instead:
 Why: spec gaps (storage format of device ids, keyboard capture semantics, where the save happens) and grouping.
 Impact: P05b bar: `settings_window.suspend_hotkeys/reregister_hotkeys/on_changed`, call `FirstRun::Run(&toasts,
 settings, SettingsFilePath())` once at startup. P09b editor: `ErrorBanner` per panel, Preferences -> `Open()`.
+## 2026-10-17 · Integration (after P04-P08 merge) · One test pattern, MfRuntime in ct_platform, media enums in presets, SessionClock as MediaTimeSource
+Spec said: P04's `tools/gen_test_media` writes tests/data/pattern_*.mp4; P06 replaces its private MF guard with
+`media::MfRuntime::Ensure()` and P05's webcam does the same; P10's Preset switches to `media::VideoCodec`/`RateControl`
+once ct_media exists; `recorder::SessionClock` derives from `capture::MediaTimeSource`.
+Done:
+- Test pattern: `tests/common/frame_index.h` now decodes exactly the counter `tools/gen_test_media` draws (12 digits,
+  28 x 56 px cells at (34 + 33 k, 36), 4 px strokes, box (32,32)-(432,96)); the P06 layout (24 x 48 glyphs, 6 px
+  strokes) is gone. The P06 helper `ct_gen_test_media` (tests/media/gen_pattern_main.cpp) and the `out/testmedia/`
+  fallback are deleted: tests read only the committed tests/data files (regenerate with
+  `gen_test_media --all tests/data`). `DrawFrameIndexY` is removed with its only user.
+- MfRuntime: ct_media depends on ct_capture, so ct_capture cannot use ct_media. `MfRuntime`/`MfScope` moved to
+  ct_platform (`ct/platform/mf_runtime.h`, `platform::MfRuntime`); `ct/media/mf_runtime.h` is a forwarding header
+  (`using platform::MfRuntime; using platform::MfScope;`), so existing `media::MfRuntime` callers are unchanged.
+  Added `MfRuntime::EnsureForProcess()`: the first successful call takes one reference that is never released. The
+  decoders, `MediaInfo::Load` and the webcam (Enumerate/Init/synthetic reader) use it, keeping the old guards'
+  process-lifetime semantics (no MFShutdown while a decoder or DXGI manager may still be alive) while sharing the one
+  refcount. `mf_startup_internal.h` and `capture::internal::EnsureMfStarted` are deleted. MFSTARTUP_LITE and
+  MFSTARTUP_NOSOCKET are the same flag value.
+- Presets: `exportng::VideoCodec` / `exportng::RateControl` are now `using media::VideoCodec` / `using
+  media::RateControl`; ct_export depends on ct_media. JSON names unchanged (static_asserts pin the enum order of the
+  name tables). ExportJob needs no static_cast.
+- SessionClock: `struct SessionClock final : capture::MediaTimeSource`; `QpcHnsToMediaUs` forwards to `HnsToMediaUs`,
+  `NowMediaUs` is the override. `MediaTimeSource`/`QpcMediaTimeSource` moved from webcam_source.h to the new light
+  header `ct/capture/media_time_source.h` (webcam_source.h includes it), so session_clock.h does not pull in D3D/MF.
+Why: the parallel phases each had a placeholder for a piece another phase owned; the counter layouts disagreed so the
+decoder/cache/player tests failed on the committed files.
+Impact: Recorder session: `webcam.Start(session.clock, sink)` works directly. New MF users without a Shutdown point
+call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shutdown` or `MfScope`.
+- Timing checks in the P04/P06 tests (`video_decoder_seek_*`, `player_plays_in_sync_and_steps`, `media_cache_budget_*`,
+  `media_cache_thumbnail_within_1s` (gross limit 3 s), `audio_engine_position_*`, `mp4_writer_2s_*` `pool_empty`) follow docs/06: budgets are enforced only with `CT_STRICT_TIMING=1`, otherwise a gross limit
+  (seeks 2000 ms, clock deviation 50 ms) or report-only. Helper `tests/common/timing.h` (`StrictTiming`, `TimingLimit`).
+  They failed intermittently in Release on the loaded machine (seek p95 583 ms, 62 frames shown in 90 ticks) with all
+  correctness checks (frame indices, cache misses = 0) passing.
+- One counter reader: `tests/common/frame_index.h` (names `ReadFrameIndexWith`, `ReadFrameIndexY`, `ReadFrameIndex`;
+  the RGBA reader gained optional `ox, oy` frame offsets). P10's `tests/common/pattern_counter.h` (export branch) samples
+  the identical segment centres, as did the private reader in tests/media/test_data_test.cpp (now uses frame_index.h);
+  when that branch merges it should become a thin include of frame_index.h, with
+  `ReadPatternCounterWith/Y/Rgba` forwarding to `ReadFrameIndexWith/Y/ReadFrameIndex`.
