@@ -7,7 +7,8 @@
 //     top-left at (34 + 33 * k, 36); segments are white bars 4 px thick (rects below, relative to the cell).
 // The reader samples a 3x3 luma patch at the centre of every segment, so chroma subsampling and H.264 ringing
 // do not matter.
-// Header-only; no dependencies beyond the standard library.
+// The one canonical counter reader (P10's tests/common/pattern_counter.h samples the same points and should become
+// a thin include of this file). Header-only; no dependencies beyond the standard library.
 
 #include <cstdint>
 
@@ -73,12 +74,14 @@ inline int64_t ReadFrameIndexY(const uint8_t* y, int width, int height, int pitc
     return ReadFrameIndexWith([&](int x, int yy) { return static_cast<int>(y[static_cast<size_t>(yy) * pitch + x]); });
 }
 
-// RGBA (or BGRA) readback, 4 bytes per pixel: brightness = (r + 2g + b) / 4.
-inline int64_t ReadFrameIndex(const uint8_t* rgba, int width, int height, int stride) {
-    if (!rgba || width < FrameCounterLayout::kBoxX + FrameCounterLayout::kBoxW || height < FrameCounterLayout::kBoxY + FrameCounterLayout::kBoxH)
+// RGBA (or BGRA) readback, 4 bytes per pixel: brightness = (r + 2g + b) / 4. (ox, oy) = where the frame's top-left
+// lands in the image (e.g. a composited canvas).
+inline int64_t ReadFrameIndex(const uint8_t* rgba, int width, int height, int stride, int ox = 0, int oy = 0) {
+    if (!rgba || ox < 0 || oy < 0 || width < ox + FrameCounterLayout::kBoxX + FrameCounterLayout::kBoxW ||
+        height < oy + FrameCounterLayout::kBoxY + FrameCounterLayout::kBoxH)
         return -1;
     return ReadFrameIndexWith([&](int x, int yy) {
-        const uint8_t* p = rgba + static_cast<size_t>(yy) * stride + static_cast<size_t>(x) * 4;
+        const uint8_t* p = rgba + static_cast<size_t>(yy + oy) * stride + static_cast<size_t>(x + ox) * 4;
         return (p[0] + 2 * p[1] + p[2]) / 4;
     });
 }
