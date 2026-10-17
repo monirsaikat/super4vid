@@ -29,6 +29,8 @@ namespace ct::capture {
 struct CaptureStats {
     std::atomic<uint64_t> ticks{0}, new_frames{0}, repeats{0}, dropped_pool_empty{0}, dropped_sink{0}, late_ticks{0},
         access_lost{0}, reinits{0};
+    // New images delivered at a later tick than their present time asks for (acquired after their tick's window).
+    std::atomic<uint64_t> late_images{0};
     Stats::Timing acquire;   // S_OK acquires: from max(call, desktop present time) to return, i.e. without the
                              // wait for the desktop to change (AcquireNextFrame + crop copy submission + ReleaseFrame)
     Stats::Timing convert;   // CPU time of the NV12 conversion of new images (command submission)
@@ -51,6 +53,11 @@ public:
         // copy path (bench comparisons; letterboxing and cross-adapter capture always copy).
         bool zero_copy = true;
         bool allow_compute = true;   // ColorConverter::Config::allow_compute (NV12 pool gets UAV binding when used)
+        // Desktop present time (DXGI LastPresentTime) -> the time the image is on the display. Each new image is
+        // stamped with the tick nearest to present + display_latency_us, so a frame's timestamp is when its content
+        // was seen. The clap test (avsync_source, vsync of the source's own swapchain) puts the desktop present
+        // 1-6 ms after that vsync, hence the negative default (DECISIONS, av-sync).
+        int display_latency_us = -4000;
     };
 
     ScreenCapturer() = default;
