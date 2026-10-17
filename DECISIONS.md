@@ -115,3 +115,16 @@ Done instead:
 - `--stats` also prints `messages/s` and the last message ID. That shows what woke the loop when redraws/s is not 0.
 Why: the spec leaves these choices open; these are the conservative options.
 Impact: P05 registers its emergency callback via `RegisterEmergency`. P01 removes `utf_internal.h`.
+
+## 2026-10-17 · P01 task 1.2 · HighResTimer holds timeBeginPeriod(1); FrameIndexAt is the inverse of FrameTimeUs
+Spec said: `HighResTimer` uses `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` and spins the last 200 us; `FrameIndexAt` is "floor".
+Done instead:
+- `HighResTimer::Init()` also calls `timeBeginPeriod(1)`; the destructor calls `timeEndPeriod(1)`. Added `IsHighResolution()`.
+- `FrameIndexAt(t)` returns the largest n with `FrameTimeUs(n) <= t` (the frame shown at t), so `FrameIndexAt(FrameTimeUs(n)) == n`.
+  A plain `floor(t * num / (1e6 * den))` returns n-1 for every frame whose start time was rounded down (e.g. 60 fps frame 1 at 16666 us).
+- Core headers that need `HANDLE` declare `typedef void* HANDLE;` (identical to winnt.h) instead of including `<windows.h>`;
+  ct_core cannot include `<ct/platform/win.h>` (dependency order).
+Why: on Win11 26100 with background load, high-resolution timers alone woke up to ~0.9 ms late (p99 430-575 us after the 200 us
+spin, over the 500 us budget). With a 1 ms period, p99 is 290-380 us. The period is held only while a timer exists (recording,
+playback), so the idle budget (0 redraws, 0 % CPU) is unaffected.
+Impact: P02/P03/P06 pacing threads should keep one HighResTimer for the session, not create one per wait.
