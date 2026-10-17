@@ -1319,3 +1319,34 @@ Done instead:
   30 fps file whose first frame is at 33 ms).
 Why: COM apartment rules, the writer's accept gate, parallel instances on the test machine, and robustness.
 Impact: the bar (5.6) uses PrepareAsync + StartCountdown + StartNow(trigger) and the listener additions.
+
+## 2026-10-17 · P05 task 5.6 · Recorder bar windows, hotkeys, previews and diagnostics
+Decision:
+- ImGui multi-viewport with `ConfigViewportsNoAutoMerge`: popovers and toasts get their own platform windows, so they
+  can extend past the 560x64 / 260x44 dip bar. `Platform_CreateWindow` is wrapped to apply WDA_EXCLUDEFROMCAPTURE,
+  topmost, DWM round corners, border colour and dark mode to every viewport. The settings window is the exception: an
+  `ImGuiWindowClass` (ParentViewportId 0, clear NoDecoration/NoTaskBarIcon) gives it a normal decorated, non-topmost
+  top-level window "Camtesia Settings". Secondary viewports fill with bg2 to hide the black clear.
+- `ui::SettingsWindow` got one additive method, `SetHostRect(pos, size)` (+ `WindowName()`), so its fill-viewport mode
+  fills that window instead of the main viewport.
+- Hotkeys (`RegisterHotKey`) and the tray icon belong to the bar window itself; no separate message window. While
+  the countdown runs, Esc is registered as a temporary hotkey (the bar does not have focus).
+- Monitor popover draws a schematic layout of the displays (proportional rectangles + list), not live thumbnails
+  (no capture before REC, no camera/mic LEDs, no cost).
+- Idle meters: an `AudioMonitor` null-sink capture runs only while the mic or system popover is open; during
+  recording the meters read the session's `LiveLevels()` atomics (updated at 30 Hz on ct-session). The camera preview
+  opens the device only while the camera popover/hover preview shows, and the session's webcam while recording.
+  `--synthetic-camera` substitutes the synthetic reader (no camera on the reference machine).
+- Toasts are drawn by the bar in their own viewport ("Saved" with Open in editor / Show in folder / Delete), not by
+  `ToastStack`, which draws into the main viewport (the bar is too small).
+- Default "Open in editor" launches `Camtesia.exe --editor <bundle>` with CAMTESIA_SEPARATE_INSTANCE=1.
+- Redraw policy: `RedrawIntervalMs` 16 while animating, 33 while recording/meters/preview, 250 while toasts show,
+  0 (wait for messages) otherwise.
+- Hotkey latency = start trigger (WM_HOTKEY, or the end of the countdown) -> first captured frame QPC. With countdown 0
+  it includes the session prepare (~150-600 ms in Release) because prepare starts at the hotkey; with a countdown the
+  prepare runs during the countdown.
+- Diagnostic modes (`--screenshot`, `--time-to-window`, `--bench-hotkey`) skip the single-instance check, never write
+  the user's settings, and record into a temp folder deleted at exit.
+Why: the bar is tiny and topmost and must stay out of recordings; device LEDs must stay off when idle; diagnostics must
+not touch user data.
+Impact: P09b/P11 may replace the Open-in-editor launch with in-process editor opening.
