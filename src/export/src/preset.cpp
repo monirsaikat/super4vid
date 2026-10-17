@@ -18,6 +18,10 @@ constexpr const char* kContainers[] = {"mp4", "gif", "png", "m4a"};
 constexpr const char* kExtensions[] = {".mp4", ".gif", ".png", ".m4a"};
 constexpr const char* kCodecs[] = {"h264", "hevc"};
 constexpr const char* kRateControls[] = {"quality", "vbr", "cbr"};
+// The name tables are indexed by the media:: enum values.
+static_assert(static_cast<int>(VideoCodec::H264) == 0 && static_cast<int>(VideoCodec::Hevc) == 1);
+static_assert(static_cast<int>(RateControl::Quality) == 0 && static_cast<int>(RateControl::Vbr) == 1 &&
+              static_cast<int>(RateControl::Cbr) == 2);
 constexpr const char* kProfiles[] = {"baseline", "main", "high"};
 
 template <class E, size_t N>

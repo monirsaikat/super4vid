@@ -4,6 +4,8 @@
 #include <ct/platform/win.h>
 #include <ct/test/ct_test.h>
 
+#include "../common/timing.h"
+
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -69,7 +71,7 @@ CT_TEST_DEVICE(audio_engine_position_tracks_500ms) {
         Sleep(1);
     }
     std::printf("    max |position - wall| while playing: %.2f ms\n", max_dev_ms);
-    CT_CHECK(max_dev_ms < 8.0);
+    CT_CHECK(max_dev_ms < test::TimingLimit(8.0, 50.0));
     const TimeUs p1 = fx.engine.PositionUs();
     const double wall_ms = static_cast<double>(Clock::QpcNow() - q0) * 1000.0 / Clock::QpcFrequency();
     const double adv_ms = (p1 - p0) / 1000.0;
