@@ -591,3 +591,14 @@ Done instead: a failed write (the atomic replace failed, e.g. while another proc
 Why: `--repeat 3` exposed a lost newest snapshot when the test read the file during the replace (the 4th of 5 writes
 stayed on disk). Without the retry a transient sharing violation would silently drop crash protection until the next edit.
 Impact: none for callers.
+
+## 2026-10-17 · P12 task 12.1 · Manifest version generated; `--tray` only hides the window
+Spec said: docs/01 section 7 embeds a literal `src/app/app.manifest` with `version="0.1.0.0"`; "everything else derives
+from" `project(Camtesia VERSION x.y.z)`; add `--tray` (start hidden to the tray).
+Done instead: the manifest is now `src/app/app.manifest.in`, configured into the build dir with
+`@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.0`. `version.h` also defines
+`CT_VERSION_MAJOR/MINOR/PATCH` (guarded by `#ifndef`, since `ct_options` passes them as `-D` too), as docs/01 section 8
+lists. `--tray` starts the main window with `SW_HIDE`; a second launch (forwarded via WM_COPYDATA) shows it.
+Why: the literal manifest version was the only place that would not follow a version bump. The tray icon belongs to P05
+(`TrayIcon`), which does not exist yet.
+Impact: P05 adds the tray icon for `--tray` (left click shows the bar). Edit `app.manifest.in`, not `app.manifest`.

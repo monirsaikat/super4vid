@@ -41,6 +41,7 @@ struct Options {
     bool crash_test = false;
     bool time_to_window = false;
     bool stats = false;
+    bool tray = false;   // --tray: start hidden ("start with Windows" installer task); the tray icon itself is P05
 };
 
 struct App {
@@ -84,6 +85,7 @@ Options ParseArgs() {
         if (wcscmp(argv[i], L"--crash-test") == 0) opt.crash_test = true;
         else if (wcscmp(argv[i], L"--time-to-window") == 0) opt.time_to_window = true;
         else if (wcscmp(argv[i], L"--stats") == 0) opt.stats = true;
+        else if (wcscmp(argv[i], L"--tray") == 0) opt.tray = true;
     }
     if (argv) LocalFree(argv);
     return opt;
@@ -147,6 +149,7 @@ LRESULT AppMessageHandler(void* user, HWND hwnd, UINT msg, WPARAM wparam, LPARAM
             const int chars = static_cast<int>(cds->cbData / sizeof(wchar_t));
             CT_LOG_INFO("forwarded command line: %.*ls", chars, static_cast<const wchar_t*>(cds->lpData));
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            else if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOW);   // started with --tray
             SetForegroundWindow(hwnd);
             handled = true;
             return TRUE;
@@ -337,7 +340,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
             LoadFonts();
             ApplyDpi(app);
 
-            app.win.Show(show_cmd);
+            app.win.Show(opt.tray ? SW_HIDE : show_cmd);
             exit_code = RunUi(app, opt);
 
             ImGui_ImplDX11_Shutdown();

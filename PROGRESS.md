@@ -141,7 +141,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 11.7 Acceptance: every section-8 number measured and recorded here
 
 ## P12 Installer & release
-- [ ] 12.1 Version stamping (`version.h` <- CMake), resource file, icon
+- [x] 12.1 Version stamping (`version.h` <- CMake), resource file, icon — FileVersion/ProductVersion 0.1.0, manifest assemblyIdentity 0.1.0.0 (now generated from `app.manifest.in`), `--tray` starts hidden (tray icon itself is P05); final CompanyName/LegalCopyright owner strings still placeholders "Camtesia" / "Copyright (C) 2026"
 - [ ] 12.2 Inno Setup script, portable zip, file association, uninstall
 - [ ] 12.3 CI workflow (build, test, package, upload artifacts)
 - [ ] 12.4 Release checklist executed on a clean Windows 10 VM and a Windows 11 machine
