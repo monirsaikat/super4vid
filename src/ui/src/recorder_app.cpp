@@ -434,7 +434,12 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         bo.synthetic_camera = extra.synthetic_camera;
         bo.countdown_override = extra.countdown >= 0 ? extra.countdown : (bench.runs > 0 || extra.bar_record ? 0 : -1);
         RecorderBar::Hooks hooks = options.hooks;
-        if (!hooks.open_editor) hooks.open_editor = &LaunchEditor;
+        if (!temp_out.empty()) {
+            // Diagnostics never start an editor (a stray click on the "Saved" toast during a bench would).
+            hooks.open_editor = [](const std::string& path) { std::printf("open in editor: %s (ignored)\n", path.c_str()); };
+        } else if (!hooks.open_editor) {
+            hooks.open_editor = &LaunchEditor;
+        }
         hooks.quit = [&app]() { app.quit = true; };
         // Diagnostics runs never write the user's settings (the hotkey bench uses its own chord).
         app.bar.Init(app.dev, app.win, settings, screenshot || bench.runs > 0 ? std::string() : settings_path, bo, std::move(hooks));
