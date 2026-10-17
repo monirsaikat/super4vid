@@ -3,6 +3,10 @@ setlocal
 set "ROOT=%~dp0"
 set "CMD=%~1"
 if "%CMD%"=="" set "CMD=release"
+rem Compiler/linker temp files go next to the build output instead of %TEMP% on C: (out\ is gitignored; clean deletes it).
+if not exist "%ROOT%out\tmp" mkdir "%ROOT%out\tmp"
+set "TMP=%ROOT%out\tmp"
+set "TEMP=%ROOT%out\tmp"
 
 rem An existing developer environment (CI: msvc-dev-cmd, or a VS Developer Prompt) is reused: running vcvars again
 rem only grows PATH until cmd fails with "The input line is too long".
