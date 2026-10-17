@@ -51,7 +51,7 @@ void FillNv12(uint8_t* y, size_t y_pitch, uint8_t* uv, size_t uv_pitch, SizeI si
 }
 
 HRESULT UploadNv12(platform::D3DDevice& dev, ID3D11Texture2D* staging, ID3D11Texture2D* dst, const uint8_t* src,
-                   size_t src_pitch, SizeI size) {
+                   size_t src_pitch, SizeI size, int src_rows) {
     // Caller holds D3DDevice::Lock. Staging NV12 layout: the UV plane follows the Y plane at RowPitch * Height.
     D3D11_TEXTURE2D_DESC d{};
     staging->GetDesc(&d);
@@ -63,7 +63,7 @@ HRESULT UploadNv12(platform::D3DDevice& dev, ID3D11Texture2D* staging, ID3D11Tex
     const size_t w = static_cast<size_t>(std::min<int>(size.w, static_cast<int>(d.Width)));
     const int h = std::min<int>(size.h, static_cast<int>(d.Height));
     for (int r = 0; r < h; ++r) std::memcpy(dst_y + r * m.RowPitch, src + r * src_pitch, w);
-    const uint8_t* src_uv = src + src_pitch * static_cast<size_t>(size.h);
+    const uint8_t* src_uv = src + src_pitch * static_cast<size_t>(std::max(src_rows, size.h));
     for (int r = 0; r < h / 2; ++r) std::memcpy(dst_uv + r * m.RowPitch, src_uv + r * src_pitch, w);
     dev.Context()->Unmap(staging, 0);
     dev.Context()->CopyResource(dst, staging);
@@ -363,9 +363,19 @@ HRESULT WebcamSource::Init(platform::D3DDevice& dev, const Config& cfg) {
         out_mode.fps_den = native.fps_den;
     }
 
-    hr = InitWithReader(dev, std::make_unique<MfWebcamReader>(std::move(reader), std::move(source)), out_mode.size,
+    // A padded frame (e.g. 1920x1088 with a 1080-row display aperture): deliver the aperture, but read memory buffers
+    // with the frame height, after which their UV plane starts (like VideoDecoder's frame vs display size).
+    SizeI out_size = out_mode.size;
+    MFVideoArea area{};
+    UINT32 area_bytes = 0;
+    if (SUCCEEDED(current->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, reinterpret_cast<UINT8*>(&area), sizeof(area), &area_bytes)) &&
+        area_bytes == sizeof(area) && area.OffsetX.value == 0 && area.OffsetY.value == 0 && area.Area.cx >= 2 && area.Area.cy >= 2 &&
+        area.Area.cx <= out_size.w && area.Area.cy <= out_size.h)
+        out_size = SizeI{static_cast<int32_t>(area.Area.cx & ~1), static_cast<int32_t>(area.Area.cy & ~1)};
+    hr = InitWithReader(dev, std::make_unique<MfWebcamReader>(std::move(reader), std::move(source)), out_size,
                         out_mode.fps_num, out_mode.fps_den, cfg.pool_size);
     if (FAILED(hr)) return hr;   // the reader (and with it the device source) was released by InitWithReader
+    m_frame_h = out_mode.size.h;
     m_native = native;
     m_name = name;
     CT_LOG_INFO("webcam \"%s\": native %dx%d %.2f fps %s (type %u of %zu) -> NV12 %dx%d %.2f fps; init %.0f ms",
@@ -383,6 +393,7 @@ HRESULT WebcamSource::InitWithReader(platform::D3DDevice& dev, std::unique_ptr<W
     m_dev = &dev;
     m_reader = std::move(reader);
     m_size = size;
+    m_frame_h = size.h;
     m_fps_num = fps_num ? fps_num : 30;
     m_fps_den = fps_den ? fps_den : 1;
     m_native = WebcamMode{};
@@ -584,7 +595,7 @@ bool WebcamSource::CopyIntoPool(IMFSample* sample, ID3D11Texture2D* dst) {
         m_dev->Context()->CopySubresourceRegion(dst, 0, 0, 0, 0, src.Get(), sub, &box);
         return true;
     }
-    // Memory buffer (software pipeline): NV12 rows, the UV plane right after `height` luma rows.
+    // Memory buffer (software pipeline): NV12 rows, the UV plane right after the media type's m_frame_h luma rows.
     if (!m_upload) return false;
     m_stats.cpu_uploads.fetch_add(1, std::memory_order_relaxed);
     ComPtr<IMF2DBuffer> b2;
@@ -593,7 +604,7 @@ bool WebcamSource::CopyIntoPool(IMFSample* sample, ID3D11Texture2D* dst) {
         LONG pitch = 0;
         if (FAILED(b2->Lock2D(&p, &pitch))) return false;
         HRESULT hr = E_FAIL;
-        if (pitch >= m_size.w) hr = internal::UploadNv12(*m_dev, m_upload.Get(), dst, p, static_cast<size_t>(pitch), m_size);
+        if (pitch >= m_size.w) hr = internal::UploadNv12(*m_dev, m_upload.Get(), dst, p, static_cast<size_t>(pitch), m_size, m_frame_h);
         b2->Unlock2D();
         return SUCCEEDED(hr);
     }
@@ -601,8 +612,8 @@ bool WebcamSource::CopyIntoPool(IMFSample* sample, ID3D11Texture2D* dst) {
     DWORD max_len = 0, cur_len = 0;
     if (FAILED(buffer->Lock(&p, &max_len, &cur_len))) return false;
     HRESULT hr = E_FAIL;
-    if (cur_len >= static_cast<DWORD>(m_size.w) * m_size.h * 3 / 2)
-        hr = internal::UploadNv12(*m_dev, m_upload.Get(), dst, p, static_cast<size_t>(m_size.w), m_size);
+    if (cur_len >= static_cast<DWORD>(m_size.w) * static_cast<DWORD>(m_frame_h) * 3 / 2)
+        hr = internal::UploadNv12(*m_dev, m_upload.Get(), dst, p, static_cast<size_t>(m_size.w), m_size, m_frame_h);
     buffer->Unlock();
     return SUCCEEDED(hr);
 }

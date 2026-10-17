@@ -1160,3 +1160,44 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · Review fix (P04) · Mp4Writer never frees its state under a live ct-encode thread
+Spec said: `Abort()` returns after at most 3 s and does not join; the destructor finalizes and releases the writer.
+Done instead: the destructor joins ct-encode (no timeout) before releasing anything when `Finalize`'s 60 s join timed out.
+After `Abort()`, if ct-encode is still running (stuck in `IMFSinkWriter::Finalize`), the destructor logs a warning and
+deliberately leaks the internal state (sink writer, buffers, events, thread) instead of freeing it under the thread or
+blocking the crash path. To make that safe, the state ct-encode publishes (`Stats`, last error, accepting flag) moved from
+`Mp4Writer` into its Impl (`GetStats`/`LastError`/`Accepting` are no longer inline; same signatures), `Impl::thread` is
+declared last (destroyed, i.e. joined, first), and the listener is not called once Abort was requested.
+Added `SetFinalizeDelayForTest(ms)` (test `mp4_writer_abort_during_slow_finalize_then_destroy`).
+Why: the old destructor reset the sink writer while ct-encode could still be inside Finalize (use-after-free), and the
+events/atomics were destroyed before `~Thread` joined.
+Impact: P05 can destroy the writer right after `Abort()` on the crash path; the NV12 pool must still outlive the writer.
+
+## 2026-10-17 · Review fix (P04) · Mp4Writer trims audio that overlaps what was already written
+Spec said: audio items are written at their `t_us`; gaps > 2 ms become silence.
+Done instead: an item that starts before the end of the stream's written data (an overlapping/late producer, or a
+negative first time) loses its overlapping frames and is written at the end of the written data; an item entirely
+inside it is dropped. Sub-frame overlaps (rounding) only snap the timestamp. Trimmed frames are counted in the new
+`Stats::audio_overlap_frames[stream]` (not in `audio_written`). Test `mp4_writer_audio_overlap_trimmed`.
+Why: the item was written as-is, so the file's audio timestamps went backwards.
+Impact: none for callers; P05 may log `audio_overlap_frames` next to the other writer stats.
+
+## 2026-10-17 · Review fix (P06) · Peaks::Build is cancellable; MediaCache::Close cancels it
+Spec said: `Peaks::Build(path, stream, Peaks&)` (P06 header).
+Done instead: `Build(path, stream, Peaks&, const std::atomic<bool>* stop = nullptr)`; the flag is checked before each
+decode step (~160 ms of audio) and Build returns `E_ABORT` once it is set. MediaCache's peaks job passes its stop flag,
+so `Close` (which sets it first) no longer waits for a full decode pass of a long file (10 min WAV: 4.5 s build, Close
+during it 3 ms in Debug). Existing callers are unchanged (default argument).
+Why: Close blocked the owner thread for the whole build.
+Impact: none for callers.
+
+## 2026-10-17 · Review fix (P05 task 5.7) · Webcam memory buffers use the media type's frame height
+Spec said: (DECISIONS P05 5.7) memory-buffer samples are uploaded as NV12 with the UV plane after `height` luma rows.
+Done instead: like VideoDecoder (frame vs display size), `Init` delivers the reader output's
+`MF_MT_MINIMUM_DISPLAY_APERTURE` when it is a top-left sub-rectangle of the frame (e.g. 1920x1080 of a 1920x1088
+frame; `ActualSize()` and the pool are the aperture) and remembers the type's frame height (`m_frame_h`); the memory
+path reads the UV plane after `m_frame_h` rows (`internal::UploadNv12(..., src_rows)`). Without an aperture nothing
+changes. Test `webcam_upload_nv12_padded_frame_height` (the MF device path is still not verified on hardware here).
+Why: a padded height (1088) put the chroma read 8 rows early: corrupt colours.
+Impact: none for callers.

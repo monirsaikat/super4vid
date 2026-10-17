@@ -62,10 +62,15 @@ public:
     AudioEngine& Engine() { return m_engine; }
     void ResetStats();
 
-private:
-    // AudioEngine::Source over the ring; the feed thread decodes into it.
+    // AudioEngine::Source over the ring; the feed thread decodes into it. Public for tests only (driven there without an
+    // audio device); not part of the player API.
     struct Feed final : AudioEngine::Source {
         uint32_t Pull(float* interleaved, uint32_t frames, TimeUs from_us, double rate) override;
+        // Feed thread: a seek to from_us for request `gen` (clears the ring).
+        void Reset(TimeUs from_us, uint64_t gen);
+        // Feed thread: decoded frames with the reader's pts. The first packet after Reset sets next_us from its pts
+        // (under the lock), so a stream that starts after from_us (late start, gap) is not played early.
+        void Append(const float* interleaved, uint32_t frames, TimeUs pts_us);
         SrwLock lock;                    // Pull try-locks; the feed thread locks to clear the ring
         AudioRing ring;
         std::vector<float> discard;      // Pull: frames skipped to catch up
@@ -73,7 +78,10 @@ private:
         std::atomic<uint64_t> req_gen{0};
         std::atomic<int64_t> req_from{0};
         uint64_t data_gen = 0;           // generation the ring content belongs to (under lock)
+        bool awaiting_first = true;      // feed thread: no packet appended since Reset
     };
+
+private:
     void FeedMain();
     void RestartFeed(TimeUs from_us);
     TimeUs ClampTime(TimeUs t) const;

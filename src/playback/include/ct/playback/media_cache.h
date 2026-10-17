@@ -6,8 +6,8 @@
 // are one RGBA texture shown at every time.
 // Thread model: Open/Close on the owner (UI) thread; GetVideoFrame/Hint/Thumbnail/GetPeaks/GetStats are non-blocking
 // and callable from any one thread at a time (normally the UI thread); OpenAudio from any thread (blocking: opens a
-// decoder). FrameRef / thumbnail views stay valid until the 4th following GetVideoFrame call (the last 4 returned
-// frames are pinned) or Close. Draw them with D3DDevice::Lock held, as every immediate-context user must.
+// decoder). FrameRef / thumbnail views stay valid until 4 other frames were returned by later GetVideoFrame calls (the
+// 4 most recently returned frames are pinned, LRU) or Close. Draw them with D3DDevice::Lock held, as every immediate-context user must.
 // Lifetime: Open -> ... -> Close (or the destructor), which joins the prefetch thread and waits for IO-pool jobs.
 
 #include <ct/core/sync.h>
@@ -93,6 +93,10 @@ public:
     bool HasVideo() const { return m_has_video; }
     // Blocks until the frame shown at t is cached (tools/tests; never on the UI thread). Hints paused at t first.
     bool WaitForFrame(TimeUs t_us, uint32_t timeout_ms);
+    // The pinned set is a true LRU of the last kPinned returned slots (index 0 = least recent): returning `slot`
+    // moves it to the most recent position. Pure; public for tests.
+    static constexpr int kPinned = 4;
+    static void PinRecent(uint32_t (&pins)[kPinned], uint32_t slot);
 
 private:
     struct Window { TimeUs start = 0, end = 0, playhead = 0; bool forward = true; };
@@ -154,8 +158,7 @@ private:
     std::vector<Slot> m_slots;          // fixed capacity after Open (no reallocation while the UI reads)
     std::vector<uint32_t> m_free;       // free slot indices whose texture can be reused
     uint32_t m_slots_used = 0;          // slots created so far
-    uint32_t m_pinned[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
-    int m_pin_next = 0;
+    uint32_t m_pinned[kPinned] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};   // LRU order (PinRecent)
     uint64_t m_tick = 0;
     Stats m_stats;
     int64_t m_seek_started_qpc = 0;     // prefetch thread: QPC of the last far seek, 0 when none is pending
