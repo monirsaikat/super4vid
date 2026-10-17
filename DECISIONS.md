@@ -620,3 +620,43 @@ Done instead:
 Why: found while running `build.cmd package` and the silent install/uninstall test on this machine.
 Impact: `build.cmd doctor` still only checks `%ProgramFiles(x86)%` and prints Inno "MISSING" for a per-user install
 (doctor is outside this task's file ownership; fix when convenient).
+
+## 2026-10-17 · P05 task 5.7 · WebcamSource decoupled from SessionClock, MfRuntime and Nv12Blit; additions
+Spec said: `WebcamSource::Start(const recorder::SessionClock&, FrameSink&)`; `LatestPreviewSrv()` returns an RGBA preview
+updated per frame with `platform::Nv12Blit`; MF is started by P04's `media::MfRuntime`; Init scores native types and asks
+for NV12; `WebcamInfo { symbolic_link, name, sizes }`.
+Done instead (P05a, P04 and P06 run in parallel and own those pieces):
+- Time base: `Start(const capture::MediaTimeSource&, FrameSink&)` with `MediaTimeSource { TimeUs QpcHnsToMediaUs(uint64_t) const;
+  TimeUs NowMediaUs() const; }` declared in `ct/capture/webcam_source.h`. `recorder::SessionClock` should derive from it
+  (its `HnsToMediaUs` is the same mapping), which keeps ct_capture free of a ct_recorder dependency.
+  `capture::QpcMediaTimeSource(epoch_qpc)` is the pause-free version for tools/tests.
+- Frame time = `MFSampleExtension_DeviceTimestamp` mapped through the clock when it lies within 1 s before now (later than
+  now is clamped to now), else `NowMediaUs()` (`WebcamFrameTimeUs`). Frames whose time is not after the previous delivered
+  frame are dropped (`dropped_late`), so cam.mp4 timestamps are strictly increasing.
+- Pause: `+SetPaused(bool)`; frames read while paused are dropped (the session calls it next to `capturer.Pause()`).
+- MF startup: an internal `std::call_once` `MFStartup(MF_VERSION, MFSTARTUP_LITE)` in `webcam_source.cpp`, never shut down
+  (MFStartup is reference counted, so it coexists with P04). Becomes `media::MfRuntime::Ensure()` after P04 merges.
+- Preview: no RGBA texture and no `LatestPreviewSrv()`. Each delivered frame is also copied into a preview NV12 texture and
+  `LatestPreviewPlanes(&y_srv, &uv_srv, &size)` exposes R8 / R8G8 plane views (+`PreviewSerial()`); the UI converts with
+  P06's `Nv12Blit` (or its own shader) under the device lock. Rationale: `Nv12Blit` belongs to P06.
+- Enumeration lists every native type (`+WebcamInfo::modes`: size, fps num/den, fourcc, native index) and `sizes` (distinct,
+  largest first); `Enumerate(out, with_modes = false)` skips opening the devices. No camera = S_OK with an empty list;
+  `Init` then returns `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)`.
+- Native type choice is `PickWebcamMode` (pure, unit tested): |area - preferred| then |fps - preferred| (milli-fps) then
+  NV12 > YUY2 > MJPG > other; odd sizes and types without a frame rate are skipped; ties keep the device order.
+- Testing seam: `WebcamReader` (ReadSample/Flush/Shutdown) behind the loop, `InitWithReader(...)`, and
+  `CreateSyntheticWebcamReader` (moving 75 % colour bars, DXGI or memory buffers, device timestamps) used by tests, by
+  `webcam_demo --synthetic` and available for a recorder self-test without a camera.
+- Memory-buffer samples (a software pipeline without DXGI output) are uploaded through a staging NV12 texture
+  (`cpu_uploads` counts them); DXGI samples are `CopySubresourceRegion`'d (box = output size, so padded decoder surfaces work).
+- Stop: stop flag + `Flush` repeated every 100 ms until the thread exits (a Flush landing just before `ReadSample` would be
+  lost); after 3 s the device source is shut down (the source then needs `Init` again); `CT_FATAL` after 5 s.
+  A ReadSample failure or ERROR/ENDOFSTREAM flag calls `FrameSink::OnError` once (device lock held) and ends the thread.
+- `WebcamStats` (atomics) for the session's LiveStats/logs.
+Not verified: the reference machine has no camera, so the MF device path (Init, native types, reader NV12 conversion,
+`Flush` unblocking a synchronous `ReadSample`, device timestamps after the video processor) has not run on hardware; the
+real-device test skips. Run `webcam_demo` and `ct_capture_tests --filter webcam_real` on a machine with a webcam.
+Why: parallel phases own SessionClock (P05a), MfRuntime (P04) and Nv12Blit (P06).
+Impact: P05a: `struct SessionClock : capture::MediaTimeSource` and call `webcam.SetPaused` on pause/resume. P04: cam writer
+uses `webcam.Nv12Pool()` (6 NV12 textures, RENDER_TARGET|SHADER_RESOURCE when supported) with `fps = ActualFps()`; the
+`#include`/call to the internal MF guard is replaced by `MfRuntime::Ensure`. UI: preview via `LatestPreviewPlanes`.

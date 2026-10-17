@@ -83,7 +83,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 5.4 Hotkeys, tray icon + menu, notifications
 - [ ] 5.5 Region selection overlay (dim, drag, handles, window snap, monitor pick, size readout)
 - [ ] 5.6 Recorder bar UI + countdown overlay, excluded from capture
-- [ ] 5.7 Webcam capture -> `cam.mp4` + live preview
+- [~] 5.7 Webcam capture -> `cam.mp4` + live preview — source done, cam.mp4 writer wiring after P04. `capture::WebcamSource` + `tools/webcam_demo`; no camera on the reference machine: enumeration returns 0 devices cleanly, the real-device test skips, the loop/copy/timestamp/stop logic is tested over scripted and synthetic readers (synthetic 1280x720@30 via webcam_demo: 150 frames in 5 s, 29.95 fps, 0 drops, Stop 6 ms)
 - [ ] 5.8 Acceptance: all section-8 recording budgets measured and met; pause/resume produces gapless media; kill during recording loses <= 2 s of events (video loss documented)
 
 ## P06 Decode & playback
