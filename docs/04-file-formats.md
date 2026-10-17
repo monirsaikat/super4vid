@@ -55,7 +55,7 @@ Coordinates are physical pixels **relative to the capture region's top-left**, s
 File    := Header Record*
 Header  := magic u8[4] = "CTEV"
            version u16 = 1
-           header_size u16 = 40
+           header_size u16 = 44          (4+2+2+8+8+16+4; readers accept any value >= 40, multiple of 4, and skip to it)
            epoch_qpc i64
            qpc_frequency i64
            region_x i32, region_y i32, region_w i32, region_h i32
@@ -83,7 +83,7 @@ Rules:
 - A CURSOR_SHAPE record always precedes the first CURSOR_MOVE that references its `shape_id`. `shape_id` is the FNV-1a 32-bit hash of the premultiplied BGRA pixels + hotspot. Shapes are written once per file.
 - RLE for shapes: runs of identical 32-bit pixels as `u8 run_length (1..255), u32 pixel`. Choose RLE when it is smaller.
 - Writers pad every record to 4 bytes. Readers skip unknown `type` values by `size`.
-- Reader API (`ct::project::EventLog`) loads the whole file into typed arrays sorted by time and provides `CursorAt(t_us)` with linear interpolation between neighbours and shape lookups.
+- Reader API (`ct::events::EventLog`, module `ct_events`) loads the whole file into typed arrays sorted by time and provides `CursorAt(t_us)` with linear interpolation between neighbours and shape lookups.
 
 ## 3. Project file `.ctproj` (JSON, UTF-8, pretty-printed with 2 spaces, keys in the order below)
 
