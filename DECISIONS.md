@@ -1189,3 +1189,13 @@ Why: the parallel phases each had a placeholder for a piece another phase owned;
 decoder/cache/player tests failed on the committed files.
 Impact: Recorder session: `webcam.Start(session.clock, sink)` works directly. New MF users without a Shutdown point
 call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shutdown` or `MfScope`.
+- Timing checks in the P04/P06 tests (`video_decoder_seek_*`, `player_plays_in_sync_and_steps`, `media_cache_budget_*`,
+  `media_cache_thumbnail_within_1s` (gross limit 3 s), `audio_engine_position_*`, `mp4_writer_2s_*` `pool_empty`) follow docs/06: budgets are enforced only with `CT_STRICT_TIMING=1`, otherwise a gross limit
+  (seeks 2000 ms, clock deviation 50 ms) or report-only. Helper `tests/common/timing.h` (`StrictTiming`, `TimingLimit`).
+  They failed intermittently in Release on the loaded machine (seek p95 583 ms, 62 frames shown in 90 ticks) with all
+  correctness checks (frame indices, cache misses = 0) passing.
+- One counter reader: `tests/common/frame_index.h` (names `ReadFrameIndexWith`, `ReadFrameIndexY`, `ReadFrameIndex`;
+  the RGBA reader gained optional `ox, oy` frame offsets). P10's `tests/common/pattern_counter.h` (export branch) samples
+  the identical segment centres, as did the private reader in tests/media/test_data_test.cpp (now uses frame_index.h);
+  when that branch merges it should become a thin include of frame_index.h, with
+  `ReadPatternCounterWith/Y/Rgba` forwarding to `ReadFrameIndexWith/Y/ReadFrameIndex`.

@@ -5,6 +5,7 @@
 #include "../common/nv12_readback.h"
 #include "../common/test_device.h"
 #include "../common/test_media.h"
+#include "../common/timing.h"
 
 #include <ct/core/time.h>
 #include <ct/platform/win.h>
@@ -103,10 +104,12 @@ CT_TEST_DEVICE(player_plays_in_sync_and_steps) {
     const uint64_t misses = player.Cache().GetStats().misses - misses0;
     std::printf("    cache misses while playing: %llu\n",static_cast<unsigned long long>(misses));
 #ifndef CT_DEBUG
-    // Real-time expectations: enforced in Release only (Debug + debug layer is report-only).
-    CT_CHECK(misses <= 1);
-    CT_CHECK(st.frames_shown * 10 >= static_cast<uint64_t>(ticks) * 7);
-    CT_CHECK(st.frames_late <= 1);
+    // Real-time expectations: enforced in Release with CT_STRICT_TIMING only (docs/06; a loaded machine misses ticks).
+    if (test::StrictTiming()) {
+        CT_CHECK(misses <= 1);
+        CT_CHECK(st.frames_shown * 10 >= static_cast<uint64_t>(ticks) * 7);
+        CT_CHECK(st.frames_late <= 1);
+    }
 #endif
     std::printf("    %d ticks\n", ticks);
     CT_CHECK_EQ(mismatches, 0);
@@ -139,7 +142,8 @@ CT_TEST_DEVICE(player_plays_in_sync_and_steps) {
         Sleep(1);
     }
     std::printf("    seek to 4.0 s -> exact frame in %.1f ms\n", player.GetStats().seek_to_frame_ms);
-    CT_CHECK(player.GetStats().seek_to_frame_ms > 0 && player.GetStats().seek_to_frame_ms < 400);
+    CT_CHECK(player.GetStats().seek_to_frame_ms > 0 &&
+             player.GetStats().seek_to_frame_ms < test::TimingLimit(400.0, 2000.0));
     // Play to the end: stops there.
     player.Seek(4'900'000);
     player.Play();
