@@ -87,7 +87,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 5.8 Acceptance: all section-8 recording budgets measured and met; pause/resume produces gapless media; kill during recording loses <= 2 s of events (video loss documented)
 
 ## P06 Decode & playback
-- [ ] 6.1 `MediaInfo` (streams, durations, codec, size, fps, rotation)
+- [x] 6.1 `MediaInfo` (streams, durations, codec, size, fps, rotation) � pattern 1080p60: H264 1920x1080 60 fps + AAC 48 kHz, duration 5.0133 s (AAC padding, see DECISIONS); PNG via WIC; Windows WAV probe
 - [ ] 6.2 `VideoDecoder` (source reader, HW NV12 textures, seek, EOS, type change)
 - [ ] 6.3 `AudioDecoder` (float 48 kHz stereo, seek, EOS)
 - [ ] 6.4 `FrameCache` + prefetch thread per media; NV12->RGB shader

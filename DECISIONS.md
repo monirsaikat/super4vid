@@ -435,3 +435,26 @@ Seen once during development (older build, user working on the machine): 3 late 
 Impact: P04 — the NV12 pool textures carry `D3D11_BIND_UNORDERED_ACCESS` when the compute path is active (check the MF
 encoder accepts them; if not, set `ScreenCapturer::Config::allow_compute = false`), and the same `pool_index` can arrive in
 consecutive `OnFrame` calls (one Release per call). The reuse predicate is consulted only by `Acquire`, never by `AddRef`.
+
+## 2026-10-17 · P06 task 6.1 · Private MFStartup guard; MediaInfo additions; AAC-padded duration; local test patterns
+Spec said: `MFStartup` once per process in `ct::media::MfRuntime` (P04); `MediaInfo` as declared in P06; the pattern
+`MediaInfo` test expects duration 5 s +- 1 ms; test media comes from P04's `tools/gen_test_media`.
+Done instead:
+- P04 and P06 were built in parallel, so `src/media/src/mf_startup_internal.h` holds `detail::EnsureMfStarted()` (a
+  function-local static `MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)`, never shut down). **After the merge replace every
+  call with `media::MfRuntime::Ensure()` and delete the file.** `src/media/CMakeLists.txt` was created by P06 with
+  `DEPS ct_platform ct_audio` (P04 adds its sources/deps).
+- `MediaInfo` additions: `IsImagePath()`, `Find(stream_index)`. Images get one `Video` stream (codec "PNG"/"JPEG"/...,
+  size, fps 0) so `FirstVideo()` works for them; `seekable = false` for images.
+- `MF_PD_DURATION` is the longest track: Media Foundation's AAC encoder pads the audio track to whole 1024-frame packets
+  (240000 -> 240640 frames), so a 5.000 s pattern reports 5.0133 s. The test accepts 5 s -1 ms / +22.3 ms.
+- Until P04's files exist, the test-only helper `ct_gen_test_media` (tests/media/gen_pattern_main.cpp, not shipped)
+  writes the same patterns with a CPU-drawn NV12 image into an `IMFSinkWriter` to `out/testmedia/` (git-ignored).
+  Tests look in `tests/data/` first, then `out/testmedia/`, and CT_SKIP when neither has the file.
+- The 7-segment counter layout is fixed in `tests/common/frame_index.h` (P04's spec only gives the box (32,32)-(432,96)):
+  box filled black (Y 16) and drawn *after* the flash; 12 digits, most significant first, cell x = 34 + 33 k, glyph
+  24 x 48 px at (cell + 4, 40), segments 6 px white (Y 235). The header also has `DrawFrameIndexY()`, which P04's
+  generator should call so both sides share one layout. Beep: 2 kHz at -12 dBFS *replacing* the 1 kHz tone for the
+  first 20 ms of every second (flash frames are 0, 60, 120, ...).
+Why: parallel phases; MF behaviour; the generator spec leaves the digit geometry open.
+Impact: P04 merge: swap the MFStartup guard, keep the counter layout (or update frame_index.h to match its generator).
