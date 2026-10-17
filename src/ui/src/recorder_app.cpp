@@ -299,7 +299,8 @@ struct HotkeyBench {
                                      app.bar.LastStartLatencyMs();
                 totals.push_back(total);
                 from_hotkey.push_back(app.bar.LastStartLatencyMs());
-                std::printf("hotkey -> first frame: %.1f ms (WM_HOTKEY -> first frame %.1f ms)\n", total, app.bar.LastStartLatencyMs());
+                std::printf("hotkey -> first frame: %.1f ms (start trigger -> first frame %.1f ms; the trigger is the hotkey, or the "
+                            "end of the countdown)\n", total, app.bar.LastStartLatencyMs());
                 phase = 2;
                 phase_qpc = now;
             } else if (since_ms > 10000) {
@@ -384,6 +385,13 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     }
     HotkeyBench bench;
     bench.runs = extra.bench_hotkey;
+    std::string temp_out;
+    if (bench.runs > 0 || screenshot) {
+        // Diagnostics record into a temp folder (deleted at exit), never into the user's recordings.
+        temp_out = fs::TempPath("");
+        settings.recording.output_dir = temp_out;
+        setvbuf(stdout, nullptr, _IONBF, 0);
+    }
     if (bench.runs > 0) settings.hotkeys.toggle = Hotkey{MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F22};
 
     platform::Window::Desc desc;
@@ -540,6 +548,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     app.win.Destroy();
     app.dev.Shutdown();
     app.dev.ReportLiveObjects();
+    if (!temp_out.empty()) fs::DeleteTree(temp_out);
     g_app = nullptr;
     delete app_ptr;
     return exit_code;

@@ -1769,7 +1769,10 @@ void RecorderBar::CancelRecording() {
 void RecorderBar::ShowSavedToast(const std::string& bundle_path) { m->ShowSavedToastImpl(bundle_path); }
 bool RecorderBar::IsRecording() const { return m->state != State::Idle || m->preparing; }
 bool RecorderBar::IsIdle() const { return m->state == State::Idle && !m->preparing && !m->session.IsActive(); }
-double RecorderBar::LastStartLatencyMs() const { return m->session.LastStartLatencyMs(); }
+double RecorderBar::LastStartLatencyMs() const {
+    const recorder::State st = m->session.GetState();
+    return st == State::Recording || st == State::Paused ? m->session.LastStartLatencyMs() : -1.0;
+}
 int64_t RecorderBar::LastTriggerQpc() const { return m->trigger_qpc; }
 void RecorderBar::ShowBar(bool show) { m->ShowBar(show); }
 void RecorderBar::PushToast(const std::string& text, float seconds) { m->PushToast(text, ToastKind::Info, {}, seconds); }
