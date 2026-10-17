@@ -22,6 +22,15 @@ namespace {
 
 constexpr SizeI kCanvas{640, 360};
 
+events::KeyPayload KeyDown(uint16_t vk, const char* label, bool down) {
+    events::KeyPayload k;
+    k.vk = vk;
+    k.down = down ? 1 : 0;
+    k.modifiers = events::kModCtrl;
+    events::CopyLabel(k.label, sizeof(k.label), label);
+    return k;
+}
+
 } // namespace
 
 // Finding 1: an annotation whose rect moves every frame used to leave one texture per frame in the text cache.
@@ -115,4 +124,54 @@ CT_TEST(render_temp_texture_size_is_bucketed) {
     CT_CHECK(c.w == 128 && c.h == 192);
     const SizeI d = RC::TempTextureSize(SizeI{16384, 16383});
     CT_CHECK(d.w == 16384 && d.h == 16384);
+}
+
+// Finding 3: the badge faded in from the oldest stroke it shows; when that stroke expired, or a 4th stroke pushed it
+// out, the opacity dropped while the badge stayed up. It now fades in from the start of the continuous visible run.
+CT_TEST(render_keystroke_badge_alpha_does_not_dip) {
+    events::EventHeader hdr;
+    hdr.qpc_frequency = 10'000'000;
+    hdr.region_w = 1280;
+    hdr.region_h = 720;
+    hdr.flags = events::kFlagKeystrokes;
+    events::EventWriter w;
+    w.OpenMemory(hdr);
+    const TimeUs downs[] = {1'000'000, 1'020'000, 1'040'000, 1'060'000,   // 4 quick strokes (the 4th pushes the 1st out)
+                            2'530'000,                                    // shortly before 1.06 s expires (hold 1.5 s)
+                            5'000'000};                                   // a new run after a gap
+    const char* labels[] = {"A", "B", "C", "D", "E", "F"};
+    for (int i = 0; i < 6; ++i) {
+        const uint16_t vk = static_cast<uint16_t>('A' + i);
+        w.Key(downs[i], KeyDown(vk, labels[i], true));
+        w.Key(downs[i] + 10'000, KeyDown(vk, labels[i], false));
+    }
+    events::EventLog log;
+    Err err;
+    CT_REQUIRE(log.LoadFromMemory(w.Bytes(), &err));
+    CT_REQUIRE(log.Strokes().size() == 6);
+    constexpr TimeUs kHold = 1'500'000;
+    using render::Compositor;
+    CT_CHECK_EQ(Compositor::KeystrokeBadgeAlpha(log, 999'999, kHold), 0.f);
+    CT_CHECK_NEAR(Compositor::KeystrokeBadgeAlpha(log, 1'060'000, kHold), 0.5f, 1e-4);
+    // Fade-in over the first 120 ms, never decreasing although the 4th stroke pushes the 1st out of the badge at 1.06 s.
+    float prev = 0.f;
+    int dips = 0;
+    for (TimeUs t = 1'000'000; t <= 1'120'000; t += 1'000) {
+        const float a = Compositor::KeystrokeBadgeAlpha(log, t, kHold);
+        if (a + 1e-6f < prev) ++dips;
+        prev = a;
+    }
+    CT_CHECK_EQ(dips, 0);
+    // Fully opaque until the fade-out toward 1.06 + 1.5 s starts (2.36 s; the badge cannot know that E follows), and
+    // again from E (2.53 s, while D still shows) until E fades out (4.03 s - 200 ms): no dip when A..D expire.
+    int not_opaque = 0;
+    for (TimeUs t = 1'120'000; t <= 3'830'000; t += 1'000) {
+        if (t > 2'360'000 && t < 2'530'000) continue;
+        if (Compositor::KeystrokeBadgeAlpha(log, t, kHold) != 1.f) ++not_opaque;
+    }
+    CT_CHECK_EQ(not_opaque, 0);
+    CT_CHECK_NEAR(Compositor::KeystrokeBadgeAlpha(log, 3'930'000, kHold), 0.5f, 1e-4);   // fade-out
+    CT_CHECK_EQ(Compositor::KeystrokeBadgeAlpha(log, 4'030'000, kHold), 0.f);
+    // After the gap the next stroke fades in from its own time.
+    CT_CHECK_NEAR(Compositor::KeystrokeBadgeAlpha(log, 5'060'000, kHold), 0.5f, 1e-4);
 }

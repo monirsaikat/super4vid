@@ -1183,3 +1183,11 @@ Why: blur/highlight regions and Gaussian downsample levels request sizes that ch
 animated region; the pool kept one texture per distinct size forever.
 Impact: goldens unchanged. Code sampling a pooled temp must call `SetSourceUv` (effects and transitions do). Measured: 500
 frames of animated regions under an animated zoom: at most 21 temps / 6.5 MB at 640x360.
+
+## 2026-10-17 · P08 review fix · Keystroke badge fades in from the start of the visible run
+Spec said: badge fade-in 120 ms / fade-out 200 ms (the code measured the fade-in from the oldest stroke shown).
+Done instead: `Compositor::KeystrokeBadgeAlpha(events, t, hold)` (public, tested) measures the fade-in from the start of
+the continuous run of visible strokes (a stroke shows during [t, t + hold); the run extends back while the previous stroke
+was still showing when the next one arrived). The fade-out is unchanged (200 ms before the newest stroke expires).
+Why: when the oldest stroke expired or a 4th stroke pushed it out of the badge, the opacity dropped mid-display.
+Impact: none for callers.

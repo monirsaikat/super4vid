@@ -115,6 +115,22 @@ void Compositor::ActiveTransitions(const Project& p, TimeUs t,
     }
 }
 
+float Compositor::KeystrokeBadgeAlpha(const events::EventLog& ev, TimeUs t_us, TimeUs hold_us) {
+    const auto visible = ev.StrokesVisibleAt(t_us, hold_us);
+    if (visible.empty()) return 0.f;
+    // Fade in from the start of the continuous run of visible strokes (not from the oldest one still shown: when it
+    // expires, or a 4th stroke pushes it out of the badge, the badge stays on screen and must not dip).
+    // A stroke shows during [t, t + hold); the run extends back while the previous stroke was still showing when the
+    // next one arrived. The walk stops once the run is older than the fade-in.
+    const auto all = ev.Strokes();
+    size_t i = static_cast<size_t>(visible.data() - all.data());
+    TimeUs run_start = all[i].t_us;
+    while (i > 0 && t_us - run_start < kBadgeFadeInUs && all[i - 1].t_us + hold_us >= run_start) run_start = all[--i].t_us;
+    const float fin = std::clamp(static_cast<float>(t_us - run_start) / static_cast<float>(kBadgeFadeInUs), 0.f, 1.f);
+    const float fout = std::clamp(static_cast<float>(visible.back().t_us + hold_us - t_us) / static_cast<float>(kBadgeFadeOutUs), 0.f, 1.f);
+    return std::min(fin, fout);
+}
+
 bool Compositor::ComputeGeom(const Project& p, const Clip& clip, TimeUs t, SizeI video, int rotation_deg, const Mat3& cam,
                              LayerGeom& g) const {
     if (video.IsEmpty()) return false;
@@ -365,11 +381,7 @@ void Compositor::PrepareText(const Project& p, const FrameInputs& in, const Rend
             const size_t n = std::min<size_t>(strokes.size(), kMaxBadgeStrokes);
             m_keys.resize(n);
             for (size_t i = 0; i < n; ++i) m_keys[i] = strokes[strokes.size() - n + i].text;
-            const TimeUs first = strokes[strokes.size() - n].t_us;
-            const TimeUs last = strokes.back().t_us;
-            const float fin = std::clamp(static_cast<float>(mt - first) / static_cast<float>(kBadgeFadeInUs), 0.f, 1.f);
-            const float fout = std::clamp(static_cast<float>(last + hold - mt) / static_cast<float>(kBadgeFadeOutUs), 0.f, 1.f);
-            m_badge_alpha = std::min(fin, fout);
+            m_badge_alpha = KeystrokeBadgeAlpha(*screen->events, mt, hold);
             if (m_badge_alpha > 0.f && FAILED(m_text.KeystrokeBadge(m_keys, screen->clip->keystrokes, canvas, 1.f, m_badge)))
                 m_badge = nullptr;
         }
