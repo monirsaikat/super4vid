@@ -3,7 +3,10 @@
 #define CT_LOG_CATEGORY "app"
 #include <ct/core/error.h>
 #include <ct/core/log.h>
+#include <ct/platform/crash_handler.h>
 #include <ct/platform/d3d_device.h>
+#include <ct/platform/paths.h>
+#include <ct/platform/single_instance.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
 #include <ct/version.h>
@@ -51,6 +54,8 @@ struct App {
     double last_frame_ms = 0.0;
     int64_t qpc_freq = 1;
     uint32_t redraws_this_second = 0;
+    uint32_t messages_this_second = 0;      // --stats: what woke the loop
+    UINT last_message = 0;
     bool quit = false;
 };
 
@@ -136,6 +141,18 @@ LRESULT AppMessageHandler(void* user, HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     case WM_DPICHANGED:
         if (ImGui::GetCurrentContext()) ApplyDpi(app);
         break;
+    case WM_COPYDATA: {
+        const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+        if (cds && cds->dwData == ct::platform::SingleInstance::kCopyDataCommandLine && cds->lpData) {
+            const int chars = static_cast<int>(cds->cbData / sizeof(wchar_t));
+            CT_LOG_INFO("forwarded command line: %.*ls", chars, static_cast<const wchar_t*>(cds->lpData));
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+            handled = true;
+            return TRUE;
+        }
+        break;
+    }
     default:
         break;
     }
@@ -200,9 +217,12 @@ int RunUi(App& app, const Options& opt) {
         const DWORD wait = MsgWaitForMultipleObjectsEx(handle_count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (stats_timer && wait == WAIT_OBJECT_0 + 1) {
             // A kernel timer, not WM_TIMER, so printing stats does not itself cause redraws.
-            std::printf("redraws/s: %u\n", app.redraws_this_second);
-            CT_LOG_INFO("stats: redraws/s: %u", app.redraws_this_second);
+            std::printf("redraws/s: %u  messages/s: %u (last 0x%04X)\n", app.redraws_this_second,
+                        app.messages_this_second, app.last_message);
+            CT_LOG_INFO("stats: redraws/s: %u messages/s: %u (last 0x%04X)", app.redraws_this_second,
+                        app.messages_this_second, app.last_message);
             app.redraws_this_second = 0;
+            app.messages_this_second = 0;
         }
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -213,6 +233,8 @@ int RunUi(App& app, const Options& opt) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
             frames_requested = 2;
+            ++app.messages_this_second;
+            app.last_message = msg.message;
         }
         if (app.quit) break;
         if (app.redraw_requested.exchange(false)) frames_requested = 2;   // set by other threads + SetEvent(wake_event)
@@ -251,10 +273,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
 #endif
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    ct::platform::CrashHandler::Install();
+    ct::platform::Paths::Init();
+    ct::platform::CrashHandler::SetDumpDir(ct::platform::Paths::CrashDir().c_str());
+    ct::Log::Init(ct::platform::Paths::LogsDir().c_str());
     CT_LOG_INFO("Camtesia %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
+
+    if (!ct::platform::SingleInstance::Acquire(L"Local\\Camtesia.Instance", GetCommandLineW())) {
+        ct::Log::Shutdown();
+        return 0;   // forwarded to the running instance via WM_COPYDATA
+    }
 
     const Options opt = ParseArgs();
     if (opt.stats || opt.time_to_window) OpenConsole();
+    if (opt.crash_test) {
+        CT_LOG_WARN("--crash-test: dereferencing a null pointer");
+        volatile int* volatile null_ptr = nullptr;
+        *null_ptr = 42;
+    }
 
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(com_hr)) CT_LOG_ERROR("CoInitializeEx failed: %s", ct::HrToString(com_hr).c_str());
@@ -319,6 +355,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     if (app.wake_event) CloseHandle(app.wake_event);
     delete app_ptr;
     if (SUCCEEDED(com_hr)) CoUninitialize();
+    ct::platform::SingleInstance::Release();
     CT_LOG_INFO("exit %d", exit_code);
     ct::Log::Shutdown();
     return exit_code;

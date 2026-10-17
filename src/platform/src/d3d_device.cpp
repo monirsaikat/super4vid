@@ -110,8 +110,8 @@ HRESULT D3DDevice::Init(bool enable_debug_layer) {
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) m_is_warp = true;
         }
     }
-    CT_LOG_INFO("D3D11 device: %s, feature level %x.%x%s%s", m_adapter_name.c_str(), (level >> 12) & 0xF,
-                (level >> 8) & 0xF, m_is_warp ? ", WARP" : "", m_debug_layer ? ", debug layer" : "");
+    CT_LOG_INFO("D3D11 device: %s, feature level %u.%u%s%s", m_adapter_name.c_str(), (static_cast<unsigned>(level) >> 12) & 0xFu,
+                (static_cast<unsigned>(level) >> 8) & 0xFu, m_is_warp ? ", WARP" : "", m_debug_layer ? ", debug layer" : "");
     return S_OK;
 }
 

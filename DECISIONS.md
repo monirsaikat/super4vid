@@ -98,3 +98,20 @@ Done instead (additions only; every specified member exists with its specified s
   would request 2 frames and make "redraws/s: 0" impossible.
 Why: needed for the behaviours the spec asks for (main-window quit, min size, resize flag, verifiable live-object report).
 Impact: P02 extends `D3DDevice`; the added members stay.
+
+## 2026-10-17 · P00 task 0.6 · Crash handler / single instance / paths details
+Spec said: `CrashHandler`, `SingleInstance` and `Paths` declared together in `crash_handler.h`. The deliverables list separate headers.
+Done instead:
+- Three headers: `crash_handler.h`, `single_instance.h`, `paths.h` (the deliverables list wins).
+- `CrashHandler` also has `LastDumpPath()`. `Install()` also hooks `SIGABRT` (so `abort()` writes a dump), calls `ct::SetFatalHandler`
+  (see the 0.3 entry), and preloads dbghelp.dll. Until `SetDumpDir()` the dump goes to `%TEMP%`. For stack overflows a helper thread writes the dump.
+  `WriteDumpAndExit` raises a custom SEH exception (0xE0C70001) inside `__try/__except(filter)`, so the dump has a real context record.
+- `SingleInstance::kCopyDataCommandLine = 1` names the `dwData` value. A second instance looks for the `CamtesiaMain` window for up to
+  2 s (the first instance may still be starting), calls `AllowSetForegroundWindow` for the owner, and forwards. The first instance logs
+  `forwarded command line: ...`, restores itself and comes to the foreground.
+- Portable mode layout (not specified): `<exe dir>\data\{logs,crashes,autosave,settings,recordings}`.
+- `Paths::Init()` creates every directory, `Videos\Camtesia` included, with `SHCreateDirectoryExW`.
+- `src/platform/src/utf_internal.h` has private UTF-8/UTF-16 helpers until P01's `ct::Utf8ToWide`/`WideToUtf8` exist. P01 should switch platform over to them and delete this file.
+- `--stats` also prints `messages/s` and the last message ID. That shows what woke the loop when redraws/s is not 0.
+Why: the spec leaves these choices open; these are the conservative options.
+Impact: P05 registers its emergency callback via `RegisterEmergency`. P01 removes `utf_internal.h`.
