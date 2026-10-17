@@ -66,9 +66,12 @@ HRESULT MediaCache::Open(platform::D3DDevice& dev, std::string_view path) {
     media::VideoDecoder::Config cfg;
     cfg.path = m_path;
     cfg.stream_index = v;
-    cfg.pool_size = 4;
+    // No decoder pool: the prefetch thread copies each decoded frame straight into its cache slot (VideoDecoder::
+    // DecodeFrame + CopyTo), one GPU copy per frame instead of two (decoder surface -> pool -> slot).
+    cfg.pool_size = 0;
     CT_RETURN_IF_FAILED(m_dec.Init(dev, cfg));
     m_has_video = true;
+    m_stats.decoder_pool_textures = m_dec.PoolTextures();
     m_fps_num = m_dec.FpsNum();
     m_fps_den = m_dec.FpsDen();
     m_frame_dur = m_dec.FrameDurationUs();
@@ -147,7 +150,10 @@ void MediaCache::Hint(TimeUs playhead_us, double rate, bool playing) {
         ExclusiveGuard g(m_hint_lock);
         if (m_hint.t == playhead_us && m_hint.rate == rate && m_hint.playing == playing) return;
         const TimeUs dt = playhead_us - m_hint.t;
-        const bool jump = dt > 1'000'000 || dt < -1'000'000 || m_hint.playing != playing || (m_hint.rate < 0) != (rate < 0);
+        // While paused every move is a scrub: the frame a running fast-forward is heading for is no longer wanted.
+        // The abort keeps the decoder position, so a small move continues forward instead of seeking again.
+        const bool jump = dt > 1'000'000 || dt < -1'000'000 || m_hint.playing != playing || (m_hint.rate < 0) != (rate < 0) ||
+                          (!playing && dt != 0);
         m_hint.t = playhead_us;
         m_hint.rate = rate;
         m_hint.playing = playing;
@@ -211,7 +217,7 @@ int MediaCache::AcquireSlot(SizeI size) {
     return -1;
 }
 
-bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
+bool MediaCache::StoreFrame(const media::VideoDecoder::PendingFrame& f, const Window& w) {
     const size_t bytes = static_cast<size_t>(f.size.w) * f.size.h * 3 / 2;
     int slot = -1;
     {
@@ -256,9 +262,12 @@ bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
         }
         s.size = f.size;
     }
-    {
-        platform::D3DDevice::Lock lock(*m_dev);
-        m_dev->Context()->CopyResource(s.tex.Get(), f.nv12);
+    // The slot is reserved (no entry references it and the UI never reads it), so the copy runs outside m_lock.
+    if (const HRESULT hr = m_dec.CopyTo(f, s.tex.Get()); FAILED(hr)) {
+        CT_LOG_WARN("MediaCache: frame copy failed: %s", HrToString(hr).c_str());
+        ExclusiveGuard g(m_lock);
+        m_free.push_back(static_cast<uint32_t>(slot));
+        return false;
     }
     {
         ExclusiveGuard g(m_lock);
@@ -271,6 +280,7 @@ bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
         m_cache.Insert(e);
         CacheBudget::Add(static_cast<int64_t>(bytes));
         ++m_stats.frames_decoded;
+        m_stats.decoder_copies = m_dec.FramesCopied();
     }
     return true;
 }
@@ -303,7 +313,8 @@ void MediaCache::PrefetchMain() {
             ExclusiveGuard g(m_lock);
             ++m_stats.seeks;
         }
-        TimeUs skip_before = need;
+        TimeUs target = need;
+        TimeUs skip_before = FillFrom(w, need);
         const uint64_t jump_gen = m_jump_gen.load(std::memory_order_relaxed);
         for (;;) {
             if (m_stop.load()) break;
@@ -318,10 +329,12 @@ void MediaCache::PrefetchMain() {
                     break;
                 }
             }
-            media::DecodedFrame f;
-            const HRESULT hr = m_dec.ReadFrame(f, skip_before, &m_jump_gen, jump_gen);
+            media::VideoDecoder::PendingFrame f;
+            const HRESULT hr = m_dec.DecodeFrame(f, skip_before, &m_jump_gen, jump_gen);
             if (hr == E_ABORT) {
-                m_dec_next = INT64_MAX / 4;   // position unknown: the next request seeks
+                // The decoder stays positioned after the last frame it skipped: the next request decodes forward
+                // from there when that is cheaper than a seek (a scrub that moved a little), else seeks.
+                m_dec_next = m_dec.NextPts() != INT64_MIN ? m_dec.NextPts() : INT64_MAX / 4;
                 break;
             }
             if (hr == S_FALSE) {
@@ -337,7 +350,11 @@ void MediaCache::PrefetchMain() {
             }
             m_dec_next = f.pts_us + f.duration_us;
             const bool stored = StoreFrame(f, w);
-            m_dec.ReleaseFrame(f.pool_index);
+            f.Reset();   // give the decoder its output surface back before the next DecodeFrame
+            if (!stored && f.pts_us + f.duration_us <= target) {
+                skip_before = target;   // no room for an optional frame behind the playhead: skip to the needed one
+                continue;
+            }
             if (!stored) {
                 stalled_gen = h.gen;
                 break;
@@ -366,9 +383,20 @@ void MediaCache::PrefetchMain() {
             if (next < 0) break;
             // Continue forward only while that is cheaper than a seek; otherwise the outer loop seeks.
             if (!ForwardIsCheaper(m_dec, m_dec_next, next)) break;
-            skip_before = next;
+            target = next;
+            skip_before = FillFrom(w, next);
         }
     }
+}
+
+TimeUs MediaCache::FillFrom(const Window& w, TimeUs need) const {
+    // Frames of the window behind the playhead that the decoder passes on its way to `need` are kept instead of
+    // skipped: filling them later would take a second seek and a second decode of the GOP (up to 2 s of frames), which
+    // keeps the decoder busy when the next scrub arrives.
+    if (!w.forward || need < w.playhead) return need;
+    SharedGuard g(m_lock);
+    const TimeUs gap = m_cache.FirstGap(w.start, FrameCache::kContiguousUs);
+    return gap < need ? gap : need;
 }
 
 bool MediaCache::CachedExact(TimeUs t) const {

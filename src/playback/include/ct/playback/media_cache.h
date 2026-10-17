@@ -1,7 +1,8 @@
 #pragma once
 // ct/playback/media_cache.h
 // One per open media file. Owns the hardware VideoDecoder and its prefetch thread ("ct-decode-N", above normal), an LRU
-// cache of decoded NV12 frames (copies, so the decoder keeps running) bounded by the global CacheBudget, audio readers,
+// cache of decoded NV12 frames (each decoder output is copied once, straight into its cache slot, so the decoder keeps
+// its surfaces) bounded by the global CacheBudget, audio readers,
 // 160x90 thumbnails (a second decoder on the IO pool) and waveform peaks (IO pool, disk cache). Images (PNG/JPG/...)
 // are one RGBA texture shown at every time.
 // Thread model: Open/Close on the owner (UI) thread; GetVideoFrame/Hint/Thumbnail/GetPeaks/GetStats are non-blocking
@@ -84,6 +85,8 @@ public:
         size_t cache_bytes = 0;
         size_t cached_frames = 0;
         double last_seek_to_frame_ms = 0;   // far hint -> exact playhead frame cached
+        uint64_t decoder_copies = 0;        // GPU copies out of decoder surfaces (one per cached frame, into its slot)
+        uint32_t decoder_pool_textures = 0; // intermediate textures the decoder owns (0: frames go straight to slots)
     };
     Stats GetStats() const;
     TimeUs FrameDurationUs() const;   // nominal (video), 0 for images/audio-only
@@ -117,8 +120,10 @@ private:
     Window ComputeWindow(const HintState&) const;
     HintState ReadHint() const;
     TimeUs NextNeed(const Window&) const;            // first uncached time the window wants, or -1
+    TimeUs FillFrom(const Window&, TimeUs need) const;   // skip_before for decoding towards `need`
     bool CachedExact(TimeUs t) const;
-    bool StoreFrame(const media::DecodedFrame&, const Window&);   // false: budget full of frames that must stay
+    // Copies the decoded frame into a cache slot (evicting as needed). False: budget full of frames that must stay.
+    bool StoreFrame(const media::VideoDecoder::PendingFrame&, const Window&);
     int AcquireSlot(SizeI size);
     void ThumbJob();
     void PeaksJob(int stream);
@@ -149,8 +154,8 @@ private:
 
     mutable SrwLock m_hint_lock;
     HintState m_hint;
-    // Bumped by Hint() only for jumps (|dt| > 1 s, play/pause or direction change): aborts a long fast-forward. Small
-    // per-tick playhead moves must not, or playback would re-seek every frame.
+    // Bumped by Hint() for jumps (|dt| > 1 s, play/pause or direction change) and for every paused move (scrub):
+    // aborts a long fast-forward. Small per-tick playhead moves while playing must not, or playback would stall.
     std::atomic<uint64_t> m_jump_gen{0};
 
     mutable SrwLock m_lock;   // m_cache, m_slots[*] contents, m_free, m_pinned, m_tick, m_stats

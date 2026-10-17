@@ -14,6 +14,7 @@
 #include <ct/platform/win.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -139,6 +140,85 @@ CT_TEST_DEVICE(media_cache_exact_frame_after_hint) {
     CT_CHECK(st.seeks >= 2);
     CT_CHECK(st.cache_bytes <= CacheBudget::Bytes());
     cache.Close();
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+namespace {
+// Polls without re-hinting (WaitForFrame would hint the cache at t and move its window).
+bool PollExact(MediaCache& cache, TimeUs t, uint32_t timeout_ms) {
+    Stopwatch sw;
+    sw.Start();
+    for (;;) {
+        FrameRef f;
+        bool exact = false;
+        if (cache.GetVideoFrame(t, f, exact) && exact) return true;
+        if (sw.ElapsedMs() > timeout_ms) return false;
+        Sleep(1);
+    }
+}
+} // namespace
+
+// Perf follow-up (P06 seek/4K): every cached frame is copied once, from the decoder surface straight into its cache
+// slot (the decoder owns no pool), and one seek fills the whole paused window: the frames behind the playhead that the
+// fast-forward passes are kept instead of being decoded again by a second seek to the keyframe.
+CT_TEST_DEVICE(media_cache_one_copy_per_frame_single_pass_window) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    MediaCache cache;
+    CT_REQUIRE(SUCCEEDED(cache.Open(*dev, path)));
+    CT_REQUIRE(cache.WaitForFrame(0, 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(29, 60, 1), 5000));   // the open-time window [0, 0.5 s) is in
+    const MediaCache::Stats s0 = cache.GetStats();
+    CT_CHECK_EQ(s0.decoder_pool_textures, 0u);
+    // Paused at 2.5 s: window [2.25 s, 3.0 s); the reader lands on the keyframe at 2.0 s.
+    cache.Hint(2'500'000, 1.0, false);
+    CT_REQUIRE(PollExact(cache, 2'500'000, 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(179, 60, 1), 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(135, 60, 1), 5000));
+    FrameRef f;
+    bool exact = false;
+    CT_REQUIRE(cache.GetVideoFrame(FrameTimeUs(135, 60, 1), f, exact));
+    CT_CHECK_EQ(IndexOf(*dev, f), 135);
+    const MediaCache::Stats st = cache.GetStats();
+    std::printf("    window filled with %llu seek(s), %llu frames cached, %llu decoder copies\n",
+                static_cast<unsigned long long>(st.seeks - s0.seeks), static_cast<unsigned long long>(st.frames_decoded),
+                static_cast<unsigned long long>(st.decoder_copies));
+    CT_CHECK_EQ(st.seeks - s0.seeks, 1u);
+    CT_CHECK_EQ(st.decoder_copies, st.frames_decoded);
+    cache.Close();
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+// A paused scrub that moves while the decoder fast-forwards aborts it and continues from where the decoder stopped
+// (the old code finished the obsolete fast-forward, then seeked back to the keyframe for the new position).
+CT_TEST_DEVICE(media_cache_scrub_aborts_and_resumes_forward) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    int best = 99;
+    for (int attempt = 0; attempt < 3 && best != 1; ++attempt) {   // a test thread descheduled for > 100 ms misses the window
+        MediaCache cache;
+        CT_REQUIRE(SUCCEEDED(cache.Open(*dev, path)));
+        CT_REQUIRE(cache.WaitForFrame(0, 5000));
+        CT_REQUIRE(PollExact(cache, FrameTimeUs(29, 60, 1), 5000));
+        const uint64_t seeks0 = cache.GetStats().seeks;
+        // 3.95 s: seek lands on the keyframe at 2.0 s and fast-forwards 117 frames.
+        cache.Hint(3'950'000, 1.0, false);
+        Stopwatch sw;
+        sw.Start();
+        while (cache.GetStats().seeks == seeks0 && sw.ElapsedMs() < 3000) Sleep(0);
+        // Scrub back to 3.6 s (window from 3.35 s) while the decoder is still before 3.35 s.
+        cache.Hint(3'600'000, 1.0, false);
+        CT_REQUIRE(PollExact(cache, 3'600'000, 5000));
+        CT_REQUIRE(PollExact(cache, FrameTimeUs(201, 60, 1), 5000));   // 3.35 s, behind the playhead
+        FrameRef f;
+        bool exact = false;
+        CT_REQUIRE(cache.GetVideoFrame(3'600'000, f, exact));
+        CT_CHECK_EQ(IndexOf(*dev, f), 216);
+        const int seeks = static_cast<int>(cache.GetStats().seeks - seeks0);
+        std::printf("    attempt %d: %d seek(s) for the abandoned and the new position\n", attempt + 1, seeks);
+        best = std::min(best, seeks);
+    }
+    CT_CHECK_EQ(best, 1);
     CT_CHECK_EQ(CacheBudget::Used(), 0u);
 }
 

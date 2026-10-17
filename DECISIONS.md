@@ -1532,3 +1532,27 @@ Why: the second DXVA decoder (camera) contends on the D3D multithread lock (Rend
   is CPU-bound (31 ms/frame); with the default budget the preview's caches evicted export frames before use.
 Impact: follow-up: give MediaCache a configurable prefetch depth for export, and consider one shared decoder per
   recording; re-run `export_demo --seconds 60` and `--preset gif-720p` on an idle machine.
+
+## 2026-10-17 · Perf follow-up (P06) · One copy per decoded frame; single-pass window; scrub aborts keep the position
+Spec said: P06 6.2 `ReadFrame` copies decoder output into a pool texture; 6.4 each cache entry owns a texture "copied
+from the decoder pool". DECISIONS 6.7 suggested the cache take the decoder pool texture instead of copying it.
+Done instead:
+- `VideoDecoder::DecodeFrame(PendingFrame&, ...)` returns the decoded frame still inside its `IMFSample` and
+  `CopyTo(pending, dst)` copies the aperture into any NV12 texture. `MediaCache` decodes this way and copies straight
+  into the cache slot it reserved (`Config::pool_size = 0`: the decoder owns no pool). One GPU copy per frame instead of
+  two. The cache does *not* keep decoder surfaces themselves: they are BIND_DECODER array slices without SRVs, and the
+  DXVA allocator has only the DPB plus a few surfaces, so holding them in a 256 MB cache would starve the decoder.
+  `PendingFrame` is reset right after the copy (before the next `DecodeFrame`), so the sample refcount is held only
+  for the copy. `ReadFrame` (pool) stays for thumbnails, tools and tests and is now `DecodeFrame + CopyTo`.
+- `VideoDecoder::NextPts()` (end of the last consumed frame). After an `E_ABORT` the cache keeps that position instead
+  of "unknown", so the next request decodes forward when that is cheaper than a seek.
+- `MediaCache::Hint` aborts a fast-forward on every paused move (a scrub), not only on jumps > 1 s.
+- Frames of the paused window behind the playhead that the fast-forward passes are stored (`FillFrom`) instead of
+  skipped and then decoded again by a second seek to the keyframe. When the budget has no room for such an optional
+  frame it is skipped (never a stall before the playhead frame). Adds `Stats::decoder_copies/decoder_pool_textures`.
+- The exact-seek p95 stays over 150 ms here: `ReadSample` takes 2.1 ms per frame on this DXVA decoder even when the
+  frame is skipped (measured; `MF_LOW_LATENCY` off was the same or worse: p95 239-283 ms), so a seek to the end of a
+  2 s GOP costs ~210-250 ms whatever the cache does. Reaching the budget needs a shorter recording GOP (1 s halves the
+  worst case) or a faster decoder; not changed here (it is a P04/P05 file-size decision).
+Why: measured (PROGRESS "Perf follow-ups" F1).
+Impact: P09 scrubbing benefits without changes; GOP length is the remaining lever for the seek budget.
