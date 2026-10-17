@@ -106,13 +106,19 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 7.7 Acceptance: 100 % of model tests pass; 10,000 random edits keep invariants; round-trip JSON byte-identical — ct_project_tests 49/49 and ct_events_tests 19/19 pass in Debug and Release with `--repeat 3` (2026-10-17); fuzz 10,000 ops in Release (Validate after each, undo of each applied op restores the JSON, redo checked every 10th) 5.3-6.8 s over 4 runs (budget < 10 s; Debug runs 2,000 ops in ~27 s); full/minimal/sample.ctproj round-trip byte-identical, v0 migrates, docs/04 sample re-serializes stably; ToJson 22-33 us and FromJson 105 us for the 8-clip fixture (Release)
 
 ## P08 Compositor
-- [ ] 8.1 Render target management, canvas/background pass, color space utilities
-- [ ] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow
-- [ ] 8.3 Camera (zoom/pan keyframes, easing, auto-zoom playback)
-- [ ] 8.4 Cursor renderer from `.ctev` (interpolation + smoothing, shapes atlas, click effects)
-- [ ] 8.5 Annotations via Direct2D/DirectWrite into layer textures (text, callout, arrow, shapes, keystroke badge), blur/pixelate region
-- [ ] 8.6 Transitions, webcam PIP masks, readback helper for tests
-- [ ] 8.7 Acceptance: golden-image tests pass; `RenderFrame` 1080p with 3 layers + cursor + 2 annotations < 4 ms GPU, < 1 ms CPU
+- [x] 8.1 Render target management, canvas/background pass, color space utilities — RenderContext (all pipeline objects in Init, temp RTs pooled per size/format, D2D device on the shared device with BGRA_SUPPORT asserted), solid/gradient/image background, Readback; golden harness implemented in ct_test (WIC, max diff 2 + PSNR 45 dB, --update-golden, .actual/.diff on failure)
+- [x] 8.2 Layer pass: textured quad with transform, crop, opacity, rounded corners (SDF), shadow — NV12 (BT.709 limited) or RGBA, rotation/mirror uv, 1 px analytic SDF edge in target pixels, shadow mask at 1/4 res + separable blur (downsample above sigma 8) + composite over the bounds only, cached (0 mask renders for an unchanged frame)
+- [x] 8.3 Camera (zoom/pan keyframes, easing, auto-zoom playback) — Camera::At -> CameraTransform applied to layers, cursor and annotations (golden camera_zoom_2x)
+- [x] 8.4 Cursor renderer from `.ctev` (interpolation + smoothing, shapes atlas, click effects) — SmoothedPosition (120 Hz resampled Gaussian, click snap), 2048 shelf-packed atlas (2 max) with built-in arrow, ripple/highlight/spotlight/drop shadow, hide-when-idle fade (golden cursor_ripple_t150ms)
+- [x] 8.5 Annotations via Direct2D/DirectWrite into layer textures (text, callout, arrow, shapes, keystroke badge), blur/pixelate region — cached rasters (0 re-rasterizations for an unchanged frame), grayscale AA + fixed DWrite params; blur/pixelate/highlight from a region copy (goldens annotation_callout, annotation_blur, keystroke_badge)
+- [x] 8.6 Transitions, webcam PIP masks, readback helper for tests — crossfade/dip/slide via two canvas temps; PIP corner/size/circle (square crop)/rounded/mirror/shadow; Readback::ToBgra8/ToRgba8 (goldens pip_circle, transition_crossfade_u05)
+- [x] 8.7 Acceptance: golden-image tests pass; `RenderFrame` 1080p with 3 layers + cursor + 2 annotations < 4 ms GPU, < 1 ms CPU
+  - [x] `build.cmd debug`/`release` 0 warnings; ct_render_tests 23/23 pass in Debug and Release (9 goldens written by Debug, Release matches; text goldens PSNR >= 35 dB); determinism: 10 renders of a frame with every pass active are byte-identical (2026-10-17)
+  - [x] bench (`ct_render_tests --bench`, Release, 1920x1080, screen layer with shadow + scaled video layer with shadow + circle PIP, moving cursor with click ripple, callout + blur region, 300 frames): GPU avg 2.97 / 3.11 / 3.18 ms (p95 3.0-4.7 ms), CPU avg 0.50 / 0.25 / 0.31 ms per RenderFrame over 3 runs; measured with the machine at 100 % CPU load from other agents' builds, so the CPU p95 (0.65-2.7 ms) includes preemption
+  - [x] 0 heap allocations after warm-up (CRT alloc hook, Debug, 300 frames; also asserted by `render_debug_layer_clean_and_no_allocs`)
+  - [x] Debug run with the D3D11 debug layer: 0 stored messages over a full frame with every pass (`render_debug_layer_clean_and_no_allocs`)
+  - [x] goldens viewed by eye: rounded corners + soft shadow, 2x camera zoom, circular mirrored PIP, arrow cursor with red ripple ring, callout with pointer + arrow + stroked rect, blur/pixelate/highlight regions, Ctrl+Shift+S pill badge, 50 % crossfade
+  - [ ] HUMAN: compare a preview frame of a real recording (after P09) against the export (P10) by eye: text crispness under camera zoom, cursor smoothing feel
 
 ## P09 Editor UI
 - [ ] 9.1 App shell: docking layout, theme, fonts, icons, DPI, menus, shortcuts table

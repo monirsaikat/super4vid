@@ -620,3 +620,83 @@ Done instead:
 Why: found while running `build.cmd package` and the silent install/uninstall test on this machine.
 Impact: `build.cmd doctor` still only checks `%ProgramFiles(x86)%` and prints Inno "MISSING" for a per-user install
 (doctor is outside this task's file ownership; fix when convenient).
+## 2026-10-17 · P08 task 8.1 · ct_render does not depend on ct_playback: VideoLayerInput has plain fields
+Spec said: `VideoLayerInput { const Clip* clip; playback::FrameRef frame; ID3D11ShaderResourceView* rgba; bool is_rgba; int rotation_deg; TimeUs media_t_us; const EventLog* events; SizeI video_size; }`; P08 depends on P06 (`FrameRef`, `Nv12Blit`).
+Done instead: P08 was built in parallel with P06, so `ct/render/frame_inputs.h` has no playback type:
+`VideoLayerInput { y_srv (R8 view of plane 0), uv_srv (R8G8 view of plane 1), rgba_srv, is_rgba, rgba_premultiplied, video_size, rotation_deg, media_t_us, clip, events }`.
+layer.hlsl samples NV12 itself (BT.709 limited range); no `Nv12Blit` is used.
+Other additions to the specified structs: `FrameInputs::background_image` + `background_image_size` (Background::Kind::Image needs a
+decoded wallpaper; null -> color_a), `RenderOptions::gpu_timing`, `RenderTiming::gpu_background_ms/gpu_layers_ms/gpu_overlay_ms/gpu_total_ms`
+(GpuTimer results, a few frames old). `active_transitions[i].first` is the incoming clip (b); the compositor matches both clips by the
+transition's ids.
+Why: P06 is not merged; the compositor only needs two SRVs per frame.
+Impact: P09 (Player) and P10 (Exporter) convert `playback::FrameRef` -> `VideoLayerInput` (Y/UV SRVs of the decoded NV12 texture, or
+the RGBA SRV), fill `active_transitions` with `Compositor::ActiveTransitions(project, t, ...)` and request frames at
+`Compositor::ClipMediaTime(clip, t)`.
+
+## 2026-10-17 · P08 tasks 8.1-8.6 · Render API additions
+Spec said: the `ct::render` interface block of docs/phases/P08.
+Done instead (additions only; the specified members exist with their signatures, except where noted):
+- `transitions.h` and `readback.h` are separate headers (deliverables list); `Readback::ToRgba8` added (goldens, PNG).
+- `RenderContext`: `Shutdown`, `IsInitialized`, `BeginFrame` (returns all temps; RenderFrame calls it), `UnbindSrvs`, `D2DFactory`,
+  `TempCount`, `P()` (internal pipelines). One constant-buffer layout (`QuadCb`, 208 bytes) serves every shader; Map(DISCARD) per draw.
+- `Compositor`: `Shutdown`, `Text()`, `Cursor()`, static `ActiveTransitions`, `TransitionProgress`, `ClipMediaTime`, `IsPrimaryScreen`.
+  RenderFrame returns E_INVALIDARG when the target is not exactly canvas-sized and leaves no RTV/SRV bound.
+- `effects::Pixelate(..., region, dst, dst_size, radius_px = 0, opacity = 1)`: `dst_size` added (the quad VS needs the target size);
+  `RoundedShadow(..., opacity_mul = 1)`; `ShadowMaskRenders()` (cache misses, for tests).
+- `TextRenderer`: `KeystrokeBadge(..., font_px = 0)`, `SetDeterministic`, `ResolveFont`, `CachedLayers/CachedBytes/Rasterizations`.
+- `CursorRenderer`: `ShelfPacker` (public, tested), `MakeArrowShape` (built-in arrow for shape id 0 / unknown shapes; tests use it),
+  `HasShape/AtlasCount/AtlasUploads`.
+- `layer_math::PropAt` (allocation-free `Clip::Prop`), `TransformBounds`, `TransformCorners`, `Mat3::ScaleFactor`.
+Why: needed by the passes, the tests and the zero-allocation budget.
+Impact: P09/P10 use these names.
+
+## 2026-10-17 · P08 tasks 8.2-8.6 · Rendering choices the spec leaves open
+- NV12 decode uses the chroma offset 128/255 (what ColorConverter encodes with), not 0.5 as written in the phase file.
+- "Primary screen clip" = a Source::Screen clip on the track of `Project::PrimaryScreenClip()`, so every part of a split screen
+  recording gets the canvas padding, radius and shadow.
+- PIP: the Circle mask crops the camera to a centred square; `pip.shadow` uses blur 32 / offset 12 / opacity 0.4 (Pip has no Shadow).
+  Shadow blur_px is CSS-like (sigma = blur_px / 2) and scales with the layer transform.
+- Transitions: window [b.start - d/2, b.start + d/2); A and B are each drawn (with shadow) into a canvas-size temp and composited
+  (crossfade lerp; dip passes through the opaque colour at u = 0.5; slide moves both images in `dir`).
+- Annotations: Text = glyphs only (fill ignored); Callout = rounded rect + pointer triangle (union geometry), text centred; Arrow =
+  from (rect.x, rect.y) to (rect.x + w, rect.y + h) (w/h may be negative), colour `fill`, width `stroke_px` or 0.3 * head;
+  Rect/Ellipse = fill (if alpha > 0) + stroke; Highlight = region multiplied by `fill`; Blur = Gaussian with sigma blur_px / 2 (reads a
+  margin around the region), or block-average pixelation with block = blur_px; Keystrokes annotation = badge of the top screen layer's
+  strokes centred in its rect. Annotations follow the camera; text rasters are cached at a scale quantized to 0.5 steps (1..4).
+  Keystroke overlay badges (clip.keystrokes) are canvas overlays (not zoomed), at most 3 strokes, font 3.2 % of the canvas height, docs/05 colours.
+- Cursor: click effects scale with the effective cursor scale (ripple 12..48 px, ease-out); the Highlight disc (radius 20 px) shows
+  while any of left/right/middle is held; spotlight darkens to 55 % outside 220 px with an 80 px soft edge; clicks count as activity
+  for hide-when-idle.
+- Text determinism: grayscale AA plus fixed DirectWrite rendering params (gamma 1.8, contrast 0.5, NATURAL_SYMMETRIC), so goldens do
+  not depend on the user's ClearType tuning.
+Why: the spec is silent on these.
+Impact: P09's properties panel should describe Arrow/Highlight with these semantics.
+
+## 2026-10-17 · P08 task 8.4 · SmoothedPosition resamples the cursor path at 120 Hz
+Spec said: Gaussian over `events.CursorSamplesBetween(t - w, t + w)`; click snap within 60 ms *before* a mouse-down.
+Done instead: the piecewise-linear path (`EventLog::CursorAt`) is sampled at t + k * 8333 us inside the window and weighted with
+sigma = w / 2. The click snap blends toward the click within 60 ms on *both* sides of the down (weight 1 at the down).
+Why: CURSOR_MOVE is written only on change, so a stopped cursor has no samples; averaging raw records drags the result back toward old
+positions after every stop. Resampling keeps constant-velocity motion exactly on the line and a still cursor still. Snapping after the
+down too keeps the sprite on the ripple centre while the window still contains the approach.
+Impact: none for callers.
+
+## 2026-10-17 · P08 task 8.7 · Zero allocations: render code avoids Clip::Prop and copies of project structs
+Spec said: zero heap allocations after warm-up.
+Done instead: `Clip::Prop(const char*)` builds a `std::string` for the map lookup ("transform.opacity" is longer than the SSO buffer)
+and every project struct carries a `Json extra` whose copy allocates (in Debug every std container construction also allocates its
+iterator proxy). The compositor uses `layer_math::PropAt` and keeps pointers to `Shadow`/`KeystrokeStyle`.
+Measured with a CRT alloc hook (Debug): 0 allocations over 300 frames after warm-up (24 per frame before the change).
+Impact: P07 could give `Clip::keyframes` a transparent comparator (`std::less<>`) so `Clip::Prop` stops allocating.
+
+## 2026-10-17 · P08 task 8.7 · Golden harness and golden set
+Spec said: P00 left `CT_TEST_GOLDEN` stubbed; P08 goldens include `cursor_ripple_t+150ms` and `transition_crossfade_u0.5`.
+Done instead: `ct_test` implements `CheckGolden` with WIC (no ct_platform dependency): `data/golden/<test>.png` relative to the working
+directory (ctest runs from tests/), pass at max channel diff <= 2 and PSNR >= 45 dB, `--update-golden` writes, a failure writes
+`.actual.png`/`.diff.png` (|a-b| x 8; ignored by tests/data/golden/.gitignore). Added `CheckGoldenTol`/`CT_GOLDEN_IMAGE_TOL` and
+`WritePng/ReadPng/CompareImages`; text goldens use max diff 255 + PSNR 35 dB. Test (and file) names are `cursor_ripple_t150ms` and
+`transition_crossfade_u05` (C++ identifiers). Goldens are 640x360 (9 files, 0.35 MB) to keep tests/data small; they were written
+by the Debug build and the Release build matches them.
+Why: identifiers cannot contain '+' or '.'; test data budget.
+Impact: P10 (export goldens) uses the same macros.

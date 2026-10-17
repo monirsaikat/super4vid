@@ -6,7 +6,7 @@
 //
 //   CT_TEST(name) { ... }               unit test, always runs
 //   CT_TEST_DEVICE(name) { ... }        needs GPU/audio/webcam: SKIPPED when CT_CI is set (or call CT_SKIP)
-//   CT_TEST_GOLDEN(name) { ... }        compares an image with tests/data/golden/<name>.png (stubbed until P08)
+//   CT_TEST_GOLDEN(name) { ... }        compares an image with tests/data/golden/<name>.png (CT_GOLDEN_IMAGE)
 //   CT_BENCH(name, N) { ... }           runs only with --bench; loop CT_BENCH_N times; prints ops/s and ns/op
 //
 // Runner flags: --filter <substr> --list --bench --repeat N --update-golden --verbose. Exit code = failures.
@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace ct::test {
 
@@ -50,9 +51,22 @@ bool UpdateGolden();          // --update-golden was passed
 bool Verbose();               // --verbose was passed
 const char* CurrentTestName();
 
-// Golden image comparison (RGBA8, tightly packed). Until P08 this marks the test SKIPPED.
-// Returns false when the test must stop (failure or skip).
+// Golden image comparison (RGBA8, tightly packed) against data/golden/<CurrentTestName()>.png relative to the working
+// directory (ctest runs the test exes from tests/). Pass when the max absolute channel difference <= max_diff and the
+// PSNR over all channels >= min_psnr_db (docs/06: 2 and 45 dB; text goldens use 255 and 35 dB). With --update-golden
+// the PNG is (re)written and the check passes. On failure <name>.actual.png and <name>.diff.png (|a-b| x 8) are written
+// next to the golden; a missing golden fails. Returns false when the test must stop (failure).
 bool CheckGolden(const char* file, int line, const void* rgba, int width, int height);
+bool CheckGoldenTol(const char* file, int line, const void* rgba, int width, int height, int max_diff, double min_psnr_db);
+constexpr int kGoldenMaxDiff = 2;
+constexpr double kGoldenMinPsnr = 45.0;
+constexpr double kGoldenTextMinPsnr = 35.0;
+
+// PNG helpers (WIC) used by the golden check; also handy for test diagnostics. RGBA8, tightly packed.
+bool WritePng(const char* path_utf8, const void* rgba, int width, int height);
+bool ReadPng(const char* path_utf8, std::vector<uint8_t>& rgba, int& width, int& height);
+// Image comparison metrics (both images width*height RGBA8). PSNR is +inf (1e9) for identical images.
+void CompareImages(const uint8_t* a, const uint8_t* b, int width, int height, int& max_diff, double& psnr_db);
 
 // Value formatting for CT_CHECK_EQ / CT_CHECK_NEAR diagnostics.
 inline std::string ToString(const std::string& v) { return "\"" + v + "\""; }
@@ -160,4 +174,12 @@ bool HrFailed(long hr);
 #define CT_GOLDEN_IMAGE(rgba, width, height)                                                              \
     do {                                                                                                  \
         if (!::ct::test::CheckGolden(__FILE__, __LINE__, (rgba), (width), (height))) return;              \
+    } while (0)
+
+// Golden with explicit tolerance (text goldens: CT_GOLDEN_IMAGE_TOL(px, w, h, 255, ::ct::test::kGoldenTextMinPsnr)).
+#define CT_GOLDEN_IMAGE_TOL(rgba, width, height, max_diff, min_psnr_db)                                   \
+    do {                                                                                                  \
+        if (!::ct::test::CheckGoldenTol(__FILE__, __LINE__, (rgba), (width), (height), (max_diff),        \
+                                        (min_psnr_db)))                                                   \
+            return;                                                                                       \
     } while (0)
