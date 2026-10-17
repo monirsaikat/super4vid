@@ -1160,3 +1160,32 @@ Done instead:
 Why: dithering noise defeated index-level differencing; the rest are spec gaps or measured performance needs.
 Impact: ExportJob GIF path: sample every 30th frame with `AddPaletteSample` first (two-pass), then `AddFrame` each
 frame at `gif.fps` with `DelayForFps(gif.fps)`, then `Close`; cancel = `Close` + delete the file.
+
+## 2026-10-17 · Integration (after P04-P08 merge) · One test pattern, MfRuntime in ct_platform, media enums in presets, SessionClock as MediaTimeSource
+Spec said: P04's `tools/gen_test_media` writes tests/data/pattern_*.mp4; P06 replaces its private MF guard with
+`media::MfRuntime::Ensure()` and P05's webcam does the same; P10's Preset switches to `media::VideoCodec`/`RateControl`
+once ct_media exists; `recorder::SessionClock` derives from `capture::MediaTimeSource`.
+Done:
+- Test pattern: `tests/common/frame_index.h` now decodes exactly the counter `tools/gen_test_media` draws (12 digits,
+  28 x 56 px cells at (34 + 33 k, 36), 4 px strokes, box (32,32)-(432,96)); the P06 layout (24 x 48 glyphs, 6 px
+  strokes) is gone. The P06 helper `ct_gen_test_media` (tests/media/gen_pattern_main.cpp) and the `out/testmedia/`
+  fallback are deleted: tests read only the committed tests/data files (regenerate with
+  `gen_test_media --all tests/data`). `DrawFrameIndexY` is removed with its only user.
+- MfRuntime: ct_media depends on ct_capture, so ct_capture cannot use ct_media. `MfRuntime`/`MfScope` moved to
+  ct_platform (`ct/platform/mf_runtime.h`, `platform::MfRuntime`); `ct/media/mf_runtime.h` is a forwarding header
+  (`using platform::MfRuntime; using platform::MfScope;`), so existing `media::MfRuntime` callers are unchanged.
+  Added `MfRuntime::EnsureForProcess()`: the first successful call takes one reference that is never released. The
+  decoders, `MediaInfo::Load` and the webcam (Enumerate/Init/synthetic reader) use it, keeping the old guards'
+  process-lifetime semantics (no MFShutdown while a decoder or DXGI manager may still be alive) while sharing the one
+  refcount. `mf_startup_internal.h` and `capture::internal::EnsureMfStarted` are deleted. MFSTARTUP_LITE and
+  MFSTARTUP_NOSOCKET are the same flag value.
+- Presets: `exportng::VideoCodec` / `exportng::RateControl` are now `using media::VideoCodec` / `using
+  media::RateControl`; ct_export depends on ct_media. JSON names unchanged (static_asserts pin the enum order of the
+  name tables). ExportJob needs no static_cast.
+- SessionClock: `struct SessionClock final : capture::MediaTimeSource`; `QpcHnsToMediaUs` forwards to `HnsToMediaUs`,
+  `NowMediaUs` is the override. `MediaTimeSource`/`QpcMediaTimeSource` moved from webcam_source.h to the new light
+  header `ct/capture/media_time_source.h` (webcam_source.h includes it), so session_clock.h does not pull in D3D/MF.
+Why: the parallel phases each had a placeholder for a piece another phase owned; the counter layouts disagreed so the
+decoder/cache/player tests failed on the committed files.
+Impact: Recorder session: `webcam.Start(session.clock, sink)` works directly. New MF users without a Shutdown point
+call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shutdown` or `MfScope`.
