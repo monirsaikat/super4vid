@@ -80,7 +80,8 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 5.1 `RecordingSession` state machine (Idle->Countdown->Recording<->Paused->Finalizing)
 - [ ] 5.2 `.ctrec` bundle writer + `meta.json`
 - [x] 5.3 `EventRecorder`: low-level mouse/keyboard hooks thread, cursor tracker, window focus, `.ctev` writer — ct_recorder_tests (21 tests) pass in Debug and Release (`--repeat 2`): SendInput clicks/wheel/keys through real LL hooks (tagged and swallowed) land in the file with region-relative positions, input during a pause is dropped, TYPING/markers/pauses round-trip through EventLog; 120 Hz poll: 60 ticks in 0.50 s; the watchdog detects a 1.5 s stall and re-installs (hooks work afterwards); a click is on disk 925-1046 ms after it happened (1 s flush); `events_demo --seconds 3 --selftest` passes (smallest cursor sample gap 7.97 ms, 0 ring drops); SessionClock monotonic over 40-90k pause/resume cycles with a concurrent reader
-- [ ] 5.4 Hotkeys, tray icon + menu, notifications
+- [x] 5.4 Hotkeys, tray icon + menu, notifications — `platform::HotkeyManager` (conflict -> "Ctrl+Alt+Shift+F22 is already used by another app"), `platform::TrayIcon` (add/modify/remove, balloon, menu helper, runtime red-dot icon: dot pixel FFFF4D4F); wiring to the bar's message window comes with the bar (5.6)
+  - [ ] HUMAN: tray icon visible, red-dot icon looks right at 100/150 %, the "Saved" balloon shows, the right-click menu closes when clicking elsewhere
 - [ ] 5.5 Region selection overlay (dim, drag, handles, window snap, monitor pick, size readout)
 - [ ] 5.6 Recorder bar UI + countdown overlay, excluded from capture
 - [ ] 5.7 Webcam capture -> `cam.mp4` + live preview
