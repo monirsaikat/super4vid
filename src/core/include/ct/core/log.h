@@ -1,9 +1,11 @@
 #pragma once
 // ct/core/log.h
 // Process-wide logger: UTF-8 lines to %LOCALAPPDATA%\Camtesia\logs\camtesia-<stamp>.log and to the debugger.
-// Thread model: Write() may be called from any thread; Init/SetLevel/Shutdown from the main thread only.
-// Lifetime: lines written before Init() are buffered and land in the file once it opens.
-// P00 implementation: SRWLOCK + 64 KB buffer. P01 swaps the internals for a lock-free ring; this header stays.
+// Thread model: Write() may be called from any thread, including capture/audio threads: it formats on the caller's
+// stack and only memcpy's into a 1 MB ring under an SRW lock (no file IO); a "ct-log" thread writes the file every
+// 500 ms, on Warn/Error, and on Flush(). A full ring drops the new line (counted as Stats "log.dropped").
+// Init/SetLevel/Shutdown from the main thread only. Files rotate at 10 MB; the newest 5 are kept.
+// Lifetime: lines written before Init() are buffered (up to 1 MB) and land in the file once it opens.
 
 #include <cstdint>
 
@@ -16,8 +18,8 @@ struct Log {
     static void SetLevel(LogLevel);                    // default Info; CT_LOG env var: trace|debug|info|warn|error
     static LogLevel Level();
     static void Write(LogLevel, const char* category, const char* file, int line, const char* fmt, ...);
-    static void Tick();                                // flush if > 500 ms since last flush; UI loop calls it
-    static void Flush();
+    static void Tick();                                // no-op since P01 (the ct-log thread flushes); kept for API stability
+    static void Flush();                               // synchronous: drains the ring and FlushFileBuffers (bounded wait)
     static void Shutdown();
     static const char* FilePathUtf8();                 // empty string before Init()
 };
