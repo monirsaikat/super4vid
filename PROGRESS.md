@@ -12,7 +12,20 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 0.4 Dear ImGui vendored and compiled as `imgui` target (W3, no WX) — v1.93.0-docking, 0 warnings
 - [x] 0.5 `camtesia.exe`: Win32 window, D3D11 device, flip-model swapchain, ImGui demo renders, resizes, HiDPI correct
 - [x] 0.6 Logging to file + debugger, crash minidump writer, single-instance mutex
-- [ ] 0.7 Acceptance: Debug and Release build with 0 warnings; exe idles at 0 redraws/s; crash test produces a `.dmp`
+- [~] 0.7 Acceptance: Debug and Release build with 0 warnings; exe idles at 0 redraws/s; crash test produces a `.dmp`
+  - [x] clean `build.cmd debug` / `release`: 0 warnings, 0 errors; `build.cmd test`: ct_core_tests passes in both configs (2026-10-17)
+  - [x] idle: `--stats` printed `redraws/s: 0` for 10 consecutive seconds with no input; process CPU time over 12 s idle = 0.0 ms (0.000 %)
+  - [x] `--crash-test` -> `%LOCALAPPDATA%\Camtesia\crashes\crash-*.dmp` (~940 KB) in Debug and Release, exit code 0xC0000409; dbghelp resolves the dump's exception address to `main.cpp:285` (the null write) with the matching PDB
+  - [x] second instance exits after 44 ms; the first logs `forwarded command line: ... --open "C:\some file.ctproj"`
+  - [x] Debug exit: the debug-layer live-object report lists only `Live ID3D11Device` (copied into the log); CRT leak check is clean (a planted leak was reported on stderr, so the check works)
+  - [x] time-to-window (process start -> first Present), Release: 114-190 ms; Release exe 837 KB
+  - [x] seen in screenshots: dark title bar, app icon, ImGui window (demo in Debug only); programmatic resize and minimize/restore re-render correctly; min client size clamps at 640x400; a synthetic WM_DPICHANGED (144 dpi) rescales fonts and padding to 150 %
+  - [ ] HUMAN: at real 150 % display scaling, text is crisp (not bitmap-stretched) and the title bar is dark
+  - [ ] HUMAN: drag the window between monitors with different DPI; fonts and padding rescale and the window keeps a sensible size
+  - [ ] HUMAN: drag-resize with the mouse (live resize) shows no stretching, flicker or black frames
+  - [ ] HUMAN: Task Manager shows 0 % CPU **and 0 % GPU** for Camtesia.exe while idle for 10 s (CPU verified by measurement; GPU not measured)
+  - [ ] HUMAN: open a `.dmp` in WinDbg or Visual Studio and confirm it shows the faulting line with call stack (only checked with dbghelp line lookup)
+  - [ ] HUMAN: ImGui keyboard navigation and text input (incl. IME) work in the Debug demo window
 
 ## P01 Core library
 - [ ] 1.1 strings (utf8<->utf16, format, split, trim, path ops)
