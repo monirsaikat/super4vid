@@ -8,6 +8,7 @@ ct_add_module(ui
     src/dialogs.cpp src/cache_media_provider.cpp
     src/panels/timeline_widget.cpp src/panels/properties_panel.cpp src/panels/media_panel.cpp src/panels/status_bar.cpp
     src/panels/preview_panel.cpp
+    src/panels/export_dialog.cpp
     src/settings_window.cpp src/settings_window_logic.cpp
     src/error_ux.cpp
     src/first_run.cpp

@@ -149,12 +149,20 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [~] 9.7 Acceptance: section-8 editor budgets met; every shortcut in `docs/05` works; no ImGui ID collisions in Debug — ID-conflict checks in ct_ui_tests (shell, properties sweep, media, settings) pass; 0 warnings debug+release. Pending: `--bench-drag/--bench-scrub/--bench-play/--stats` numbers (could not run: another agent held the shared single-instance lock)
 
 ## P10 Export
-- [~] 10.1 Export dialog + presets (`assets/presets/*.json`) — presets done (`exportng::Preset`: 10 built-ins = `assets/presets/*.json`, JSON, user presets, EstimateBytes); dialog pending (needs P09)
-- [ ] 10.2 Offline render loop (frame-accurate, audio mix, progress, cancel, background thread)
-- [ ] 10.3 MP4 (H.264/HEVC) via `Mp4Writer`, fast-start moov
+- [x] 10.1 Export dialog + presets (`assets/presets/*.json`) — presets: `exportng::Preset` (10 built-ins = `assets/presets/*.json`, JSON, user presets, EstimateBytes); dialog: `ui::ExportDialog` (src/ui/panels/export_dialog.*): built-in + user preset list, Save as preset (IO pool), container/codec (HEVC disabled without a hardware HEVC encoder, EncoderCaps on the IO pool), size canvas/1440p/1080p/720p/custom (even, canvas aspect), fps canvas/60/30/24, rate control + quality/bitrate, AAC bitrate (96-192, what MF accepts), GIF fps/colors/dither, range whole/loop region, PNG at the playhead, destination with IFileSaveDialog (default `Videos\Camtesia\<project>.<ext>`), estimated size, progress window (bar, frames, x real time, ETA, Minimize, Cancel), completion toast with Open / Show in folder; headless draw test. Editor wiring (menu item, status-bar indicator via `Busy()/Fraction()/Restore()`) is P09b's
+- [x] 10.2 Offline render loop (frame-accurate, audio mix, progress, cancel, background thread) — `exportng::ExportJob` on `ct-export` (below normal) + `ct-export-write`, own `render::TimelinePlayer` (commit 8de53c8; ResolveExact + RenderAudio, sample-exact per-frame audio chunks) and Compositor on a project snapshot, progress/speed/ETA/stage timings, cancel deletes the partial file (tested); `Scaler` 2x box chain + bilinear: 51.9 dB vs CPU box; `tools/export_demo`
+- [x] 10.3 MP4 (H.264/HEVC) via `Mp4Writer`, fast-start moov — H.264/HEVC + one AAC stream via `WriteVideoSync/WriteAudioSync` (pool/queue 16); fast start is **ignored** (Mp4Writer cannot, DECISIONS P04 4.3 / P10): moov stays at the end. HEVC not exercised by a test here (no HEVC decoder for the round trip)
 - [x] 10.4 GIF encoder (quantization, dithering, LZW, frame diff) — `gif_demo` 720p20 5 s worst case (full-frame moving gradient + text, dither, 256 colors, frame diff): 2.65-2.9x real time end to end incl. frame generation (Release, Ryzen 7 5700G under load), 18.4 MB; static background + typing/scrolling text: 6.8x, 869 KB; decoded frame matches PIL's decode exactly
-- [ ] 10.5 PNG still, M4A audio-only
-- [ ] 10.6 Acceptance: export speed budget met; PNG export identical to the preview; MP4 export PSNR >= 42 dB vs preview at quality 90; GIF 720p20 >= 2x real time
+- [x] 10.5 PNG still, M4A audio-only — PNG (JPEG q 0.92 for .jpg) at the playhead equals the preview readback byte for byte; M4A 2 s project decodes to 2.0053 s (AAC padding), RMS 0.177 (the -12 dBFS pattern tone)
+- [~] 10.6 Acceptance: export speed budget met; PNG export identical to the preview; MP4 export PSNR >= 42 dB vs preview at quality 90; GIF 720p20 >= 2x real time
+  - PNG identical to the preview: PASS (export_png_identical_to_preview, byte-equal pixels).
+  - MP4 PSNR vs the preview at quality 90: PASS, 58.12 dB (Y 59.44, UV 56.28; export_mp4_psnr_vs_preview).
+  - Speed (Release export_demo, 60 s project: screen + camera PIP + scaled overlay + cursor + 2 annotations + mic) on a
+    LOADED machine (Ryzen 7 5700G iGPU, other agents' builds running, CPU 23-44 % at the start and up to 100 % during):
+    1080p60 H.264 1.05x real time (62.9 fps, 0 inexact frames); same without the camera layer 1.43x (85.9 fps);
+    GIF 720p20 1.41x (28.3 fps; the CPU GIF encoder takes 31 ms/frame). Both speed budgets are missed under this load.
+    The bottlenecks are the second DXVA decoder (camera) contending on the D3D lock, and the encoder and GIF CPU stages.
+    Re-measure on an idle machine before ticking. An earlier run alongside two builds and the test suites stalled.
 
 ## P11 Performance & polish
 - [ ] 11.1 Idle power: 0 redraws, timers coalesced, no busy waits (verify with WPR)
