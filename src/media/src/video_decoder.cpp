@@ -179,7 +179,9 @@ HRESULT VideoDecoder::Seek(TimeUs t_us) {
 
 HRESULT VideoDecoder::ReadFrame(DecodedFrame& out) { return ReadFrame(out, INT64_MIN); }
 
-HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us) {
+HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us) { return ReadFrame(out, skip_before_us, nullptr, 0); }
+
+HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen) {
     if (!m_reader) return E_ILLEGAL_METHOD_CALL;
     if (m_eos) return S_FALSE;
     uint32_t index = 0;
@@ -217,6 +219,10 @@ HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us) {
         m_first_after_seek = false;
         if (pts + dur <= skip_before_us) {
             ++m_frames_skipped;
+            if (abort_gen && abort_gen->load(std::memory_order_relaxed) != gen) {
+                m_pool.Release(index);
+                return E_ABORT;
+            }
             continue;
         }
         const HRESULT copy_hr = CopyToPool(sample.Get(), index);

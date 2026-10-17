@@ -14,6 +14,7 @@
 
 #include <wrl/client.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,9 @@ public:
     // As ReadFrame, but frames that end at or before skip_before_us are decoded and dropped without the copy
     // (fast-forward after a seek).
     HRESULT ReadFrame(DecodedFrame& out, TimeUs skip_before_us);
+    // As above; while skipping, returns E_ABORT (the decoder stays positioned) as soon as *abort_gen != gen, so a
+    // prefetcher reacts to a new request without waiting for a long fast-forward.
+    HRESULT ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen);
     void ReleaseFrame(uint32_t pool_index);
 
     // Views of a pool texture (created once per slot): Y plane R8_UNORM, UV plane R8G8_UNORM.

@@ -145,6 +145,9 @@ private:
 
     mutable SrwLock m_hint_lock;
     HintState m_hint;
+    // Bumped by Hint() only for jumps (|dt| > 1 s, play/pause or direction change): aborts a long fast-forward. Small
+    // per-tick playhead moves must not, or playback would re-seek every frame.
+    std::atomic<uint64_t> m_jump_gen{0};
 
     mutable SrwLock m_lock;   // m_cache, m_slots[*] contents, m_free, m_pinned, m_tick, m_stats
     FrameCache m_cache;

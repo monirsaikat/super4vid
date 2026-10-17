@@ -560,3 +560,27 @@ Done instead (additions only):
   processes even Release misses them; the numbers in PROGRESS.md come from runs at <= 70 % background load.
 Why: measured behaviour; non-blocking audio thread.
 Impact: P09 drives `Player`-like logic per timeline (MediaCache per clip media, AudioEngine::Source = timeline mixer).
+
+## 2026-10-17 · P06 task 6.7 · player_demo, seek bench, avsync; acceptance measured on a substitute file
+Spec said: `player_demo file.mp4` with an overlay; acceptance on the 4K60 H.264 pattern: in sync, seek-to-frame < 150 ms,
+CPU < 10 %, frames_late measured; `--avsync` on the clap recording.
+Done instead:
+- The overlay is the window title (pts, clock, rate, cache MB, shown, late), not text drawn into the frame; `--stats`
+  prints the same once per second plus a summary (CPU of the process, cache stats). Other modes: `--count-frames`,
+  `--seek-bench [N]` (random seeks through `MediaCache::Hint` + `WaitForFrame`, p50/p95/max), `--avsync`.
+- `--avsync`: per-frame luma mean (staging readback) finds flashes; the audio stream goes through two 2 kHz band-passes
+  (Q 8) and a 1 ms RMS envelope; the detector's own delay (1.69 ms, measured on a synthetic click) is subtracted; events
+  in the first 250 ms are skipped (decoder priming); a flash pairs with the nearest beep within +-250 ms; PASS when
+  |mean offset| < 20 ms and the regression drift < 20 ms. Tested only on the synthetic pattern (exact by construction);
+  the real clap recording is left for the P11/P13 manual pass.
+- `VideoDecoder::ReadFrame(out, skip_before, abort_gen, gen)`: the skip phase returns `E_ABORT` when `*abort_gen != gen`.
+  `MediaCache` bumps that generation only on a jump (|dt| > 1 s, play/pause, direction change), never on per-tick
+  playhead moves (the first version re-seeked 34 times in 3 s of 4K playback). After an abort the decoder position is
+  unknown and the next request seeks.
+- No 4K60 H.264 reference file and no idle machine: the numbers come from `ct_gen_test_media` output
+  (`out/testmedia/pattern_{1080p60_5s,4k60_3s}.mp4`, GOP 2 s) on an AMD Radeon iGPU with the CPU at 70-100 % from parallel
+  agent builds. 4K60 does not play in real time here: the hardware decoder is saturated (~56 fps decoded with copies)
+  and the swap chain's present waits behind the decode copies (~5 presents/s); rate 0.5 plays every frame.
+Why: no reference media in the worktree; measured behaviour.
+Impact: re-measure 6.7 on the reference machine with the real 4K file. If 4K60 is still short there, the cache should take
+the decoder pool texture instead of copying it (one 12 MB copy per frame less).

@@ -82,6 +82,7 @@ HRESULT MediaCache::Open(platform::D3DDevice& dev, std::string_view path) {
     {
         ExclusiveGuard g(m_hint_lock);
         m_hint = HintState{0, 1.0, false, 1};
+        m_jump_gen = 0;
     }
     const std::string name = Format("ct-decode-%d", g_cache_counter.fetch_add(1));
     Thread::Options opt;
@@ -145,10 +146,13 @@ void MediaCache::Hint(TimeUs playhead_us, double rate, bool playing) {
     {
         ExclusiveGuard g(m_hint_lock);
         if (m_hint.t == playhead_us && m_hint.rate == rate && m_hint.playing == playing) return;
+        const TimeUs dt = playhead_us - m_hint.t;
+        const bool jump = dt > 1'000'000 || dt < -1'000'000 || m_hint.playing != playing || (m_hint.rate < 0) != (rate < 0);
         m_hint.t = playhead_us;
         m_hint.rate = rate;
         m_hint.playing = playing;
         ++m_hint.gen;
+        if (jump) m_jump_gen.fetch_add(1, std::memory_order_relaxed);
     }
     m_wake.Set();
 }
@@ -300,6 +304,7 @@ void MediaCache::PrefetchMain() {
             ++m_stats.seeks;
         }
         TimeUs skip_before = need;
+        const uint64_t jump_gen = m_jump_gen.load(std::memory_order_relaxed);
         for (;;) {
             if (m_stop.load()) break;
             // Room for one more frame? Otherwise wait for the playhead to move (a new hint).
@@ -314,7 +319,11 @@ void MediaCache::PrefetchMain() {
                 }
             }
             media::DecodedFrame f;
-            const HRESULT hr = m_dec.ReadFrame(f, skip_before);
+            const HRESULT hr = m_dec.ReadFrame(f, skip_before, &m_jump_gen, jump_gen);
+            if (hr == E_ABORT) {
+                m_dec_next = INT64_MAX / 4;   // position unknown: the next request seeks
+                break;
+            }
             if (hr == S_FALSE) {
                 // End of stream: nothing exists at or after the decoder position.
                 const TimeUs real_end = std::max<TimeUs>(m_dec_next, 1);
