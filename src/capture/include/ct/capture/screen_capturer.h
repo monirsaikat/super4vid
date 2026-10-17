@@ -93,6 +93,7 @@ private:
     std::atomic<int64_t> m_pause_qpc{0};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_stop{false};
+    bool m_ran_before = false;   // capture thread (owner thread in Init): a previous Start..Stop used m_dup
 };
 
 } // namespace ct::capture

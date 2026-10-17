@@ -1,4 +1,5 @@
 // ct/capture/screen_capturer.h
+#include "../common/timing.h"
 #include "test_util.h"
 
 #include <ct/capture/screen_capturer.h>
@@ -146,5 +147,36 @@ CT_TEST_DEVICE(screen_capturer_region_and_restart) {
         cap.Stop();
         CT_CHECK(cap.Stats().ticks.load() >= 7);
         CT_CHECK(!sink.times.empty());
+    }
+}
+
+// A restarted capturer must deliver its first frame right away even when nothing on the desktop changes: an
+// IDXGIOutputDuplication that already delivered images returns the next one only on a desktop change, so on a static
+// screen a reused duplication gave the second run no frame at all. Each run gets a fresh duplication, whose first
+// AcquireNextFrame returns the current desktop image, so this holds on a static and on a busy desktop alike.
+CT_TEST_DEVICE(screen_capturer_restart_static_desktop) {
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(false)));
+    ScreenCapturer cap;
+    CT_REQUIRE(InitCapturer(dev, cap));
+    RecordingSink sink;
+    sink.pool = &cap.Nv12Pool();
+    sink.times.reserve(100);
+    // Budget: within 3 ticks (a fresh duplication's first image arrives with the next composition, 0-2 ticks in);
+    // gross: 150 ms (a reused duplication on a static desktop delivers nothing at all).
+    const double limit_us = ct::test::TimingLimit(static_cast<double>(FrameTimeUs(3, 60, 1)), 150'000.0);
+    for (int run = 0; run < 3; ++run) {
+        sink.times.clear();
+        CT_REQUIRE(cap.Start(Clock::QpcNow(), sink));
+        Sleep(250);
+        cap.Stop();
+        const CaptureStats& s = cap.Stats();
+        std::printf("  run %d: ticks %llu, new images %llu, frames %zu, first frame at %lld us\n", run,
+                    static_cast<unsigned long long>(s.ticks.load()), static_cast<unsigned long long>(s.new_frames.load()),
+                    sink.times.size(), static_cast<long long>(s.first_frame_us.load()));
+        CT_CHECK(s.new_frames.load() >= 1);
+        CT_REQUIRE(!sink.times.empty());
+        CT_CHECK(s.first_frame_us.load() >= 0 && static_cast<double>(s.first_frame_us.load()) <= limit_us);
+        CT_CHECK_EQ(sink.errors.load(), 0);
     }
 }

@@ -46,6 +46,7 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
     dc.region = m_cfg.region;
     dc.prefer_fp16_when_hdr = m_cfg.hdr_tonemap;
     CT_RETURN_IF_FAILED(m_dup.Init(dev, dc));
+    m_ran_before = false;
 
     CT_RETURN_IF_FAILED(m_bgra_pool.Init(dev, TexDesc(m_dup.Size(), m_dup.Format()), 3, "capture.bgra"));
 
@@ -130,6 +131,14 @@ void ScreenCapturer::Run() {
     int64_t n = 0;
     bool lost = false;
     int64_t next_reinit_qpc = 0;
+    if (m_ran_before) {
+        // A duplication that already delivered images returns the next one only when the desktop changes, so a
+        // restarted capture of a static desktop would never get its first image (and deliver no frame at all). A
+        // fresh duplication starts with the current desktop image. A failure takes the access-lost retry path.
+        platform::D3DDevice::Lock lock(*m_dev);
+        if (FAILED(m_dup.Reinit())) lost = true;
+    }
+    m_ran_before = true;
     uint32_t cur = 0;            // copy path: BGRA pool slot holding the newest desktop image
     bool bgra_pending = false;   // copy path: bgra[cur] is newer than the last NV12 frame (not converted yet)
     bool has_last = false;       // an NV12 pool texture (last_idx) holds the newest delivered frame
