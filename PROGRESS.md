@@ -59,7 +59,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [~] 3.5 Device hot-swap and format change without timeline gaps
   - [x] automated: listener (default change / removal / state change), AUDCLNT_E_DEVICE_INVALIDATED and `SwitchDevice` share one reopen path on the capture thread; reopen of the loopback + keep-alive took 22.9 ms and became 960 frames of silence at the right position (stream end == device clock +-1 packet afterwards); a missing endpoint keeps time running with silence, reports `OnAudioError` once, retries every 500 ms and recovers (`hotswap_*` tests)
   - [ ] human: unplug a USB mic mid-recording (expect silence then the new default mic, no shift) and change the default output device while recording system audio (this machine has no mic and one output)
-- [ ] 3.6 Acceptance: `audio_bench` records 60 s of a 1 kHz test tone through loopback: no gaps, drift < 5 ms, CPU < 1 %
+- [x] 3.6 Acceptance: `audio_bench` records 60 s of a 1 kHz test tone through loopback: no gaps, drift < 5 ms, CPU < 1 % — `audio_bench --seconds 60 --tone` (Release, 2026-10-17): gaps 0 (longest quiet run 0.02 ms), frequency 999.9899 Hz, stream end vs last device frame (QPC) -0.993 ms, max |drift| 1.003 ms (device clock ~25 ppm slow: 29 single frames inserted, 0 dropped, 0 ring overflows), process CPU 0.055 % of the machine (16 logical CPUs) = 0.885 % of one core, peak -12.00 dBFS; 2,882,506 frames for a 60.037 s run (the +15.6 ms vs the stop time is the loopback presentation offset, see DECISIONS)
 
 ## P04 Encode & mux
 - [ ] 4.1 MF lifetime (`MfRuntime`), encoder enumeration (HW first), capability report
