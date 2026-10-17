@@ -53,7 +53,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 
 ## P03 Audio capture
 - [x] 3.1 Device enumeration + default device notifications — enumerates 1 render endpoint (Realtek), 0 capture endpoints on this machine; notification delivery on a real default change is part of the 3.5 human check
-- [ ] 3.2 `WasapiCapture` (mic, event-driven) -> float 48 kHz stereo with QPC timestamps
+- [x] 3.2 `WasapiCapture` (mic, event-driven) -> float 48 kHz stereo with QPC timestamps — StreamAligner unit scenarios pass (perfect, pad from 0, 15 ms gap = 720 frames, 3 ms overlap = 144 frames, +/-50 ppm over 10 min converges with <= 1 frame per 10 ms, discontinuity); this machine has no capture endpoint, so `wasapi_capture_default_mic_1s` SKIPs (the shared capture engine is exercised by the loopback tests in 3.3)
 - [ ] 3.3 `WasapiLoopback` (system audio, polled) + silence-fill for gaps + silent render keep-alive
 - [ ] 3.4 `Resampler` (polyphase windowed-sinc), `Mixer`, `Meters` (peak/RMS, atomics)
 - [ ] 3.5 Device hot-swap and format change without timeline gaps
