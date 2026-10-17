@@ -740,3 +740,114 @@ Why: parallel phases own SessionClock (P05a), MfRuntime (P04) and Nv12Blit (P06)
 Impact: P05a: `struct SessionClock : capture::MediaTimeSource` and call `webcam.SetPaused` on pause/resume. P04: cam writer
 uses `webcam.Nv12Pool()` (6 NV12 textures, RENDER_TARGET|SHADER_RESOURCE when supported) with `fps = ActualFps()`; the
 `#include`/call to the internal MF guard is replaced by `MfRuntime::Ensure`. UI: preview via `LatestPreviewPlanes`.
+
+## 2026-10-17 · P04 task 4.2 · Low latency off by default (AMD POC type 2); MF source reader lists tracks in reverse
+Spec said: `VideoEncodeConfig::low_latency = true` (sets `MF_LOW_LATENCY` and `CODECAPI_AVEncCommonLowLatency`); stream order
+video = 0, then audio in config order, "matches meta.json stream_index"; `Probe` via the source reader.
+Done instead:
+- `low_latency` defaults to **false**. With it on, `AMDh264Encoder` (Radeon 5700G iGPU, Windows 10.0.26100) writes SPS with
+  `pic_order_cnt_type = 2`, and the Microsoft H.264 decoder MFT returns end-of-stream on the first `ReadSample` of such a file,
+  with the software path and with DXVA (`MF_SOURCE_READER_D3D_MANAGER`) alike: 0 frames decoded. The same stream with low
+  latency off (POC type 0, no B-frames since `bframes = false`) decodes in both paths, and the Microsoft software encoder's
+  output decodes either way. Recording does not need encoder low latency (nothing is streamed); the cost is a few frames of
+  encoder delay, measured as the OnFrame -> WriteSample latency and pool use in the tests/bench.
+- The MP4 file has the specified order (moov: track 1 video, 2 mic, 3 system; checked with a box dump), but the MF MPEG-4
+  source presents the tracks in **reverse** order (reader stream 0 = last track) and numbers its stream identifiers 1..n in
+  that order (not the track_IDs). `Probe`/`ScanStream` reverse the reader order so their stream numbers are the file's track
+  order (video 0, mic 1, system 2); the tests tell the two AAC tracks apart by bitrate (128 vs 192 kbps). `ProbeResult` gained
+  `stream_codecs`, `audio_sample_rate`, `audio_channels`; added `ScanStream` (compressed sample count/times/bytes, no decode).
+- The sink writer's video MFT carries no `MFT_FRIENDLY_NAME_Attribute`: the hardware encoder is named from
+  `MFT_ENUM_HARDWARE_URL_Attribute` ("AMDh264Encoder"), the Microsoft software encoder (no name, no CLSID on its attributes)
+  from the first software entry of `EncoderCaps`. Hardware = `MFT_ENUM_HARDWARE_URL_Attribute` or `MF_TRANSFORM_ASYNC`.
+- When the encoder rejects the parameter attributes in `SetInputMediaType`, the writer retries without them and then applies
+  each `ICodecAPI` value on its own (`IsSupported` + `SetValue`), logging the unsupported ones.
+Why: files that the Windows decoder cannot play are not acceptable; meta.json's stream_index means the file's track order.
+Impact: P05 writes `stream_index` 0/1/2 as specified. **P06**: do not use source-reader stream indices as track numbers; map
+them (reverse order for MP4, or by major type: the video is `MF_SOURCE_READER_FIRST_VIDEO_STREAM`, mic = the last audio
+reader stream, system = the one before). P10 export may enable low latency only after verifying the decode on the target GPU.
+
+## 2026-10-17 · P04 task 4.3 · Texture reuse, UAV-bound NV12 accepted, sync export path copies, fast start unsupported
+Spec said: one `MFCreateDXGISurfaceBuffer` per pool texture stored as the slot's user data; reuse predicate
+`CanReuse(user = pool, index)` true when the buffer's refcount is 1; `WriteVideoSync` "blocks until the sample was
+written"; `fast_start` sets `MF_MPEG4SINK_MOOV_BEFORE_MDAT`. P02 asked P04 to check that the encoder accepts NV12 textures
+with `D3D11_BIND_UNORDERED_ACCESS` (compute converter), else set `allow_compute = false`.
+Done instead:
+- **UAV-bound NV12 works**: `AMDh264Encoder` encodes the capturer's pool (bind flags 0xa8 = RT|SR|UAV) through
+  `MFCreateDXGISurfaceBuffer`; decoded luma matches the written values (software and DXVA decoders) and a 3 s real capture
+  writes every delivered frame. `allow_compute` stays true, no extra GPU cost.
+- The buffer is still stored as the slot's user data, but the predicate's `user` is the writer (it reads its own slot table),
+  so it never touches the pool object. `SetCurrentLength` is called once at Init (constant length) instead of per frame, so
+  nothing writes a buffer while MF may hold it. The writer's destructor clears the predicate and user data: the pool must
+  outlive the writer.
+- Repeats: every `OnFrame` is one hand-out; the writer creates one `IMFSample` per call (several samples may reference one
+  buffer) and calls `pool->Release(index)` after dropping its own sample reference. The predicate becomes true only when
+  every sample of every repeat was released by MF. Test `texture_reuse_waits_for_every_repeat` (pool of one texture, bursts
+  of 10 sends): the slot was free by hand-out count but refused by the predicate for 53-59 ms (up to 13 references on the
+  buffer), frames written after the reuse never leak into the earlier ones (decoded luma per frame).
+- `WriteVideoSync` copies the caller's texture into an internal NV12 pool (`Config::sync_pool_size`, default 8, same reuse
+  predicate) under `D3DDevice::Lock` and returns once queued (waits up to 5 s while the queue or the pool is full). Waiting
+  until "written" could deadlock with the 500 ms interleave rule when the caller writes video before audio; the copy makes
+  the caller's texture reusable immediately. `WriteAudioSync` likewise returns once queued. Export measured 17x real time
+  for 720p30 (queueing only).
+- `fast_start` is **ignored with a warning**: on the default byte stream `IMFSinkWriter::Finalize` fails with
+  `E_ACCESSDENIED`; with a read/write `MFCreateFile` byte stream the sink writes moov first but drops the mdat header and
+  leaves the old data behind (file twice the size, undecodable). P10 can relocate the moov itself after `Finalize`.
+- The reviewer's concern (ScreenCapturer holds `D3DDevice::Lock` while `AcquireNextFrame` waits up to 4 ms): ct-encode never
+  takes that lock on the capture path (`OnFrame` only queues; WriteSample does not use our lock). Measured in
+  `capture_into_writer_3s`: OnFrame -> WriteSample latency avg 0.04 ms, max 0.9 ms; WriteSample avg 0.15 ms (the first call,
+  which starts the encoder, up to 18 ms). No change to screen_capturer.cpp.
+- `Mp4Writer::Stats` gained `audio_rejected_frames`, `audio_lead_pad_frames`, `video_write`, `video_latency`, `finalize_ms`;
+  `Config` gained `listener`, `sync_pool_size`; added `VideoStreamIndex`, `AudioStreamIndex`, `Accepting`, `ErrorMessage`,
+  `InjectWriteErrorForTest`.
+Why: correctness of texture lifetime with repeats; no deadlock in export; no corrupt files.
+Impact: P05 passes `ScreenCapturer::Nv12Pool()` to `Init` before `ScreenCapturer::Start` and destroys the writer before the
+capturer. P10 calls `WriteVideoSync`/`WriteAudioSync` from its export thread and `Finalize` at the end; no fast start.
+
+## 2026-10-17 · P04 task 4.5 · Error path details; HEVC decode not checkable here; fps clamp left to the caller
+Spec said: any `WriteSample` failure stores `LastError`, stops input, tries `Finalize` once and reports via `OnError` to the
+owner; disk full gets a specific message; device removed takes the same path; clamp fps by trying 120/60/30 when the
+encoder rejects it; HEVC round trip test.
+Done instead:
+- The owner is notified through `Mp4Writer::Config::listener` (`Listener::OnWriterError(hr)`, once, on ct-encode) since
+  the writer is a sink, not a source, of `FrameSink::OnError`. `ErrorMessage()` gives the user text (disk full, missing
+  folder, access denied, device reset, else the HRESULT). Queued frames are released to the pool, so a capturer keeps running
+  with all textures available until the owner stops it. Verified with `InjectWriteErrorForTest` (ERROR_DISK_FULL on the 40th
+  sample): 40 frames in a playable file, one listener call, pool empty, input refused afterwards. A real full disk and a
+  real device removal were not produced (same code path).
+- A path in a missing folder fails in `Init` (`MFCreateSinkWriterFromURL` -> `HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)`),
+  `LastError()`/`Finalize()` return it, message "The folder does not exist: <folder>".
+- HEVC (`AMDh265Encoder`): encode, codec and frame count are verified; the decode check is skipped because this machine has
+  no HEVC decoder (the Store "HEVC Video Extensions" are not installed). P06/P09 must not assume HEVC files can be previewed.
+- The fps clamp (try 120, 60, 30) is not done inside the writer: changing the rate silently would break the capturer's
+  tick-aligned timestamps. `Init` fails with the encoder's HRESULT; P05 picks the next lower rate and restarts capture+writer.
+- `Abort()` returned after 16 ms in the test (ct-encode drops queued input and calls IMFSinkWriter::Finalize).
+Why: keep the sink single-purpose; hardware availability.
+Impact: P05 implements `Mp4Writer::Listener` (finalize + user message) and the fps retry.
+
+## 2026-10-17 · P04 task 4.6 · Acceptance run shortened; clap test measured by avsync_source --analyze; A/V findings
+Spec said: 10 min `capture_bench --encode --mic --system`; files play in Movies & TV and VLC; clap test (docs/06 section 4,
+analysis in P06's `player_demo --avsync`) |offset| < 20 ms; size within 10 % of bitrate * 600 s / 8 in VBR/CBR mode.
+Done instead:
+- 2 min run (the machine is shared with parallel agents' builds); no microphone exists, so only system audio. Numbers in
+  PROGRESS 4.6. capture_bench now stops after exactly fps * seconds ticks (it used to overshoot by a few ticks under load)
+  and prints `epoch_qpc` for the analyzer; `--rc quality|vbr|cbr`, `--bitrate`.
+- Size check uses CBR (100.0 %). PeakConstrainedVBR undershoots on a mostly static desktop (40 % in 10 s): VBR's mean
+  bitrate is a ceiling, not a target, for screen content.
+- `avsync_source` (P04) also analyzes (`--analyze rec.mp4 --log events.csv --epoch QPC`): flash = mean luma of the window
+  region > 128, beep = 1 ms RMS onset confirmed by a 2 kHz Goertzel. The source logs, per event, the predicted play QPC of
+  the beep (IAudioClock mapping) and the vsync QPC of the white frame (DXGI frame statistics when the present count matches
+  exactly, else present + median latency), so the analyzer reports each stream's error against what was really emitted:
+  the source itself emits flash and beep 5-57 ms apart (window composition latency of a layered topmost window, 41 ms
+  median), which makes the raw "video - audio" in the file meaningless as a recorder metric. The flash lasts 3 frames
+  instead of 1 (a 1-frame flash was coalesced away by the 60 Hz capture under load).
+- Findings for later phases:
+  1. Video timestamps lag the display by +14..17 ms (one tick of quantization plus duplication latency; +31 ms when a frame
+     is late): ScreenCapturer stamps a new image with the tick at which it was acquired. Stamping it with the tick that
+     precedes its `present_qpc` (available from `AcquireDirect`) would remove most of this bias. Owner: P02 code, decide in
+     P05/P11 (not changed in P04).
+  2. The system-audio track moved 10 ms later at ~68 s after a loopback DATA_DISCONTINUITY where the StreamAligner inserted
+     585 frames; the beeps after it are +10.4 ms against their emission (before: +0.4..1.3 ms). Owner: P03 aligner (P11).
+  Result: A/V offset +15.9 ms before, +4 ms after the audio shift; 38 of 46 events < 20 ms, 7 at +20.5..20.8 ms, one 37.5 ms.
+Why: machine availability; a headless and source-corrected measurement instead of the P06 tool that does not exist yet.
+Impact: P05/P11 rerun the 10 min recording and the clap test with a person at the machine (Movies & TV / VLC playback,
+USB mic) and address findings 1-2 to meet the 20 ms budget reliably.
