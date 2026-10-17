@@ -36,7 +36,11 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [x] 1.6 fs (atomic write, read all, enumerate, known folders, temp files)
 - [x] 1.7 config (settings load/save/migrate with defaults)
 - [x] 1.8 trace (TraceLogging provider + scoped spans) and `--stats` counters
-- [ ] 1.9 Acceptance: all `ct_core_tests` pass in Debug/Release; SPSC queue benchmark >= 20 M ops/s
+- [x] 1.9 Acceptance: all `ct_core_tests` pass in Debug/Release; SPSC queue benchmark >= 20 M ops/s
+  - [x] `ct_core_tests --repeat 3`: 53 tests x 3 = 159 passed, 0 failed, 0 skipped in Debug and in Release; `build.cmd debug`/`release` 0 warnings (2026-10-17)
+  - [x] bench (`--bench`, Release): SPSC push+pop single-thread ping 870-880 M pairs/s (1.15 ns/pair; budget >= 20 M/s); JSON parse of a 1.15 MB document avg 8.4 ms, best 7.8 ms (137 MB/s; budget < 20 ms), Dump 8.9 ms and byte-identical; `Format` 1 M calls 430 ms (430 ns/call)
+  - [x] logger caller cost: 100,000 lines from a TIME_CRITICAL thread 25-27 ms in Release (253-273 ns/line; budget < 50 ms), 139-143 ms in Debug; all lines written or counted as dropped (0 dropped)
+  - [x] HighResTimer, 1,000 x 2 ms waits (200 us spin): p99 390-640 us over the runs above (500 us target missed in some rounds; the kernel timer fires up to ~1 ms late, see DECISIONS.md); with a 1 ms spin p99 < 170 us
 
 ## P02 Screen capture
 - [ ] 2.1 `D3DDevice` service (device, context lock, debug layer in Debug, feature checks, DXGI device manager)
