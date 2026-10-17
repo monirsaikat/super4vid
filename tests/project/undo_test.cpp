@@ -11,6 +11,7 @@
 #include <ct/project/undo.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -253,6 +254,48 @@ CT_TEST(autosave_async_writes_land) {
         std::printf("  saves=%llu exists=%d size=%zu want=%zu path=%s\n", (unsigned long long)a.Saves(),
                     (int)fs::Exists(a.AutosavePath()), text.size(), want.size(), a.AutosavePath().c_str());
     CT_CHECK(text == want);
+    a.Clear();
+    fs::DeleteTree(dir);
+}
+
+// Review fix: a slow background write (the hook stalls the writer 300 ms inside the IO section) must not block the
+// UI thread's Tick(), neither the "not due" path nor one that queues the next snapshot.
+CT_TEST(autosave_slow_write_does_not_block_tick) {
+    const std::string dir = MakeAutosaveDir();
+    Project p = MakeSampleProject();
+    Autosave a;
+    a.Init(p.id, 1);
+    struct Ctx {
+        Event started{true, false};
+    } ctx;
+    a.SetTestWriteHook(
+        [](void* c) {
+            static_cast<Ctx*>(c)->started.Set();
+            Event pause;
+            pause.Wait(300);
+        },
+        &ctx);
+    a.NotifyChanged();
+    a.Tick(p, Clock::NowUs() + 2 * kUsPerSecond);
+    CT_REQUIRE(ctx.started.Wait(5000));
+    double worst_ms = 0.0;
+    const int64_t t_due = Clock::NowUs() + 10 * kUsPerSecond;
+    for (int i = 0; i < 20; ++i) {
+        if (i == 10) a.NotifyChanged();   // this Tick queues another write while the first is still in flight
+        const int64_t t0 = Clock::NowUs();
+        a.Tick(p, i < 10 ? t_due - 9 * kUsPerSecond : t_due);
+        worst_ms = std::max(worst_ms, double(Clock::NowUs() - t0) / 1000.0);
+    }
+    std::printf("    worst Tick during a 300 ms write: %.3f ms\n", worst_ms);
+    CT_CHECK(worst_ms < 20.0);   // ~0.1 ms normally; blocked it was ~300 ms
+    a.SetTestWriteHook(nullptr, nullptr);
+    for (int spin = 0; spin < 300 && a.Saves() < 2; ++spin) {
+        Event e;
+        e.Wait(10);
+    }
+    CT_CHECK_EQ(a.Saves(), uint64_t(2));
+    std::string text;
+    CT_CHECK(fs::ReadAll(a.AutosavePath(), text) && text == ToJson(p));
     a.Clear();
     fs::DeleteTree(dir);
 }

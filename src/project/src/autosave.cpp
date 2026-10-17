@@ -14,6 +14,7 @@
 #include <share.h>
 #include <sys/stat.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <cwchar>
 
@@ -56,13 +57,19 @@ std::string ReadFd(int fd) {
 
 } // namespace
 
+// Two locks so the UI thread never waits for disk IO: `io` serializes writers (pool jobs, SaveNow, Clear) and is held
+// across WriteAtomic and its retries; `lock` guards only the fields below and is never held during IO, so Tick() and
+// StartWrite() (UI thread) take it for a few instructions. Order: io before lock.
 struct Autosave::Shared {
+    SrwLock io;
     SrwLock lock;
     uint64_t queued = 0;    // generation of the newest text handed to a writer
     uint64_t written = 0;   // generation on disk
     uint64_t saves = 0;
-    bool failed = false;    // the newest write failed: the next Tick saves again
     std::string path;
+    TestWriteHook test_hook = nullptr;
+    void* test_ctx = nullptr;
+    std::atomic<bool> failed{false};   // the newest write failed: the next Tick saves again
 };
 
 Autosave::Autosave() : m_shared(std::make_shared<Shared>()) {}
@@ -108,17 +115,18 @@ void Autosave::Init(const Id& project_id, int interval_s) {
 
 void Autosave::NotifyChanged() { ++m_edits; }
 
+void Autosave::SetTestWriteHook(TestWriteHook hook, void* ctx) {
+    ExclusiveGuard g(m_shared->lock);
+    m_shared->test_hook = hook;
+    m_shared->test_ctx = ctx;
+}
+
 void Autosave::Tick(const Project& p) { Tick(p, Clock::NowUs()); }
 
 void Autosave::Tick(const Project& p, int64_t now_us) {
     if (m_id.empty()) return;
-    {
-        ExclusiveGuard g(m_shared->lock);
-        if (m_shared->failed) {
-            m_shared->failed = false;
-            if (m_edits == 0) m_edits = 1;   // still dirty: retry on this tick if due
-        }
-    }
+    if (m_shared->failed.exchange(false, std::memory_order_acq_rel) && m_edits == 0)
+        m_edits = 1;   // still dirty: retry on this tick if due
     if (m_edits == 0) return;
     const bool time_due = m_interval_s > 0 && now_us - m_last_save_us >= int64_t(m_interval_s) * kUsPerSecond;
     if (!time_due && m_edits < kEditsPerSave) return;
@@ -132,11 +140,19 @@ bool Autosave::SaveNow(const Project& p) {
     if (m_id.empty() || !TakeLock(p)) return false;
     const std::string text = ToJson(p);
     Shared& s = *m_shared;
-    ExclusiveGuard g(s.lock);
-    const uint64_t gen = ++s.queued;
+    ExclusiveGuard io(s.io);
+    uint64_t gen;
+    {
+        ExclusiveGuard g(s.lock);
+        gen = ++s.queued;
+    }
     if (!fs::WriteAtomic(AutosavePath(), text)) return false;
-    s.written = gen;
-    ++s.saves;
+    {
+        ExclusiveGuard g(s.lock);
+        if (gen > s.written) s.written = gen;
+        ++s.saves;
+    }
+    s.failed.store(false, std::memory_order_release);
     m_edits = 0;
     m_last_save_us = Clock::NowUs();
     return true;
@@ -151,20 +167,33 @@ void Autosave::StartWrite(std::string text) {
         shared->path = AutosavePath();
     }
     auto job = [shared, gen, text = std::move(text)]() {
-        ExclusiveGuard g(shared->lock);
-        if (gen <= shared->written || gen != shared->queued) return;   // a newer snapshot is coming
+        ExclusiveGuard io(shared->io);
+        std::string path;
+        TestWriteHook hook;
+        void* hook_ctx;
+        {
+            SharedGuard g(shared->lock);
+            if (gen <= shared->written || gen != shared->queued) return;   // a newer snapshot is coming
+            path = shared->path;
+            hook = shared->test_hook;
+            hook_ctx = shared->test_ctx;
+        }
+        if (hook) hook(hook_ctx);
         // The replace can fail transiently while another process (indexer, antivirus, a reader) has the file open.
         for (int attempt = 0; attempt < 3; ++attempt) {
-            if (fs::WriteAtomic(shared->path, text)) {
-                shared->written = gen;
-                ++shared->saves;
-                shared->failed = false;
+            if (fs::WriteAtomic(path, text)) {
+                {
+                    ExclusiveGuard g(shared->lock);
+                    if (gen > shared->written) shared->written = gen;
+                    ++shared->saves;
+                }
+                shared->failed.store(false, std::memory_order_release);
                 return;
             }
             Event pause;
             pause.Wait(50);
         }
-        shared->failed = true;
+        shared->failed.store(true, std::memory_order_release);
     };
     if (m_sync) job();
     else Async::Run(std::move(job));
@@ -198,8 +227,12 @@ void Autosave::Clear() {
     if (m_id.empty()) return;
     {
         // Wait for an in-flight write and make sure no queued one lands after the delete.
-        ExclusiveGuard g(m_shared->lock);
-        m_shared->written = m_shared->queued;
+        ExclusiveGuard io(m_shared->io);
+        {
+            ExclusiveGuard g(m_shared->lock);
+            m_shared->written = m_shared->queued;
+        }
+        m_shared->failed.store(false, std::memory_order_release);
         fs::Delete(AutosavePath());
     }
     if (m_lock_fd >= 0) {
