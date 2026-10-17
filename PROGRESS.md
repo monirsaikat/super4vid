@@ -87,6 +87,7 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
 - [ ] 6.7 Acceptance: `player_demo file.mp4` plays 4K60 H.264 in sync; seek-to-frame < 150 ms; CPU < 10 %
 
 ## P07 Project model
+- [x] 7.0 ct_events module (`.ctev` writer/reader, `EventLog` time queries; created here because P05 is not built yet)
 - [ ] 7.1 Types (`Project`, `Media`, `Track`, `Clip`, `Keyframe<T>`, `Annotation`, `Transition`, `Camera`, `CursorStyle`)
 - [ ] 7.2 JSON (de)serialization with versioning + defaults + unknown-key tolerance
 - [ ] 7.3 Edit operations (add/move/trim/split/ripple/delete/speed) with validation + invariants test

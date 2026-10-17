@@ -218,3 +218,22 @@ Done instead:
 Why: keep the caller's cost to a memcpy and make every line accounted for.
 Impact: the app should call `Trace::Register()` at startup, `Stats::SetScopeTimings(true)` with --stats, and keep calling
 `Log::Shutdown()` last. `Log::Tick()` may be removed from the UI loop later; it is a no-op.
+
+## 2026-10-17 · P07 task 7.0 · ct_events created in P07; header is 44 bytes; writer/reader API
+Spec said: `ct_events` is created in P05 (P07 creates it only if it runs first). docs/04 section 2: `header_size u16 = 40`;
+the reader API is called `ct::project::EventLog`.
+Done instead:
+- P07 created `src/events` (`ct::events`, depends on ct_core only) because P05 has not been built. P05's recorder uses
+  `EventWriter` directly: packed payload structs (`CursorMovePayload`, `KeyPayload`, ...), typed `Write` helpers, buffered
+  in memory, `Flush()` = fwrite + fflush (call it every second from ct-events-io), auto-flush past a threshold (256 KB default).
+  The file is opened with `_SH_DENYWR`, so readers can open it while it is being recorded.
+- The header fields listed in docs/04 take 44 bytes, not 40 (4+2+2+8+8+16+4). The writer stores `header_size = 44`.
+  The reader accepts any `header_size >= 40` (multiple of 4) and skips to it, so a 40-byte header without `flags`
+  (flags = 0) also loads.
+- `EventLog` lives in `ct::events` (not `ct::project`): it is shared by recorder, project and render.
+  It adds derived data: `Strokes()` (key-downs of non-modifier keys as "Ctrl+Shift+S"; auto-repeat ignored) and
+  `TypingBursts()` (from TYPING records, else derived from key-downs closer than 1 s).
+- `CursorAt` interpolates position linearly but not across a hide/show; shape and visibility come from the earlier sample.
+- A truncated last record (crash while writing) ends reading and sets `Truncated()`; short payloads of known types are skipped.
+Why: docs/04 internal inconsistency; P05/P08 need the queries; crash tolerance.
+Impact: P05 links `ct_events` and writes with `EventWriter`; P08 reads with `EventLog`.
