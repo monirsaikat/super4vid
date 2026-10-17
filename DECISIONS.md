@@ -1290,3 +1290,38 @@ Done instead (every specified member exists with its signature; additions only):
 Why: P09 interface gaps; MediaCache rounding behaviour; real-time constraints of the audio thread.
 Impact: P09b drives `Tick()` each frame, calls `Resolve(playhead)` and re-renders while `all_exact` is false, and adds
 audio clips on audio tracks for dropped video media.
+
+## 2026-10-17 · P10 tasks 10.2-10.5 · ExportJob, Scaler, MP4/GIF/PNG/M4A details
+Spec said: export loop in docs/phases/P10 10.2 (one thread, `WriteVideoSync` with 2 alternating NV12 textures, audio after
+video per frame), `fast_start` -> `MF_MPEG4SINK_MOOV_BEFORE_MDAT`, M4A "fast_start", GIF two-pass palette + double-buffered
+readback, PNG at the playhead, `Scaler::Downscale(rc, src, SizeI src, dst, dst_size)`.
+Done instead:
+- **fast_start is ignored** (Mp4Writer does not support it, DECISIONS P04 4.3): moov stays at the end of MP4/M4A files.
+  Relocating moov after Finalize is left for later (PX); the preset field is kept and round-trips.
+- MP4 pipeline: ct-export resolves/renders/converts frame n into one of **3** NV12 textures and mixes its audio, while a
+  second thread "ct-export-write" calls `WriteVideoSync` + `WriteAudioSync` for frame n-1 (both sync calls stay on one
+  thread, as Mp4Writer requires). The writer gets `sync_pool_size = 16`, `video_queue = 16` (B-frames keep input textures
+  referenced; with 8 the loop waited on the encoder every frame). Audio is one mixed stereo AAC stream (mono when the
+  preset says 1 channel); 44.1 kHz presets export at 48 kHz (Mp4Writer and the mix are 48 kHz only).
+- Snapshot: `ExportRequest::project_snapshot` is the copy; the job's TimelinePlayer (`audio_output = false`,
+  `async_open = false`) and Compositor are its own; the RenderContext is shared and every GPU step runs under
+  `D3DDevice::Lock`. Thread priority BELOW_NORMAL (`ExportRequest::below_normal_priority = false` for benchmarks).
+- Output size: preset width kept, height from the canvas aspect, both even (min 16); fps: preset, else canvas; GIF at
+  `gif.fps`. Frames: ceil(range * fps). PNG: the frame at `range_start` (the dialog passes the playhead); `.jpg/.jpeg`
+  paths write JPEG quality 0.92. M4A: 100 ms audio chunks.
+- Scaler: own tiny shader (src/export/shaders/scale.hlsl, compiled with ct_compile_shaders) instead of the compositor's
+  internal pipelines; pipeline objects cached per device for the process. Intermediates come from the RenderContext temp
+  pool, which (since the P08 review fix) hands out 64 px-bucketed textures, so each pass gets a uv transform
+  (used / texture size, clamp to half a used texel). `BoxPasses()` added for tests.
+- GIF: pass 1 renders every 30th frame (`AddPaletteSample`), pass 2 renders frame n and copies it to staging[n & 1],
+  then maps staging[(n-1) & 1] (one-frame delay) and copies it to a CPU buffer *under the device lock* before
+  `AddFrame` (which may block on the encoder's two slots, so it never runs with the lock held).
+- Cancel: the loop stops at the next frame, the writer is finalized (or the GIF closed) and the file deleted;
+  `Progress::hr = HRESULT_FROM_WIN32(ERROR_CANCELLED)`, `cancelled = true`. Errors delete the partial file too.
+- Additions: `ExportRequest::{on_finished (Async::PostToUi), frame_timeout_ms, gpu_timing, below_normal_priority}`,
+  `Progress::{elapsed_s, output_bytes, encoder, resolve_ms, render_ms, video_ms, audio_ms, lock_wait_ms, compose_cpu_ms,
+  compose_gpu_avg_ms, inexact_frames, first_frame_ms}`, `ExportJob::{Running, OutputSize, OutputFps, FrameCount}`.
+- Tests compare MP4 vs preview in NV12 (preview converted by the same ColorConverter, so the PSNR measures the
+  encoder only). The committed pattern files use the README counter layout, read by tests/common/pattern_counter.h.
+Why: Mp4Writer limits; encoder back-pressure measured with export_demo; the P08 temp-pool change.
+Impact: the export dialog fills `ExportRequest` (playhead as range_start for PNG) and polls `GetProgress()`.
