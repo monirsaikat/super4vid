@@ -198,6 +198,15 @@ binaries of master b4d6553 run alternately with after; numbers are not CT_STRICT
   trimmed). Also fixed: a cache whose playhead frame found the budget held by another cache's window stalled until the
   next hint, so `WaitForFrame`/`ResolveExact` on that frame timed out (`media_cache_playhead_frame_when_another_cache_holds_the_budget`:
   before "no" after 5 s, after "yes", 1 over-budget store, trimmed back)
+- [x] F4 GIF encoder: banded parallel Floyd-Steinberg (bands from the height alone, so the output does not depend on the
+  thread count), nearest-colour table filled up front in parallel, parallel diff/canvas passes, LZW in 128 K-symbol
+  segments encoded in parallel and stitched with clear codes (+1.2 % size on a 720p frame); up to 8 helper threads at
+  the opener's priority (`quantize_bands_in_parallel_match_sequential`, `lzw_segmented_round_trip_and_thread_independent`).
+  Benches (Release): LZW 720p frame 7.5-20 ms -> 2.9 ms. `gif_demo` 720p20 worst case, alternating with b4d6553 at 80-100 %
+  CPU load: encoder busy 24.8 / 24.8 / 43.1 / 40.8 ms per frame -> 11.6 / 13.5 / 17.6 / 23.4 ms (encode 2.02-1.16x ->
+  4.31-2.14x real time; end to end 1.84-1.14x -> 3.44-1.39x); file 19,255,415 -> 19,268,590 bytes. `export_demo --preset
+  gif-720p --seconds 20` at 100 % load: 0.53x -> 1.02x (below-normal priority); with --normal-priority runs varied
+  0.40-0.59x both ways (decoding the 60 fps sources for 20 fps output and the device lock dominate there under this load)
 
 ## P11 Performance & polish
 - [ ] 11.1 Idle power: 0 redraws, timers coalesced, no busy waits (verify with WPR)

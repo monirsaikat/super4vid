@@ -1665,3 +1665,22 @@ Done instead:
   `WaitForFrame`) never got the frame. The overshoot is at most one frame per cache and short-lived.
 Why: status bar "cache 258/256 MB" (PROGRESS F3b); the stall reproduced by a test.
 Impact: the editor shows at most a frame over budget briefly; P11 memory audit can rely on Used <= Bytes otherwise.
+
+## 2026-10-18 · Perf follow-up (P10 task 10.4) · GIF encoder: banded dithering, segmented LZW, own worker threads
+Spec said: P10 10.4: serpentine Floyd-Steinberg over the frame, one LZW stream per image, quantization on the IO pool in
+parallel with rendering; DECISIONS 10.4: "No AVX2 path: the scalar code meets the budget".
+Done instead:
+- Floyd-Steinberg runs in horizontal bands of ~48 rows (`gif_detail::QuantBands(h)`, laid out from the region height
+  only); error does not cross a band edge, direction follows the absolute row parity. `GifEncoder::QuantizeRegion` /
+  `Quantize` produce the same banded result sequentially, so tests and the encoder agree byte for byte. A seam every
+  48 rows carries no error from above (not visible in the gradient fidelity test).
+- `NearestCache::FillRange/FillAll` (new): the encoder fills all 32768 entries when a palette is set (in parallel), so
+  the bands only read the table.
+- LZW: `gif_detail::LzwEncodeSegmented` encodes 128 K-symbol segments in parallel (each starts with a fresh table) and
+  stitches them with a clear code at the previous segment's final code width; decoders see an ordinary stream.
+  `GifEncoder::LzwEncode` itself is unchanged (single stream). +1.2 % size on a dithered 720p frame.
+- The per-frame LZW is no longer a separate Async job overlapping the next frame: everything per frame runs on
+  `gif_detail::Workers` (a fork-join set of up to 8 `ct-gif-worker` threads, half the logical processors, at the
+  priority of the thread that opened the encoder). The frame-diff mask and canvas passes are split by rows too.
+Why: GIF 720p20 export at 1.41x (31 ms per frame on the CPU, PROGRESS F4).
+Impact: an export uses up to 8 more threads while it encodes a GIF (below normal priority when the job is).
