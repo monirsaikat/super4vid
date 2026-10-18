@@ -133,7 +133,8 @@ void HintText(const char* s) {
 void PropertiesPanel::Draw(EditorState& state) {
     if (m_regen_due >= 0 && ImGui::GetTime() >= m_regen_due && !state.DragActive()) {
         m_regen_due = -1;
-        if (on_regenerate) on_regenerate(state);
+        if (on_live_regenerate) on_live_regenerate(state, m_regen_rev);
+        else if (on_regenerate) on_regenerate(state);
     }
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, Dp(8, 5));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Dp(8, 4));
@@ -261,7 +262,10 @@ void PropertiesPanel::DrawCameraSection(EditorState& state) {
                 p.camera.auto_params = ap;
                 return true;
             });
-            if (on_regenerate) m_regen_due = ImGui::GetTime() + 0.3;   // live regeneration, debounced (P09 9.5)
+            if (on_regenerate || on_live_regenerate) {   // live regeneration, debounced (P09 9.5)
+                m_regen_due = ImGui::GetTime() + 0.3;
+                m_regen_rev = state.revision;
+            }
         }
         ImGui::Dummy(Dp(0, 2));
         ImGui::BeginDisabled(!on_regenerate);

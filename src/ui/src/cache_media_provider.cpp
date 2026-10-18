@@ -19,11 +19,8 @@ void CacheMediaProvider::Clear() {
     m_peaks.clear();
 }
 
-MediaStatus CacheMediaProvider::Thumbnail(const Id& media, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) {
-    const Media* m = m_project ? m_project->FindMedia(media) : nullptr;
-    if (!m || m->missing || m->kind == Media::Kind::Audio) return MediaStatus::Unavailable;
-    bool failed = false;
-    playback::MediaCache* c = m_cache ? m_cache(media, &failed) : nullptr;
+MediaStatus CacheMediaProvider::FromCache(playback::MediaCache* c, bool failed, TimeUs t, ImTextureID& tex, ImVec2& uv0,
+                                          ImVec2& uv1) {
     if (!c) return failed ? MediaStatus::Unavailable : MediaStatus::Loading;   // opening on the IO pool
     if (!c->HasVideo() && !c->Info().is_image) return MediaStatus::Unavailable;
     ID3D11ShaderResourceView* srv = nullptr;
@@ -33,6 +30,23 @@ MediaStatus CacheMediaProvider::Thumbnail(const Id& media, TimeUs t, ImTextureID
     uv0 = ImVec2(0, 0);
     uv1 = ImVec2(1, 1);
     return MediaStatus::Ready;
+}
+
+MediaStatus CacheMediaProvider::Thumbnail(const Id& media, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) {
+    const Media* m = m_project ? m_project->FindMedia(media) : nullptr;
+    if (!m || m->missing || m->kind == Media::Kind::Audio) return MediaStatus::Unavailable;
+    bool failed = false;
+    playback::MediaCache* c = m_cache ? m_cache(media, &failed) : nullptr;
+    return FromCache(c, failed || !m_cache, t, tex, uv0, uv1);
+}
+
+MediaStatus CacheMediaProvider::ClipThumbnail(const Clip& clip, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) {
+    if (clip.source != Clip::Source::Camera || !m_camera) return Thumbnail(clip.media, t, tex, uv0, uv1);
+    const Media* m = m_project ? m_project->FindMedia(clip.media) : nullptr;
+    if (!m || m->missing || !m->has_camera) return MediaStatus::Unavailable;
+    bool failed = false;
+    playback::MediaCache* c = m_camera(clip.media, &failed);
+    return FromCache(c, failed, t, tex, uv0, uv1);
 }
 
 const float* CacheMediaProvider::PeaksMinMax(const Id& media, int stream, size_t* n, int* per_second, MediaStatus* status) {

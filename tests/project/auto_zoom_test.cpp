@@ -5,6 +5,7 @@
 
 #include <ct/core/fs.h>
 #include <ct/core/strings.h>
+#include <ct/core/time.h>
 #include <ct/events/event_log.h>
 #include <ct/project/auto_zoom.h>
 #include <ct/project/importer.h>
@@ -320,4 +321,142 @@ CT_TEST(auto_zoom_applied_on_import) {
     CT_REQUIRE(ImportRecording(q, bundle, &err, ImportOptions{true, false}));
     CT_CHECK(q.camera.keys.empty());
     fs::DeleteTree(dir);
+}
+
+namespace {
+
+// One recording (1920x1080, events), a plain video, two screen clips of the recording (the second trimmed, at 2x),
+// a mic clip of the recording and a clip of the plain video.
+Project RegenProject() {
+    Project p;
+    p.id = "regen";
+    p.media.push_back(MakeMedia("rec", Media::Kind::Recording, 60'000'000, "C:/r/take.ctrec"));
+    p.media.back().has_events = true;
+    p.media.back().audio_streams = {"mic"};
+    p.media.push_back(MakeMedia("vid", Media::Kind::Video, 60'000'000, "C:/r/broll.mp4"));
+    p.tracks.push_back(MakeTrack("t1", Track::Kind::Video, "Screen"));
+    p.tracks.push_back(MakeTrack("t2", Track::Kind::Audio, "Mic"));
+    p.clips.push_back(MakeClip("c2", "t1", "rec", Clip::Source::Screen, 40'000'000, 20'000'000, 40'000'000));
+    p.clips.back().speed = 2.0;
+    p.clips.push_back(MakeClip("c1", "t1", "rec", Clip::Source::Screen, 0, 0, 20'000'000));
+    p.clips.push_back(MakeClip("c3", "t2", "rec", Clip::Source::Mic, 0, 0, 20'000'000));
+    p.clips.push_back(MakeClip("c4", "t1", "vid", Clip::Source::Default, 100'000'000, 0, 20'000'000));
+    p.RecomputeNextId();
+    p.camera.auto_params.follow = false;
+    return p;
+}
+
+events::EventLog RegenLog() {
+    events::EventWriter w;
+    w.OpenMemory(Region(1920, 1080));
+    w.MouseButton(5'000'000, events::Button::Left, true, 480, 270);     // c1
+    w.MouseButton(30'000'000, events::Button::Left, true, 1440, 810);   // c2 (media 30 s)
+    events::EventLog log;
+    log.LoadFromMemory(w.Bytes(), nullptr);
+    return log;
+}
+
+} // namespace
+
+CT_TEST(auto_zoom_regenerate_covers_screen_clips_of_recordings) {
+    Project p = RegenProject();
+    const events::EventLog log = RegenLog();
+    int lookups = 0;
+    const AutoZoom::LogLookup lookup = [&](const Media& m) -> const events::EventLog* {
+        ++lookups;
+        return m.id == "rec" ? &log : nullptr;
+    };
+    int clips = 0;
+    const std::vector<CameraKey> keys = AutoZoom::ForProject(p, lookup, &clips);
+    CT_CHECK_EQ(clips, 2);
+    CT_CHECK_EQ(lookups, 2);   // only screen clips are looked up (the mic clip and the plain video clip are not)
+    std::vector<CameraKey> want = AutoZoom::ForClip(*p.FindClip("c1"), log, SizeI{1920, 1080}, p.camera.auto_params);
+    const std::vector<CameraKey> k2 = AutoZoom::ForClip(*p.FindClip("c2"), log, SizeI{1920, 1080}, p.camera.auto_params);
+    CT_REQUIRE(want.size() == 4 && k2.size() == 4);
+    want.insert(want.end(), k2.begin(), k2.end());
+    CT_REQUIRE(keys.size() == want.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+        CT_CHECK_EQ(keys[i].t_us, want[i].t_us);
+        CT_CHECK(keys[i].generated);
+    }
+    // c2: media 30 s -> 10 s into the clip at 2x -> timeline 40 s + (10 s - 0.8 s) / 2.
+    CT_CHECK_EQ(keys[4].t_us, TimeUs(40'000'000 + (10'000'000 - 800'000) / 2));
+
+    // Regenerate replaces generated keys only; a manual key survives and wins at its time.
+    CameraKey manual;
+    manual.t_us = 70'000'000;
+    manual.zoom = 1.5f;
+    p.camera.keys.push_back(manual);
+    CameraKey stale;
+    stale.t_us = 80'000'000;
+    stale.generated = true;
+    p.camera.keys.push_back(stale);
+    bool changed = false;
+    CT_REQUIRE(AutoZoom::Regenerate(p, lookup, &changed, &clips));
+    CT_CHECK(changed);
+    CT_CHECK_EQ(p.camera.keys.size(), size_t(9));
+    CT_CHECK(p.camera.IsSorted());
+    bool has_manual = false, has_stale = false;
+    for (const CameraKey& k : p.camera.keys) {
+        has_manual |= k.t_us == 70'000'000 && !k.generated;
+        has_stale |= k.t_us == 80'000'000;
+    }
+    CT_CHECK(has_manual);
+    CT_CHECK(!has_stale);
+    std::string why;
+    if (!p.Validate(&why)) CT_FAIL(why);
+    // Again with the same inputs: nothing changes (the editor pushes no undo entry then).
+    CT_REQUIRE(AutoZoom::Regenerate(p, lookup, &changed));
+    CT_CHECK(!changed);
+    // New parameters -> new keys.
+    p.camera.auto_params.zoom = 3.0f;
+    CT_REQUIRE(AutoZoom::Regenerate(p, lookup, &changed));
+    CT_CHECK(changed);
+    float max_zoom = 0;
+    for (const CameraKey& k : p.camera.keys)
+        if (k.generated) max_zoom = std::max(max_zoom, k.zoom);
+    CT_CHECK_NEAR(max_zoom, 3.0f, 1e-6f);
+    // on_click off and no typing: no interest events -> no generated keys, the manual key stays.
+    p.camera.auto_params.on_click = false;
+    CT_REQUIRE(AutoZoom::Regenerate(p, lookup, &changed));
+    CT_CHECK(changed);
+    CT_CHECK_EQ(p.camera.keys.size(), size_t(1));
+    // No log at all: false and the project is unchanged.
+    const std::string before = ToJson(p);
+    CT_CHECK(!AutoZoom::Regenerate(p, [](const Media&) -> const events::EventLog* { return nullptr; }, &changed, &clips));
+    CT_CHECK_EQ(clips, 0);
+    CT_CHECK(!changed);
+    CT_CHECK_EQ(ToJson(p), before);
+}
+
+// Regenerate runs on the UI thread (button, live after a parameter change): a 30 min recording with a click every
+// 4 s, typing and 120 Hz cursor samples, follow on, must stay far below a frame.
+CT_TEST(auto_zoom_regenerate_long_recording_is_fast) {
+    const TimeUs dur = 30LL * 60 * 1'000'000;
+    std::vector<Click> clicks;
+    for (TimeUs t = 2'000'000; t < dur - 2'000'000; t += 4'000'000)
+        clicks.push_back({t, static_cast<int>((t / 1000) % 1800) + 60, static_cast<int>((t / 7000) % 1000) + 40});
+    events::EventLog log;
+    CT_REQUIRE(log.LoadFromMemory(MakeEventsFile(1920, 1080, clicks, dur), nullptr));
+    Project p = RegenProject();
+    p.media[0].duration_us = dur;
+    p.clips.erase(p.clips.begin());   // c2 (in at 20 s) would overlap c1 below
+    p.FindClip("c1")->out_us = dur;
+    p.camera.auto_params.follow = true;
+    const AutoZoom::LogLookup lookup = [&](const Media& m) -> const events::EventLog* { return m.id == "rec" ? &log : nullptr; };
+    double best_ms = 1e9;
+    size_t n = 0;
+    for (int i = 0; i < 5; ++i) {
+        Project q = p;
+        Stopwatch sw;
+        sw.Start();
+        CT_REQUIRE(AutoZoom::Regenerate(q, lookup));
+        best_ms = std::min(best_ms, sw.ElapsedMs());
+        n = q.camera.keys.size();
+    }
+    std::printf("    regenerate 30 min, %zu clicks, follow: %zu keys, best %.2f ms\n", clicks.size(), n, best_ms);
+    CT_CHECK(n > clicks.size());
+#if defined(NDEBUG)
+    CT_CHECK(best_ms < 50.0);
+#endif
 }

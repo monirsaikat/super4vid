@@ -138,6 +138,18 @@ struct EditorState {
         return true;
     }
 
+    // Like Edit, but when nothing changed the document since `amend_revision` (the `revision` right after an earlier
+    // edit) and no drag is open, the change joins that edit's undo entry instead of pushing its own (live Auto-Zoom
+    // regeneration after a parameter change: one undo reverts parameters and keys). Otherwise a normal Edit(label).
+    template <class Fn>
+    bool EditAmend(const char* label, uint64_t amend_revision, Fn&& fn) {
+        if (revision != amend_revision || m_drag_active || !undo.CanUndo()) return Edit(label, fn);
+        if (!fn(project)) return false;
+        undo.Amend();
+        Commit(false, std::string(), label);
+        return true;
+    }
+
     // Undo coalescing for drags: all Edits between Begin and End form one undo entry labelled `label`.
     void BeginDrag(const char* label);
     void EndDrag();
