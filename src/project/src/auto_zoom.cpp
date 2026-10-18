@@ -196,4 +196,48 @@ void AutoZoom::AppendKeys(Camera& camera, const std::vector<CameraKey>& keys) {
     }
 }
 
+std::vector<CameraKey> AutoZoom::ForProject(const Project& p, const LogLookup& log_for, int* clips) {
+    std::vector<const Clip*> screen;
+    for (const Clip& c : p.clips)
+        if (c.source == Clip::Source::Screen && !c.IsAnnotation()) screen.push_back(&c);
+    std::stable_sort(screen.begin(), screen.end(), [](const Clip* a, const Clip* b) { return a->start_us < b->start_us; });
+    std::vector<CameraKey> keys;
+    int used = 0;
+    for (const Clip* c : screen) {
+        const Media* m = p.FindMedia(c->media);
+        if (!m || m->kind != Media::Kind::Recording) continue;
+        const events::EventLog* log = log_for ? log_for(*m) : nullptr;
+        if (!log) continue;
+        const SizeI vs{m->width > 0 ? m->width : p.canvas.width, m->height > 0 ? m->height : p.canvas.height};
+        const std::vector<CameraKey> k = ForClip(*c, *log, vs, p.camera.auto_params);
+        keys.insert(keys.end(), k.begin(), k.end());
+        ++used;
+    }
+    // Stable: on equal times the key of the earlier clip (inserted first) stays.
+    std::stable_sort(keys.begin(), keys.end(), [](const CameraKey& a, const CameraKey& b) { return a.t_us < b.t_us; });
+    keys.erase(std::unique(keys.begin(), keys.end(), [](const CameraKey& a, const CameraKey& b) { return a.t_us == b.t_us; }),
+               keys.end());
+    if (clips) *clips = used;
+    return keys;
+}
+
+bool AutoZoom::Regenerate(Project& p, const LogLookup& log_for, bool* changed, int* clips) {
+    int used = 0;
+    const std::vector<CameraKey> keys = ForProject(p, log_for, &used);
+    if (clips) *clips = used;
+    if (changed) *changed = false;
+    if (!used) return false;
+    std::vector<CameraKey> before = p.camera.keys;
+    p.camera.ReplaceGenerated(keys);
+    if (changed) {
+        const auto same = [](const CameraKey& a, const CameraKey& b) {
+            return a.t_us == b.t_us && a.zoom == b.zoom && a.cx == b.cx && a.cy == b.cy && a.ease == b.ease &&
+                   a.generated == b.generated;
+        };
+        *changed = before.size() != p.camera.keys.size() ||
+                   !std::equal(before.begin(), before.end(), p.camera.keys.begin(), same);
+    }
+    return true;
+}
+
 } // namespace ct::project

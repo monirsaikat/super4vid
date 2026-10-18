@@ -33,6 +33,14 @@ void UndoStack::PushJson(std::string before_json, const char* label) {
     Enforce();
 }
 
+bool UndoStack::Amend() {
+    if (m_undo.empty()) return false;
+    for (const Entry& e : m_redo) m_bytes -= e.json.size();
+    m_redo.clear();
+    m_state = ++m_next_state;
+    return true;
+}
+
 // Oldest undo entries go first; when only redo entries are left (after undoing everything, a redo snapshot can be
 // larger than the undo entry it replaced), the farthest redo goes.
 void UndoStack::Enforce() {

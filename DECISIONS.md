@@ -1752,3 +1752,29 @@ locks in front of the frame a scrub waits for; on the loaded machine the seek-be
 than not (260 -> 306 / 421 ms, 554 -> 923 ms in A/B runs), while the p50 gain came from the scrub abort/resume.
 Why: seek latency of the playhead frame comes first.
 Impact: none outside MediaCache; the test is now `media_cache_one_copy_per_frame_window_fill` (<= 2 seeks).
+
+## 2026-10-18 · P09 tasks 9.4/9.5 · Media provider, scrub/auto-scroll, Regenerate with undo
+Spec said: filmstrips from `MediaCache::Thumbnail(media_t)` and peaks at 100/s, never blocking; scrubbing calls
+`player.HintScrub`; playback auto-scrolls (page by 80 %); Camera section: auto parameters with live regeneration
+(debounced 300 ms) and "Regenerate"; every mutation is one undo entry through `state.Edit`.
+Done instead / interpreted:
+- `TimelineMediaProvider` gained `ClipThumbnail(clip, t, ...)` (default: `Thumbnail(clip.media, ...)`); the editor's
+  `CacheMediaProvider` takes a second cache function and serves `Source::Camera` clips of a recording from
+  `TimelinePlayer::CameraCache`, so the camera lane shows the webcam instead of the screen.
+- Auto-scroll in reverse (J) pages left when the playhead reaches the left 5 %; a far jump puts the playhead 90 % in
+  (10 % going forward), so it is not immediately off-screen again.
+- "Regenerate" covers everything generated from events.ctev: click/typing zooms and the Auto-Follow cursor pans (the
+  cursor's look, click ripples and keystrokes are drawn live from the log by the compositor and need no regeneration).
+  The logic moved from the editor window to `AutoZoom::ForProject/Regenerate(project, log lookup)` (ct_project) so it
+  is tested without a window; screen clips are processed in timeline order and the earlier clip wins at equal times.
+  It runs on the UI thread: a 30 min recording takes 0.5-2.6 ms (the IO pool is only used to load the logs).
+- Undo: an explicit Regenerate is its own entry ("Regenerate Auto-Zoom") and none when the keys did not change. The live
+  regeneration amends the parameter edit's entry (`UndoStack::Amend`, `EditorState::EditAmend(label, revision, fn)`)
+  when `EditorState::revision` still equals the value right after that edit; any edit, undo or redo in between makes
+  it a separate entry. Otherwise one undo would revert only the keys and leave the new parameters (or the reverse).
+  `PropertiesPanel::on_live_regenerate(state, amend_revision)` carries the revision; `on_regenerate` is unchanged.
+- Test-only finding: `MediaCache::Thumbnail` calls `Async::Run` while holding its aux lock, so after
+  `Async::Shutdown()` (inline jobs) it deadlocks. Never happens in the app (the pool lives until exit); ct_ui_tests
+  restart the pool around MediaCache tests. Left for the playback owner.
+Why: undo must restore what the user saw; camera clips showed the wrong video; reverse playback lost the playhead.
+Impact: providers other than CacheMediaProvider are unaffected (default ClipThumbnail).

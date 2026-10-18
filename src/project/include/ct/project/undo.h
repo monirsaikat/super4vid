@@ -24,6 +24,10 @@ public:
     // current_json: ToJson(current) when the caller already has it (saves one serialization).
     bool Undo(Project& current, const std::string* current_json = nullptr);
     bool Redo(Project& current, const std::string* current_json = nullptr);
+    // The newest entry absorbs a further change instead of a new entry being pushed (Auto-Zoom keys regenerated right
+    // after the parameter edit that caused them: one undo reverts both). Clears redo; the state counts as changed
+    // (dirty against a save in between). False, and nothing changes, when there is no undo entry.
+    bool Amend();
     bool CanUndo() const { return !m_undo.empty(); }
     bool CanRedo() const { return !m_redo.empty(); }
     const char* UndoLabel() const;   // "" when empty

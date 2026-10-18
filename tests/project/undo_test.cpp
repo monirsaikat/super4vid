@@ -320,3 +320,30 @@ CT_TEST(autosave_slow_write_does_not_block_tick) {
     a.Clear();
     fs::DeleteTree(dir);
 }
+
+// P09 9.5: live Auto-Zoom regeneration amends the parameter edit's entry, so one undo reverts both.
+CT_TEST(undo_amend_joins_newest_entry) {
+    Project p = MakeSampleProject();
+    UndoStack undo;
+    CT_CHECK(!undo.Amend());   // nothing to amend
+    const std::string s0 = ToJson(p);
+    undo.Push(p, "Edit camera");
+    p.camera.auto_params.zoom = 3.0f;
+    undo.MarkSaved();          // a save between the parameter edit and the regeneration
+    CT_CHECK(!undo.IsDirty());
+    CameraKey k;
+    k.t_us = 5'000'000;
+    k.zoom = 3.0f;
+    k.generated = true;
+    p.camera.keys.push_back(k);
+    CT_REQUIRE(undo.Amend());
+    CT_CHECK(undo.IsDirty());   // the amended change is unsaved
+    CT_CHECK_EQ(undo.UndoEntries(), size_t(1));
+    CT_CHECK_EQ(std::string(undo.UndoLabel()), std::string("Edit camera"));
+    const std::string s1 = ToJson(p);
+    CT_REQUIRE(undo.Undo(p));
+    CT_CHECK_EQ(ToJson(p), s0);   // parameters and keys together
+    CT_REQUIRE(undo.Redo(p));
+    CT_CHECK_EQ(ToJson(p), s1);
+    CT_CHECK(undo.IsDirty());
+}

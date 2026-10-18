@@ -135,6 +135,7 @@ constexpr const char* kUndoProperty = "Edit property";
 constexpr const char* kUndoKeyframe = "Keyframe";
 constexpr const char* kUndoCanvas = "Edit canvas";
 constexpr const char* kUndoCamera = "Edit camera";
+constexpr const char* kUndoRegenerate = "Regenerate Auto-Zoom";
 constexpr const char* kUndoRemoveMedia = "Remove media";
 
 // --- Properties ------------------------------------------------------------------------------------------------
