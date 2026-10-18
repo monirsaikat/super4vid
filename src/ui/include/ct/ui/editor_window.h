@@ -72,6 +72,7 @@ public:
     struct Stats {
         double last_scrub_ms = -1;          // playhead change -> exact frame rendered (paused)
         double last_render_cpu_ms = 0;      // Compositor CPU time of the last preview frame
+        double last_render_gpu_ms = -1;     // Compositor GPU time (timestamp queries, a few frames late; -1 unknown)
         uint64_t preview_renders = 0;
         uint64_t frames_inexact_playing = 0;   // preview frames rendered while playing without every exact frame
         uint64_t playing_frames = 0;
@@ -81,6 +82,9 @@ public:
     const Stats& GetStats() const { return m_stats; }
     void SetRedrawsPerSecond(uint32_t r) { m_redraws_per_s = r; }
     std::function<void(double ms)> on_scrub_latency;   // bench hook: every completed scrub measurement
+    // Set before Create: false skips the crash-recovery scan (benches/screenshots: its modal prompt would take the
+    // synthetic input, and another session's autosave is not theirs to offer).
+    bool scan_recovery = true;
 
 private:
     struct Impl;

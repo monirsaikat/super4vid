@@ -743,6 +743,7 @@ struct EditorWindow::Impl {
         last_t = t;
         ++w.m_stats.preview_renders;
         w.m_stats.last_render_cpu_ms = comp.LastTiming().total_ms;
+        w.m_stats.last_render_gpu_ms = comp.LastTiming().gpu_total_ms;
         if (playing) {
             ++w.m_stats.playing_frames;
             if (!exact) ++w.m_stats.frames_inexact_playing;
@@ -1011,7 +1012,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     I.Install(I.NewProject(), false);
     I.LoadRecent();
     // Crash recovery scan (blocking IO on the pool).
-    Async::Run([this, a = std::weak_ptr<int>(I.alive)] {
+    if (scan_recovery) Async::Run([this, a = std::weak_ptr<int>(I.alive)] {
         std::vector<Autosave::Recoverable> list = Autosave::FindRecoverable();
         Async::PostToUi([this, a, list] {
             if (!a.lock()) return;

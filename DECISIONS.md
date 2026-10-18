@@ -1938,3 +1938,37 @@ costs nothing measurable once BeginWriting is deferred.
 Impact: `--bench-hotkey 5` countdown 0: 353/555/640 -> 51.5/60.7/111 ms (min/median/max); idle bar armed 0 redraws/s,
 CPU 0.64 % of one core vs 0.55 % unarmed (noise), GPU 0. An empty hidden `.ctrec` exists in the output folder while
 armed. Tests `session_armed_start_is_fast`, `bundle_stale_armed_cleanup`, `capture_released_duplication_comes_back_at_start`.
+
+## 2026-10-18 · P09 9.7 · --bench-scrub hang: root cause and regression test
+Spec said: (P09 pitfalls) scrubbing shows the nearest cached frame and redraws when the exact one lands.
+Done instead: no new rule; the fix is the perf follow-up's "playhead frame is always stored" (cache budget entry
+above, commit f70bdab), which landed in parallel with an equivalent fix on this branch (dropped at the merge).
+Recorded here because it was the root cause of the 9.7 `--bench-scrub` hang on `preview_bench.ctproj` (screen +
+camera + 4K B-roll): the other caches' paused windows filled the global budget while every frame of one cache was
+pinned or in its window ahead of the playhead; the room check failed before the playhead frame was decoded, the
+prefetch thread marked the hint generation stalled and slept until the next hint, which a paused playhead never
+sends. The preview stayed inexact forever (and the editor redrew at 60 fps). Kept from this branch: test
+`timeline_player_paused_seek_exact_under_full_budget` (ct_render_tests: every paused seek exact within 8 s with the
+budget full of foreign bytes, and with a 40 MB budget three files compete for; it failed on every seek before the
+fix) and the bench safeguards below.
+Why: the bench and the editor share the path; a test keeps it from coming back.
+Impact: none beyond the perf entry.
+
+## 2026-10-18 · P09 9.7 · Bench input survives focus loss; benches report what they measured
+Spec said: `--bench-drag N` drags a clip for N frames and reports fps.
+Done instead: benches set `io.ConfigDebugIgnoreFocusLoss`: a bench window launched from a script is often not (or
+stops being) the foreground window, and the Win32 backend's focus-loss event made ImGui clear the mouse, releasing the
+synthetic button two frames into the press (the 59.9 fps on master measured an idle timeline: drag active in 0
+frames). The drag re-asserts the button every frame and reports the frames in which the clip moved (INVALID when it
+did not move in most of them). `--bench-scrub` reports a seek that is not exact after 10 s instead of waiting forever,
+keeps cold seeks a third of a short project away from the playhead, and steps the other way at either end. Drag and
+play reports add the preview renders, their compositor GPU time and the swapchain frame-latency waits.
+A press that has not started a drag 10 frames later is released and retried (at most 5 times), printing the hovered
+window. Benches and screenshots skip the crash-recovery scan (`EditorWindow::scan_recovery`), and a bench discards its
+own autosave when it closes: a bench closes without the unsaved prompt, so its dirty project's autosave survived, the
+next launch opened the modal "Recover unsaved project?" and the modal took the synthetic mouse (2 of 3 drag runs).
+A bench or screenshot window found minimized is restored (SW_SHOWNOACTIVATE) and the report says so: a minimized
+editor renders nothing and waits for input, and something on the shared desktop minimized bench windows (stack dump:
+main thread idle in MsgWaitForMultipleObjectsEx; one --bench-play frame lasted 846 s).
+Why: a bench number is only useful when the bench did what it claims.
+Impact: none outside the bench modes.

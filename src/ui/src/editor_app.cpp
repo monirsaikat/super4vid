@@ -21,6 +21,7 @@
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
+#include <imgui_internal.h>   // bench-drag diagnostics (hovered window, active id)
 
 #include <psapi.h>
 #include <shellapi.h>
@@ -106,12 +107,17 @@ struct App {
     std::vector<double> frame_ms;    // wall time between presents
     std::vector<double> cpu_ms;      // RenderOneFrame CPU time (incl. present wait)
     std::vector<double> build_ms;    // ImGui NewFrame..Render (UI CPU)
+    std::vector<double> gpu_ms;      // compositor GPU time of each preview render
+    std::vector<double> swap_wait_ms;   // waits for the swapchain's frame latency object (GPU behind)
+    uint64_t renders_seen = 0;
     int64_t last_present_qpc = 0;
     std::vector<double> scrub_cold, scrub_cached;
     int scrub_phase = 0;             // 0 waiting for media, 1 cold seeks, 2 cached seeks, 3 done
     int scrub_i = 0;
     bool scrub_waiting = false;
     int64_t scrub_settle_until = 0;
+    int64_t scrub_seek_qpc = 0;      // when the pending seek was issued
+    int scrub_timeouts = 0;          // seeks not exact within 10 s
     std::mt19937 rng{12345};
     int64_t bench_start_qpc = 0;
     bool bench_done = false;
@@ -119,6 +125,11 @@ struct App {
     project::Id drag_clip;
     TimeUs drag_clip_start = -1;
     int drag_active_frames = 0;
+    int drag_moves = 0;              // frames in which the dragged clip's start changed
+    int drag_base = 0;               // bench frame offset of the latest press attempt
+    int restored_from_minimized = 0; // times a bench window was found minimized and restored
+    int drag_retries = 0;
+    TimeUs drag_last_start = -1;
 };
 
 App* g_app = nullptr;
@@ -256,23 +267,49 @@ void BenchInput(App& app) {
             io.AddMousePosEvent(start.x, start.y);
             return;
         }
-        if (f == 2) {
+        // g counts from the (latest) press attempt: a press that did not start a drag is retried.
+        const int g = f - app.drag_base;
+        if (g == 2) {
             io.AddMousePosEvent(start.x, start.y);
             io.AddMouseButtonEvent(0, true);
+            app.drag_active_frames = 0;
+            app.drag_moves = 0;
+            app.drag_last_start = -1;
             app.drag_clip = clip;
             if (const project::Clip* c = s.project.FindClip(clip)) app.drag_clip_start = c->start_us;
             app.frame_ms.clear();
             app.cpu_ms.clear();
             app.build_ms.clear();
+            app.gpu_ms.clear();
+            app.swap_wait_ms.clear();
             return;
         }
         const int n = std::max(60, L.bench_count);
         if (s.DragActive()) ++app.drag_active_frames;
-        if (f < n + 3) {
+        if (const project::Clip* c = s.project.FindClip(app.drag_clip)) {
+            if (app.drag_last_start >= 0 && c->start_us != app.drag_last_start) ++app.drag_moves;
+            app.drag_last_start = c->start_us;
+        }
+        if (g == 12 && app.drag_active_frames == 0) {
+            // 10 frames and 27 px after the press without a drag: something took the press (a window over the
+            // timeline, a lost button). Release, report what was hovered, press again (at most 5 times).
+            ImGuiContext& ctx = *ImGui::GetCurrentContext();
+            std::printf("bench-drag: press %d did not start a drag (hovered window %s, active id %08x, mouse %.0f,%.0f)\n", app.drag_retries + 1,
+                        ctx.HoveredWindow ? ctx.HoveredWindow->Name : "none", ctx.ActiveId, io.MousePos.x, io.MousePos.y);
+            io.AddMouseButtonEvent(0, false);
+            if (++app.drag_retries > 5) {
+                app.bench_done = true;
+                return;
+            }
+            app.drag_base = f - 1;   // the next frame is g == 2 again
+            return;
+        }
+        if (g < n + 3) {
             // Triangle wave 0..+300 px (into the free time after the clip), 3 px per frame.
-            const int k = (f - 3) % 200;
+            const int k = (g - 3) % 200;
             const float dx = static_cast<float>(k < 100 ? k * 3 : (200 - k) * 3);
             io.AddMousePosEvent(start.x + dx, start.y);
+            io.AddMouseButtonEvent(0, true);   // re-assert (ignored while already down): nothing else may release it
             return;
         }
         io.AddMouseButtonEvent(0, false);
@@ -284,6 +321,8 @@ void BenchInput(App& app) {
             app.frame_ms.clear();
             app.cpu_ms.clear();
             app.build_ms.clear();
+            app.gpu_ms.clear();
+            app.swap_wait_ms.clear();
             app.bench_start_qpc = QpcNow();
         }
         if (app.bench_frame > 90 && static_cast<double>(QpcNow() - app.bench_start_qpc) / app.qpc_freq > std::max(2, L.bench_count)) {
@@ -302,7 +341,16 @@ void BenchInput(App& app) {
             if (app.bench_frame > 120 && st.pending_opens == 0 && dur > 0) app.scrub_phase = 1;
             return;
         }
-        if (app.scrub_waiting) return;   // the latency callback clears it
+        if (app.scrub_waiting) {   // the latency callback clears it
+            // A seek whose exact frame never lands is reported, not waited for forever (the 9.7 hang).
+            if (static_cast<double>(QpcNow() - app.scrub_seek_qpc) / app.qpc_freq > 10.0) {
+                ++app.scrub_timeouts;
+                app.scrub_waiting = false;
+                ++app.scrub_i;
+                std::printf("bench-scrub: seek %d to %.3f s not exact after 10 s\n", app.scrub_i, static_cast<double>(s.Playhead()) / 1e6);
+            }
+            return;
+        }
         if (QpcNow() < app.scrub_settle_until) return;
         const int n = std::max(5, L.bench_count);
         const TimeUs frame = s.FrameUs();
@@ -312,14 +360,17 @@ void BenchInput(App& app) {
                 app.scrub_i = 0;
                 return;
             }
-            // Cold: a random time at least 3 s away from the current playhead (outside every prefetch window).
+            // Cold: a random time away from the current playhead, outside its paused prefetch window
+            // ([t - 0.25 s, t + 0.5 s]): 3 s, or a third of a short project.
+            const TimeUs away = std::min<TimeUs>(3'000'000, dur / 3);
             TimeUs t = 0;
             for (int tries = 0; tries < 50; ++tries) {
                 t = static_cast<TimeUs>(std::uniform_real_distribution<double>(0, static_cast<double>(dur - frame))(app.rng));
-                if (std::llabs(t - s.Playhead()) > 3'000'000 || dur < 6'000'000) break;
+                if (std::llabs(t - s.Playhead()) > away) break;
             }
             s.playback->Seek(t);
             app.scrub_waiting = true;
+            app.scrub_seek_qpc = QpcNow();
         } else if (app.scrub_phase == 2) {
             if (app.scrub_i >= n) {
                 app.scrub_phase = 3;
@@ -327,9 +378,11 @@ void BenchInput(App& app) {
                 return;
             }
             // Cached: one frame forward / back from a playhead whose neighbourhood the paused prefetch filled.
-            const TimeUs t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? -frame : frame), 0, dur - frame);
+            TimeUs t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? -frame : frame), 0, dur - frame);
+            if (t == s.Playhead()) t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? frame : -frame), 0, dur - frame);   // at an end
             s.playback->Seek(t);
             app.scrub_waiting = true;
+            app.scrub_seek_qpc = QpcNow();
         }
     }
 }
@@ -362,6 +415,11 @@ bool RenderOneFrame(App& app) {
         if (app.last_present_qpc) app.frame_ms.push_back(static_cast<double>(end - app.last_present_qpc) * 1000.0 / app.qpc_freq);
         app.cpu_ms.push_back(app.last_frame_ms);
         app.build_ms.push_back(static_cast<double>(built - start) * 1000.0 / app.qpc_freq);
+        const EditorWindow::Stats& st = app.editor.GetStats();
+        if (st.preview_renders != app.renders_seen) {
+            app.renders_seen = st.preview_renders;
+            if (st.last_render_gpu_ms >= 0) app.gpu_ms.push_back(st.last_render_gpu_ms);
+        }
     }
     app.last_present_qpc = end;
     ++app.redraws_this_second;
@@ -389,15 +447,24 @@ void ReportBench(App& app) {
             std::printf("  dragged clip %s: start %.3f s -> %.3f s, drag active in %d frames\n", app.drag_clip.c_str(),
                         static_cast<double>(app.drag_clip_start) / 1e6, dc ? static_cast<double>(dc->start_us) / 1e6 : -1.0,
                         app.drag_active_frames);
+            std::printf("  clip moved in %d frames%s\n", app.drag_moves,
+                        app.drag_moves * 2 < static_cast<int>(app.frame_ms.size()) ? " -- INVALID: the drag did not edit in most frames" : "");
         }
         if (L.bench == "--bench-play")
             std::printf("  preview: %llu frames rendered while playing, %llu without every exact frame, render CPU last %.2f ms\n",
                         static_cast<unsigned long long>(st.playing_frames), static_cast<unsigned long long>(st.frames_inexact_playing), st.last_render_cpu_ms);
+        const Percentiles g = Stats(app.gpu_ms);
+        std::printf("  preview renders during the run: %zu, compositor GPU p50 %.2f p95 %.2f max %.2f ms\n", app.gpu_ms.size(), g.p50, g.p95, g.max);
+        const Percentiles sw = Stats(app.swap_wait_ms);
+        std::printf("  swapchain wait (GPU behind) p50 %.2f p95 %.2f max %.2f ms\n", sw.p50, sw.p95, sw.max);
     } else if (L.bench == "--bench-scrub") {
         const Percentiles a = Stats(app.scrub_cold), b = Stats(app.scrub_cached);
         std::printf("bench-scrub: cold %zu seeks p50 %.1f p95 %.1f max %.1f ms; cached %zu seeks p50 %.1f p95 %.1f max %.1f ms\n",
                     app.scrub_cold.size(), a.p50, a.p95, a.max, app.scrub_cached.size(), b.p50, b.p95, b.max);
+        std::printf("  seeks not exact within 10 s: %d\n", app.scrub_timeouts);
     }
+    if (app.restored_from_minimized)
+        std::printf("  the window was minimized %d time(s) during the run and restored (numbers include it)\n", app.restored_from_minimized);
     CT_LOG_INFO("bench %s done", L.bench.c_str());
 }
 
@@ -455,8 +522,19 @@ int Loop(App& app) {
             frames_requested = 2;
         }
         if (app.quit) break;
+        if (forced && app.win.IsMinimized()) {
+            // A minimized window renders nothing and waits for input, so a bench or screenshot would wait forever
+            // (seen: something on the shared desktop minimized the bench window and --bench-play sat idle for 14
+            // minutes). Restore it without activating and go on.
+            ++app.restored_from_minimized;
+            CT_LOG_WARN("bench/screenshot window was minimized: restoring it");
+            ShowWindow(app.win.Hwnd(), SW_SHOWNOACTIVATE);
+            frames_requested = std::max(frames_requested, 1);
+        }
         if (frames_requested > 0 && !app.win.IsMinimized()) {
+            const int64_t wait_start = QpcNow();
             WaitForSingleObject(app.sc.WaitableObject(), 1000);
+            if (!L.bench.empty()) app.swap_wait_ms.push_back(static_cast<double>(QpcNow() - wait_start) * 1000.0 / app.qpc_freq);
             if (app.win.ConsumeResize()) CT_LOG_IF_FAILED(app.sc.Resize(app.win.ClientSizePx()));
             if (!RenderOneFrame(app)) break;
             --frames_requested;
@@ -469,6 +547,9 @@ int Loop(App& app) {
             if (!L.bench.empty() && app.bench_done) {
                 ReportBench(app);
                 app.launch.bench.clear();
+                // The bench's edits are throwaway: without this the next launch offers to recover them, and that
+                // modal prompt swallows the next bench's synthetic mouse.
+                app.editor.State().autosave.Clear();
                 app.closing = true;
                 PostMessageW(app.win.Hwnd(), WM_CLOSE, 0, 0);
             }
@@ -566,6 +647,9 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
         // Layout persistence (docs/phases/P09 9.1). Screenshots and benches use the default layout.
         app.ini_path = platform::Paths::SettingsDir() + "\\editor_layout.ini";
         io.IniFilename = (launch.screenshot.empty() && launch.bench.empty()) ? app.ini_path.c_str() : nullptr;
+        // Benches drive a synthetic mouse; the window often is not (or stops being) the foreground window when launched
+        // from a script, and the Win32 backend's focus-loss event would release the synthetic button mid-drag.
+        if (!launch.bench.empty()) io.ConfigDebugIgnoreFocusLoss = true;
         EditorShell::SetupImGui();
         app.base_style = ImGui::GetStyle();
         ImGui_ImplWin32_Init(app.win.Hwnd());
@@ -576,6 +660,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
             app.closing = true;
             PostMessageW(app.win.Hwnd(), WM_CLOSE, 0, 0);
         };
+        app.editor.scan_recovery = launch.bench.empty() && launch.screenshot.empty();
         const bool first_run = launch.screenshot.empty() && launch.bench.empty() && IsFirstRun();
         app.editor.Create(app.win.Hwnd(), app.dev, app.devices_ok ? &app.devices : nullptr);
         // First run (P11 11.6) when the editor is the first mode launched: folders, settings file, the F9 toast.

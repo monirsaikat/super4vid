@@ -13,11 +13,13 @@
 #include <ct/core/strings.h>
 #include <ct/core/time.h>
 #include <ct/media/image_io.h>
+#include <ct/playback/cache_budget.h>
 #include <ct/render/compositor.h>
 #include <ct/render/render_context.h>
 #include <ct/render/timeline_player.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -220,6 +222,94 @@ CT_TEST_DEVICE(timeline_player_resolve_nonblocking_converges) {
     p.tracks[0].hidden = true;   // hidden track: nothing resolved
     tp->Resolve(2'000'000, in, exact);
     CT_CHECK_EQ(in.layers.size(), 0u);
+    tp->Shutdown();
+}
+
+// Regression (P09 9.7, --bench-scrub hang): three files share the global CacheBudget. When the other caches' frames
+// filled it while every frame of one cache was pinned or prefetched ahead, that cache refused its playhead frame and
+// slept until the next hint, which a paused playhead never sends: Resolve stayed inexact forever. Every paused seek
+// must now reach the exact frame in bounded time, with the budget full of foreign bytes and with real competition.
+CT_TEST_DEVICE(timeline_player_paused_seek_exact_under_full_budget) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(pat, "pattern_1080p60_5s.mp4");
+    CT_REQUIRE_MEDIA(pat4k, "pattern_4k60_3s.mp4");
+    Env env;
+    CT_REQUIRE(env.Init(dev, pat));
+    project::Project p = test::MakeBaseProject(env.bundle, kW, kH, kPatternUs);
+    project::Media big;
+    big.id = "m2";
+    big.kind = project::Media::Kind::Video;
+    big.path = fs::Absolute(pat4k);
+    big.duration_us = 3'000'000;
+    big.width = 3840;
+    big.height = 2160;
+    big.fps_num = 60;
+    p.media.push_back(big);
+    p.clips.push_back(test::MakeClip("s", "t1", "m1", project::Clip::Source::Screen, 0, 0, kPatternUs));
+    project::Clip cam = test::MakeClip("k", "t2", "m1", project::Clip::Source::Camera, 0, 0, kPatternUs);
+    cam.pip = project::Pip{};
+    p.clips.push_back(cam);
+    p.clips.push_back(test::MakeClip("b", "t3", "m2", project::Clip::Source::Default, 0, 0, 3'000'000));
+    auto tp = MakePlayer(env.rc, true);
+    CT_REQUIRE(tp);
+    tp->SetProject(&p);
+    CT_REQUIRE(tp->WaitMediaOpen(10'000));
+
+    const size_t old_budget = playback::CacheBudget::Bytes();
+    // Polls like the editor's frame loop (non-blocking Resolve, no re-seek) until every layer is exact.
+    auto seek_until_exact = [&](TimeUs t, double limit_ms, size_t want_layers) {
+        tp->Seek(t);
+        render::FrameInputs in;
+        bool exact = false;
+        Stopwatch sw;
+        sw.Start();
+        while (sw.ElapsedMs() < limit_ms) {
+            tp->Resolve(t, in, exact);
+            if (exact) break;
+            Sleep(5);
+        }
+        if (!exact || in.layers.size() != want_layers) {
+            std::printf("    t %lld: exact %d, %zu layers after %.0f ms\n", static_cast<long long>(t), exact ? 1 : 0, in.layers.size(), sw.ElapsedMs());
+            playback::MediaCache* caches[3] = {tp->Cache("m1"), tp->CameraCache("m1"), tp->Cache("m2")};
+            for (playback::MediaCache* c : caches) {
+                if (!c) continue;
+                const playback::MediaCache::Stats st = c->GetStats();
+                std::printf("      cache: %zu frames, %llu decoded, %llu seeks, %llu evictions, budget used %zu of %zu\n", st.cached_frames,
+                            static_cast<unsigned long long>(st.frames_decoded), static_cast<unsigned long long>(st.seeks),
+                            static_cast<unsigned long long>(st.evictions), playback::CacheBudget::Used(), playback::CacheBudget::Bytes());
+            }
+        }
+        return exact && in.layers.size() == want_layers;
+    };
+    const TimeUs frame = FrameTimeUs(1, 60, 1);
+    // 1) The budget is full of bytes no cache here can evict (another editor/export cache): only the playhead frames.
+    playback::CacheBudget::SetBytes(64ull << 20);
+    const int64_t foreign = static_cast<int64_t>(64ull << 20);
+    playback::CacheBudget::Add(foreign);
+    const TimeUs times1[] = {2'000'000, 500'000, 2'900'000, 1'100'000, 4'200'000, 1'100'000 + frame};
+    int ok1 = 0;
+    // 8 s per seek: a cold 4K seek decodes up to a GOP on a loaded machine; the bug never converged at all.
+    for (TimeUs t : times1) {
+        if (!seek_until_exact(t, 8000, t < 3'000'000 ? 3u : 2u)) break;   // the first failure ends the phase
+        ++ok1;
+    }
+    playback::CacheBudget::Add(-foreign);
+    CT_CHECK_EQ(ok1, static_cast<int>(sizeof(times1) / sizeof(times1[0])));
+    // 2) A small budget the three windows compete for (~2 4K frames + a few 1080p): far seeks and frame steps.
+    playback::CacheBudget::SetBytes(40ull << 20);
+    uint32_t rng = 12345;
+    int ok2 = 0;
+    TimeUs t = 0;
+    const int n2 = 24;
+    for (int i = 0; i < n2; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        if (i % 3 == 2) t = std::clamp<TimeUs>(t + ((i & 4) ? frame : -frame), 0, kPatternUs - frame);
+        else t = static_cast<TimeUs>(rng % static_cast<uint32_t>(kPatternUs - frame));
+        if (!seek_until_exact(t, 8000, t < 3'000'000 ? 3u : 2u)) break;
+        ++ok2;
+    }
+    playback::CacheBudget::SetBytes(old_budget);
+    CT_CHECK_EQ(ok2, n2);
     tp->Shutdown();
 }
 
