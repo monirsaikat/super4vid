@@ -1605,6 +1605,32 @@ opens the dialog after load (screenshots). Closing the editor during an export c
 Why: docs/05 section 4 layout; ExportDialog's lifetime contract.
 Impact: a "cancel the running export?" prompt on close could be added with the P11 error UX work.
 
+## 2026-10-18 · P09 tasks 9.1/9.2/9.6/9.7 · Editor window leftovers: UI posts, warnings count, media health banner, Ctrl+R
+Spec said: `Async::PostToUi` lambdas run at the start of `Frame()`; status bar shows a warning count; error banners per
+docs/05; `Ctrl+R` opens the recorder bar; shortcuts dispatched once per frame when `!io.WantTextInput`.
+Done instead / interpreted:
+- PostToUi: the editor's poster posts `WM_APP+0x31` to its own window and the window procedure runs the lambda between
+  frames (not at the start of `Frame()`). Same thread, same "never inside NewFrame/Render" guarantee, and a posted
+  result also wakes the event-driven loop (0 redraws when idle), which a queue drained in `Frame()` would not.
+- Warning count: `Log::WarningCount()` (new, core): Warn + Error lines that passed the level filter since process start.
+  The status bar shows it; a click opens the log folder. Editor banners log a warning, so they count too.
+- Media banner: `CheckMediaHealth` (runs after an edit, or once the player's pending opens finish) gives one Media-panel
+  banner for missing files (`ErrorMessage(MediaMissing, path)` for one, a count for more) or, when none is missing, for
+  media the player could not open (TimelinePlayer slot state "failed": damaged file / unsupported codec). It shows again
+  only when the set of affected media changes, so a dismissed banner does not come back on every edit; it clears itself
+  after a relink. `Impl::Banner` skips a message identical to the one the panel already shows (a frame that keeps
+  failing to render no longer logs every frame). No audio output (AudioDevices missing or TimelinePlayer without a
+  stream) shows a Preview banner once at startup.
+- Ctrl+R / Record button: the bar is another process (DECISIONS "P09b/P05 integration"). `FindRecorderBarWindow` finds
+  a top-level window of class `SingleInstance::MainWindowClass()` with `WS_EX_TOOLWINDOW` (the editor's own window of
+  that class has none); `ShowRecorderBar` sends it `WM_COPYDATA` with a plain command line (the bar shows itself), else
+  starts `Camtesia.exe` with no arguments, with `CAMTESIA_SEPARATE_INSTANCE=1` only while some process holds the
+  single-instance mutex (otherwise the launch would just forward back to the editor); the inherited value is restored.
+- Shortcuts are not dispatched while a modal popup is open (unsaved changes, recovery, remove media, settings): Space or
+  Delete must not act on the document behind the prompt.
+Why: event-driven loop; docs/05 status bar and error UX; separate bar process; modal prompts.
+Impact: when bar and editor share one process, replace `ShowRecorderBar` with an in-process call.
+
 ## 2026-10-18 · P09 tasks 9.4/9.5 · Media provider, scrub/auto-scroll, Regenerate with undo
 Spec said: filmstrips from `MediaCache::Thumbnail(media_t)` and peaks at 100/s, never blocking; scrubbing calls
 `player.HintScrub`; playback auto-scrolls (page by 80 %); Camera section: auto parameters with live regeneration

@@ -19,6 +19,11 @@ void BannerStack::Clear(BannerPanel panel) { m_banners[static_cast<int>(panel)].
 
 size_t BannerStack::Count(BannerPanel panel) const { return m_banners[static_cast<int>(panel)].Visible() ? 1 : 0; }
 
+const std::string* BannerStack::Message(BannerPanel panel) const {
+    const ErrorBanner& b = m_banners[static_cast<int>(panel)];
+    return b.Visible() ? &b.Message() : nullptr;
+}
+
 void BannerStack::Draw(BannerPanel panel) {
     static const char* const kIds[kPanels] = {"##banner_media", "##banner_preview", "##banner_props", "##banner_timeline"};
     const int p = static_cast<int>(panel);

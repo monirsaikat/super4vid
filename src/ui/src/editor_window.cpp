@@ -17,6 +17,7 @@
 #include <ct/media/media_info.h>
 #include <ct/platform/d3d_device.h>
 #include <ct/platform/paths.h>
+#include <ct/platform/single_instance.h>
 #include <ct/playback/cache_budget.h>
 #include <ct/project/auto_zoom.h>
 #include <ct/project/autosave.h>
@@ -27,10 +28,12 @@
 #include <ct/render/render_context.h>
 #include <ct/ui/dialogs.h>
 #include <ct/ui/editor_commands.h>
+#include <ct/ui/error_ux.h>
 #include <ct/ui/first_run.h>
 #include <ct/ui/settings_window.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/panels/export_dialog.h>
+#include <ct/ui/recorder_app.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 #include <ct/ui/widgets.h>
@@ -39,6 +42,7 @@
 #include <imgui.h>
 
 #include <windows.h>
+#include <shellapi.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -103,7 +107,68 @@ bool MediaFromInfo(const std::string& path, const media::MediaInfo& info, Media*
     return true;
 }
 
+struct FindBarCtx {
+    std::wstring cls;
+    HWND exclude = nullptr;
+    HWND found = nullptr;
+};
+
+BOOL CALLBACK FindBarProc(HWND h, LPARAM lp) {
+    auto* c = reinterpret_cast<FindBarCtx*>(lp);
+    if (h == c->exclude) return TRUE;
+    wchar_t name[128];
+    if (!GetClassNameW(h, name, 128) || c->cls != name) return TRUE;
+    if (!(GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) return TRUE;
+    c->found = h;
+    return FALSE;
+}
+
 } // namespace
+
+void* FindRecorderBarWindow(void* exclude) {
+    FindBarCtx c;
+    c.cls = platform::SingleInstance::MainWindowClass();
+    c.exclude = static_cast<HWND>(exclude);
+    EnumWindows(&FindBarProc, reinterpret_cast<LPARAM>(&c));
+    return c.found;
+}
+
+bool ShowRecorderBar(void* owner) {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (HWND bar = static_cast<HWND>(FindRecorderBarWindow(owner))) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(bar, &pid);
+        if (pid) AllowSetForegroundWindow(pid);   // the bar brings itself to the front
+        // A plain command line: the bar's forwarding handler shows the bar (IsRecorderBarCommandLine).
+        std::wstring cmd = QuoteCommandLineArg(exe);
+        COPYDATASTRUCT cds = {};
+        cds.dwData = platform::SingleInstance::kCopyDataCommandLine;
+        cds.cbData = static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t));
+        cds.lpData = cmd.data();
+        DWORD_PTR result = 0;
+        if (SendMessageTimeoutW(bar, WM_COPYDATA, reinterpret_cast<WPARAM>(owner), reinterpret_cast<LPARAM>(&cds),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result))
+            return true;
+        CT_LOG_WARN("recorder bar did not answer WM_COPYDATA (%lu); starting a new one", GetLastError());
+    }
+    // No bar: start one. While a process holds the single-instance mutex (this editor when it was launched directly,
+    // or another editor) a plain launch would only forward to it, so the bar then runs as a separate instance. An
+    // editor started by the bar inherited CAMTESIA_SEPARATE_INSTANCE=1: set or clear it explicitly, then restore it.
+    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, platform::SingleInstance::MutexName().c_str());
+    const bool held = m != nullptr;
+    if (m) CloseHandle(m);
+    wchar_t saved[16] = {};
+    const DWORD had = GetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", saved, 16);
+    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", held ? L"1" : nullptr);
+    const HINSTANCE r = ShellExecuteW(nullptr, L"open", exe, nullptr, nullptr, SW_SHOWNORMAL);
+    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", had > 0 && had < 16 ? saved : nullptr);
+    if (reinterpret_cast<INT_PTR>(r) <= 32) {
+        CT_LOG_WARN("could not start the recorder bar (%lld)", static_cast<long long>(reinterpret_cast<INT_PTR>(r)));
+        return false;
+    }
+    return true;
+}
 
 struct EditorWindow::Impl {
     explicit Impl(EditorWindow& owner) : w(owner) {}
@@ -158,6 +223,11 @@ struct EditorWindow::Impl {
     std::unique_ptr<SettingsWindow> settings_window;
     // File > Export (P10). Destroyed before the RenderContext it shares (its destructor cancels and joins the job).
     std::unique_ptr<ExportDialog> export_dialog;
+    // Media health banner (missing files, files that could not be opened): re-evaluated when the project changes or
+    // the player finishes opening media; shown again only when the set of affected media changes.
+    uint64_t health_rev = ~0ull;
+    bool health_wait = false;
+    std::string health_sig;
 
     void OpenExport(const std::string& preset_id) {
         if (!gpu_ok || !export_dialog) {
@@ -193,6 +263,8 @@ struct EditorWindow::Impl {
     }
     void Defer(std::function<void()> fn) { deferred.push_back(std::move(fn)); }
     void Banner(BannerPanel p, std::string msg, std::string details = {}) {
+        // The same error again (a frame that keeps failing to render) neither logs nor replaces the banner.
+        if (const std::string* cur = shell().Banners().Message(p); cur && *cur == msg) return;
         CT_LOG_WARN("editor: %s %s", msg.c_str(), details.c_str());
         shell().Banners().Show(p, std::move(msg), std::move(details));
     }
@@ -210,10 +282,8 @@ struct EditorWindow::Impl {
         st().autosave.Init(st().project.id, autosave_interval);
         if (mark_dirty) st().Edit("Recover project", [](Project&) { return true; });
         shell().Banners().Clear(BannerPanel::Media);
-        int missing = 0;
-        for (const Media& m : st().project.media) missing += m.missing ? 1 : 0;
-        if (missing)
-            Banner(BannerPanel::Media, Format("%d media file%s could not be found. Right-click a card and choose Relink.", missing, missing == 1 ? "" : "s"));
+        health_rev = ~0ull;   // CheckMediaHealth reports missing / unreadable media of the new document
+        health_sig.clear();
         last_rev = ~0ull;
         if (!st().project.path.empty()) AddRecent(st().project.path);
         shell().Timeline().Fit(st());
@@ -403,13 +473,60 @@ struct EditorWindow::Impl {
                     if (!rec && info.duration_us > 0) mm->duration_us = std::max(mm->duration_us, info.duration_us);
                     return true;
                 });
-                int missing = 0;
-                for (const Media& m : st().project.media) missing += m.missing ? 1 : 0;
-                if (!missing) shell().Banners().Clear(BannerPanel::Media);
-                last_rev = ~0ull;
+                last_rev = ~0ull;   // CheckMediaHealth clears the banner once nothing is missing
                 LoadEventLogs();
             });
         });
+    }
+
+    // Missing media (Media::missing) and media the player could not open (decoder/codec errors): one Media-panel
+    // banner, missing first. Cheap: runs only after an edit or once pending opens finished.
+    void CheckMediaHealth() {
+        if (player.MediaPending()) {
+            health_wait = true;
+            return;
+        }
+        if (!health_wait && st().revision == health_rev) return;
+        health_wait = false;
+        health_rev = st().revision;
+        int missing = 0, failed = 0;
+        std::string first_missing, first_failed, sig, details;
+        for (const Media& m : st().project.media) {
+            if (m.missing) {
+                ++missing;
+                if (first_missing.empty()) first_missing = m.path;
+                sig += "m:" + m.id + ";";
+                details += "Not found: " + m.path + "\n";
+                continue;
+            }
+            if (!gpu_ok) continue;   // no player: nothing was opened
+            if (player.Cache(m.id)) continue;
+            if (player.MediaPending()) {   // that call started opening it: look again when it is done
+                health_wait = true;
+                continue;
+            }
+            ++failed;
+            if (first_failed.empty()) first_failed = m.path;
+            sig += "f:" + m.id + ";";
+            details += "Could not open: " + m.path + "\n";
+        }
+        if (health_wait || sig == health_sig) return;
+        const std::string old_sig = health_sig;
+        health_sig = sig;
+        if (sig.empty()) {
+            if (!old_sig.empty()) shell().Banners().Clear(BannerPanel::Media);
+            return;
+        }
+        std::string msg;
+        // File names in the message (the narrow Media panel), full paths in Details.
+        auto name_of = [](const std::string& path) { return path.substr(path.find_last_of("\\/") + 1); };
+        if (missing == 1) msg = ErrorMessage(ErrorKind::MediaMissing, name_of(first_missing));
+        else if (missing > 1) msg = Format(str::kErrMediaMissingN, missing);
+        else if (failed == 1) msg = Format(str::kErrMediaUnreadable, name_of(first_failed).c_str());
+        else msg = Format(str::kErrMediaUnreadableN, failed);
+        if (!details.empty()) details.pop_back();
+        shell().Banners().Clear(BannerPanel::Media);   // a changed set shows again even with the same message
+        Banner(BannerPanel::Media, std::move(msg), std::move(details));
     }
 
     // --- saving ---------------------------------------------------------------------------------------------------
@@ -648,7 +765,7 @@ struct EditorWindow::Impl {
         }
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(Dp(440, 0));
-        if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+        if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar)) return;
         const std::string name = st().project.name.empty() ? std::string(str::kUntitled) : st().project.name;
         {
             FontScope f(FontRole::Title);
@@ -689,7 +806,7 @@ struct EditorWindow::Impl {
         }
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(Dp(480, 0));
-        if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar)) {
             if (recover_open && !ImGui::IsPopupOpen(id)) recover_open = false;
             return;
         }
@@ -769,7 +886,9 @@ struct EditorWindow::Impl {
         case Action::Save: Save(nullptr); return true;
         case Action::SaveAs: SaveAs(nullptr); return true;
         case Action::Export: OpenExport({}); return true;
-        case Action::OpenRecorder: Toast("The recorder bar opens from the recorder mode (P05)"); return true;
+        case Action::OpenRecorder:
+            if (!ShowRecorderBar(hwnd)) Banner(BannerPanel::Preview, str::kErrRecorderLaunch, "See the log for the reason.");
+            return true;
         default: return false;
         }
     }
@@ -821,6 +940,8 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
         po.audio_output = I.devices != nullptr;
         const HRESULT phr = I.player.Init(I.rc, I.devices, po);
         if (FAILED(phr)) CT_LOG_WARN("editor: TimelinePlayer::Init %s", HrToString(phr).c_str());
+        if (po.audio_output && (FAILED(phr) || !I.player.HasAudioOutput()))
+            I.Banner(BannerPanel::Preview, str::kErrNoAudioOutput, FAILED(phr) ? "Error code: " + HrToString(phr) : std::string());
     }
     I.transport = std::make_unique<detail::PlayerTransport>(s, I.player);
     s.playback = I.transport.get();
@@ -973,6 +1094,8 @@ void EditorWindow::Frame() {
     m_shell->status.cache_mb = m_stats.cache_mb;
     m_shell->status.cache_budget_mb = static_cast<double>(playback::CacheBudget::Bytes()) / (1 << 20);
     m_shell->status.gpu_ms = I.comp.LastTiming().gpu_total_ms;
+    m_shell->status.warnings = static_cast<int>(std::min<uint64_t>(Log::WarningCount(), 9999));
+    I.CheckMediaHealth();
     m_shell->status.export_fraction = I.export_dialog && I.export_dialog->Busy() ? I.export_dialog->Fraction() : -1.0;
     if (!s.last_error.empty()) {
         m_shell->Toasts().Push(s.last_error, ToastKind::Warning, {}, 4.0f);

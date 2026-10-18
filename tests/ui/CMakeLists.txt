@@ -4,6 +4,7 @@ ct_add_test(ct_ui_tests DEPS ct_ui SOURCES
   editor_test.cpp
   export_dialog_test.cpp
   integration_test.cpp
+  editor_window_test.cpp
   timeline_media_test.cpp
   regenerate_test.cpp
 )
