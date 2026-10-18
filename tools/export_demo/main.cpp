@@ -5,7 +5,7 @@
 //
 //   export_demo [--preset mp4-1080p] [--seconds 60] [--out file] [--quality N] [--vbr KBPS]
 //               [--pattern data/pattern_1080p60_5s.mp4] [--project file.ctproj] [--start S --end S] [--normal-priority]
-//               [--no-bframes] [--no-camera]
+//               [--no-bframes] [--no-camera] [--gpu-timing]
 #include "test_project.h"
 
 #include <ct/audio/devices.h>
@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     std::string preset_id = "mp4-1080p", out, pattern = "tests/data/pattern_1080p60_5s.mp4", project_path;
     double seconds = 60, start_s = 0, end_s = 0;
     int quality = -1, vbr = -1;
-    bool normal_priority = false, no_bframes = false, no_camera = false;
+    bool normal_priority = false, no_bframes = false, no_camera = false, gpu_timing = false;
     for (int i = 1; i < argc; ++i) {
         auto next = [&](const char* name) -> const char* {
             if (i + 1 >= argc) {
@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--normal-priority")) normal_priority = true;
         else if (!std::strcmp(argv[i], "--no-bframes")) no_bframes = true;
         else if (!std::strcmp(argv[i], "--no-camera")) no_camera = true;
+        else if (!std::strcmp(argv[i], "--gpu-timing")) gpu_timing = true;   // holds D3DDevice::Batch per frame (slower)
         else {
             std::fprintf(stderr, "usage: export_demo [--preset id] [--seconds 60] [--out file] [--quality N] [--vbr KBPS]\n"
                                  "                   [--pattern mp4] [--project file.ctproj] [--start S --end S]\n");
@@ -106,7 +107,7 @@ int main(int argc, char** argv) {
     req.range_start = static_cast<TimeUs>(start_s * 1e6);
     req.range_end = static_cast<TimeUs>(end_s * 1e6);
     req.below_normal_priority = !normal_priority;
-    req.gpu_timing = true;
+    req.gpu_timing = gpu_timing;
 
     platform::D3DDevice dev;
     if (FAILED(dev.Init(false))) {

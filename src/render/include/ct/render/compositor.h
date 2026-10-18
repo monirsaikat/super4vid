@@ -5,7 +5,8 @@
 // The single renderer behind both preview (P09) and export (P10): identical inputs give identical pixels.
 // Colour policy: all render targets are B8G8R8A8_UNORM holding sRGB-encoded values; blending happens in gamma space
 // with premultiplied alpha. NV12 inputs are BT.709 limited range.
-// Thread model: one render thread; the caller holds D3DDevice::Lock for the whole RenderFrame.
+// Thread model: one render thread; the caller holds D3DDevice::Lock for the whole RenderFrame. RenderFrame also holds
+// D3DDevice::Batch (the device's multithread lock) for its duration when RenderOptions::gpu_timing is set.
 // Lifetime: Init(RenderContext&) after RenderContext::Init; Shutdown (or destructor) before the context goes away.
 
 #include <ct/project/project.h>
@@ -95,6 +96,7 @@ private:
     TextRenderer m_text;
     CursorRenderer m_cursor;
     RenderTiming m_timing;
+    platform::GpuTimer m_timers[4];   // total, background, layers, overlays (gpu_timing)
     ID3D11Resource* m_target_res = nullptr;   // this frame's target (for region copies); not owned beyond the frame
     std::vector<AnnItem> m_ann;               // this frame's annotations, track order
     const TextRenderer::Layer* m_badge = nullptr;
