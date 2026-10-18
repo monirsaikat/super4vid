@@ -1604,3 +1604,47 @@ clicking it calls `Restore()`. `DrawStatusBar` returns `StatusBarClick` instead 
 opens the dialog after load (screenshots). Closing the editor during an export cancels it without a prompt.
 Why: docs/05 section 4 layout; ExportDialog's lifetime contract.
 Impact: a "cancel the running export?" prompt on close could be added with the P11 error UX work.
+
+## 2026-10-18 · P11 tasks 11.5/11.6 · Error UX wiring, fault injection, device recreation, meter test, keyboard
+Spec said: every OnError path shows a banner/toast with what happened, what to do and Details; each message tested by
+forcing the condition (invalid output dir, mic held by another process, `dxcap -forcetdr`); disk full -> warning at
+1 GB, auto-stop at 200 MB; settings Audio "meters test"; keyboard: bar actions reachable with Tab/Enter.
+Done instead:
+- Structured reports: `SessionListener::OnFailure(SessionFailure)` / `OnWarningInfo(SessionWarning)` (defaults forward
+  to OnError/OnWarning, so headless and older listeners keep working). A failure while recording is reported after
+  Finalizing (and after OnFinished when frames were kept), so it can say whether the bundle was saved. After a failure
+  the session probes screen.mp4 and writes meta.json with `"incomplete": true` when it does not open.
+- Fault injection instead of real conditions for the automated tests: `recorder::SessionFaults` (SessionConfig) and
+  `exportng::ExportFaults` (ExportRequest) inject an Mp4Writer write HRESULT (existing `InjectWriteErrorForTest`), a
+  capture error, hardware/all encoder setup failures, a mic open failure, an audio stream error and a fake free-disk
+  value. A VHD needs admin rights and `dxcap -forcetdr` needs the Graphics Tools + admin; both stay HUMAN checks.
+- Mic busy: the stream is left out of the file (no empty mic track) and the recording continues; the banner says
+  "Recording continues without it". Mic unplugged mid-recording: the P03 capture engine already writes silence and
+  reopens; the session reports it once as a warning (banner).
+- Encoder: Mp4Writer already retries its sink setup with the software MFT; the session and the export add a final
+  software-only attempt with a fresh writer when the hardware-first setup fails for a non-path reason. No encoder at
+  all = `FailureCause::NoEncoder` / kErrNoEncoder.
+- Device lost: the recorder app recreates the D3D device, the swapchain and both ImGui backends (the DX11 backend's
+  shutdown destroys every platform window including the main viewport's Win32 data, so Win32 is re-initialized too,
+  and the viewport-window hook re-installed) once the session is idle, on a DeviceLost failure or a failed Present
+  (it used to quit). The editor's device loss handling is unchanged (editor shell area of another task).
+- Recorder bar UI: no banner fits in the 260x44 bar, so the ErrorBanner is drawn in its own capture-excluded viewport at
+  the bottom-right of the work area (where the toasts go, toasts stack above it) and stays until dismissed or
+  resolved. Recovery actions: Choose another folder... (folder picker posted out of the ImGui frame; sets
+  `recording.output_dir`, saves, refreshes an open settings window), Open in editor, Show in folder. The "Saved"
+  toast is not shown for a failed recording (the panel carries the same actions).
+- Export dialog: a failed export reopens the dialog with the banner (Choose another folder... = the save dialog,
+  Try again); the error toast stays (shorter). Without a UI poster (headless tests) ExportRequest::on_finished runs on
+  ct-export and would destroy the job from its own thread; tests install a poster.
+- ErrorBanner gained action buttons (AddAction/TakeAction); new ErrorKinds for the recorder/export variants;
+  `ErrorKindForHr`; long-path prefixes are stripped from folder messages.
+- Settings > Audio > Test microphone uses a new `ui::LevelMonitor` (WASAPI capture/loopback with a null sink opened on
+  the IO pool). The live meter test uses the loopback of a rendered tone (no microphone on the reference machine).
+- Keyboard: the bar window is no longer NoNav, the app enables NavEnableKeyboard, custom chips draw the nav cursor,
+  the right-hand buttons are submitted left to right so Tab follows the visual order; tray Enter / tray menu Show
+  activates the bar and focuses its first control. Diagnostics `--fault-test KIND [--no-exclude --fault-shot png]`
+  and `--bar-keys "tab,enter,..."` (skip the single-instance check like the other diagnostics).
+Why: the conditions cannot be produced on demand on a shared machine without admin; the bar is too small for an
+inline banner; a TDR used to end the app.
+Impact: P12 smoke tests can call `--fault-test`; the editor could reuse `DescribeExportFailure` and the device
+recreation sequence for its own device loss.
