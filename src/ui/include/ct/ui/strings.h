@@ -251,6 +251,12 @@ constexpr const char* kStatusExportTooltip = "Export in progress: click to show 
 constexpr const char* kCheatSheetTitle = "Keyboard shortcuts";
 constexpr const char* kCheatSheetHint = "Press ? or F1 to toggle";
 constexpr const char* kDemoToast = "Editor demo: sample project loaded. Playback and preview arrive with the compositor.";
+// Editor error banners (P09 9.6). "%d"/"%s" are filled with snprintf by the editor window.
+constexpr const char* kErrMediaUnreadable = "Cannot play %s: damaged file or unsupported codec.";
+constexpr const char* kErrMediaUnreadableN = "Cannot play %d media files: damaged or unsupported codec.";
+constexpr const char* kErrMediaMissingN = "%d media files could not be found. Right-click a card and choose Relink.";
+constexpr const char* kErrNoAudioOutput = "No audio output device is available, so playback is silent.";
+constexpr const char* kErrRecorderLaunch = "The recorder bar could not be started.";
 
 // --- Export dialog (P10) ----------------------------------------------------------------------------------------
 constexpr const char* kExportTitle = "Export";

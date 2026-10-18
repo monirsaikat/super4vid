@@ -140,6 +140,9 @@ bool EditorShell::WantsContinuousRedraw() const {
 // --- actions ------------------------------------------------------------------------------------------------------
 
 void EditorShell::DispatchShortcuts() {
+    // A modal (unsaved changes, recovery, remove media, settings) owns the keyboard: Space/Delete/Ctrl+S must not act
+    // on the document behind it. The popup stack is last frame's, which is what was on screen when the key went down.
+    if (ImGui::GetTopMostPopupModal()) return;
     Action actions[8];
     const int n = Shortcuts::Poll(actions, 8);
     for (int i = 0; i < n; ++i) Run(actions[i]);
