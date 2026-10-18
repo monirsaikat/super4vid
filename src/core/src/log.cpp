@@ -43,6 +43,7 @@ struct LogState {
     std::atomic<bool> wake_pending{false};
     std::atomic<int> level{static_cast<int>(LogLevel::Info)};
     std::atomic<uint64_t> dropped{0};
+    std::atomic<uint64_t> warnings{0};        // Warn + Error lines (WarningCount)
     wchar_t dir[kDirChars] = {};
     char path_utf8[kDirChars * 3] = {};
     char debug_chunk[4096 + 1] = {};          // OutputDebugStringA needs terminated text; used under io_lock
@@ -303,6 +304,7 @@ LogLevel Log::Level() { return static_cast<LogLevel>(g_log.level.load(std::memor
 
 void Log::Write(LogLevel level, const char* category, const char* file, int line, const char* fmt, ...) {
     if (static_cast<int>(level) < g_log.level.load(std::memory_order_relaxed) || level >= LogLevel::Off) return;
+    if (level >= LogLevel::Warn) g_log.warnings.fetch_add(1, std::memory_order_relaxed);
 
     char text[kMaxLine];
     size_t len = FormatPrefix(text, sizeof(text), level, category, file, line);
@@ -366,5 +368,7 @@ void Log::Shutdown() {
 }
 
 const char* Log::FilePathUtf8() { return g_log.path_utf8; }
+
+uint64_t Log::WarningCount() { return g_log.warnings.load(std::memory_order_relaxed); }
 
 } // namespace ct

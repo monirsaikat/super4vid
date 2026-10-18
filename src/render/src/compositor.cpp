@@ -9,6 +9,7 @@
 #include "render_internal.h"
 
 #include <algorithm>
+#include <optional>
 #include <cmath>
 
 using Microsoft::WRL::ComPtr;
@@ -72,6 +73,9 @@ HRESULT Compositor::Init(RenderContext& rc) {
     m_rc = &rc;
     CT_RETURN_IF_FAILED(m_text.Init(rc));
     CT_RETURN_IF_FAILED(m_cursor.Init(rc));
+    // Own timers (not RenderContext's): the editor's and an export's compositors share one RenderContext, and each
+    // used to resolve the other's queries.
+    for (platform::GpuTimer& t : m_timers) CT_RETURN_IF_FAILED(t.Init(rc.Device()));
     m_ann.reserve(64);
     m_keys.reserve(kMaxBadgeStrokes);
     m_done.reserve(16);
@@ -81,6 +85,7 @@ HRESULT Compositor::Init(RenderContext& rc) {
 void Compositor::Shutdown() {
     m_text.Shutdown();
     m_cursor.Shutdown();
+    for (platform::GpuTimer& t : m_timers) t.Shutdown();
     m_bg_blur = {};
     m_bg_key_srv = nullptr;
     m_rc = nullptr;
@@ -579,28 +584,36 @@ HRESULT Compositor::RenderFrame(const Project& p, TimeUs t, const FrameInputs& i
         if (static_cast<int>(d.Width) != size.w || static_cast<int>(d.Height) != size.h) return E_INVALIDARG;
         m_target_res = res.Get();   // the caller keeps the target alive for the frame
     }
+    // While measuring, hold the device's multithread lock for the whole frame: Media Foundation's decoder/encoder
+    // threads never take D3DDevice::Lock, so their commands could interleave with the frame call by call and the
+    // timestamp span measured their GPU work too (the status bar's "GPU 166 ms"). Not when not measuring: one wait for
+    // a whole MF hold costs more than the per-call contention (export: RenderFrame CPU 0.2-0.3 -> 2-3 ms with it).
+    // DECISIONS "Perf follow-up (P08/P10)".
+    std::optional<platform::D3DDevice::Batch> batch;
+    if (opt.gpu_timing) batch.emplace(m_rc->Device());
     ID3D11DeviceContext* ctx = m_rc->Ctx();
     m_rc->BeginFrame();
     m_text.SetDeterministic(opt.deterministic_text);
-    if (opt.gpu_timing) {
-        m_rc->Timer(0).Begin(ctx);
-        m_rc->Timer(1).Begin(ctx);
-    }
 
     // 1. Camera.
     const project::Camera::View view = p.camera.At(t);
     const Mat3 cam = layer_math::CameraTransform(view, p.canvas);
     const float zoom = view.zoom > 0.f ? view.zoom : 1.f;
 
-    // 0. Text rasterization (Direct2D) before any D3D pass of this frame.
+    // 0. Text rasterization (Direct2D) before any D3D pass of this frame. Not inside the GPU span: Direct2D flushes
+    // the context, which would start the span's clock long before the rest of the frame is submitted.
     PrepareText(p, in, opt, t, zoom);
+    if (opt.gpu_timing) {
+        m_timers[0].Begin(ctx);
+        m_timers[1].Begin(ctx);
+    }
 
     // 2. Background.
     DrawBackground(p, in, opt, target, size);
     const int64_t t1 = Qpc();
     if (opt.gpu_timing) {
-        m_rc->Timer(1).End(ctx);
-        m_rc->Timer(2).Begin(ctx);
+        m_timers[1].End(ctx);
+        m_timers[2].Begin(ctx);
     }
 
     // 3. Layers, bottom to top.
@@ -645,8 +658,8 @@ HRESULT Compositor::RenderFrame(const Project& p, TimeUs t, const FrameInputs& i
     }
     const int64_t t2 = Qpc();
     if (opt.gpu_timing) {
-        m_rc->Timer(2).End(ctx);
-        m_rc->Timer(3).Begin(ctx);
+        m_timers[2].End(ctx);
+        m_timers[3].Begin(ctx);
     }
 
     // 4./5. Cursor and keystroke badge.
@@ -665,13 +678,16 @@ HRESULT Compositor::RenderFrame(const Project& p, TimeUs t, const FrameInputs& i
     m_badge = nullptr;
     m_text.EndFrame();
     if (opt.gpu_timing) {
-        m_rc->Timer(3).End(ctx);
-        m_rc->Timer(0).End(ctx);
+        m_timers[3].End(ctx);
+        m_timers[0].End(ctx);
+        // Submit the span now: otherwise its end timestamp waits in the command buffer until the caller's next flush
+        // (the preview's Present after the rest of the UI frame), and the GPU's idle time until then is counted.
+        ctx->Flush();
         double ms = 0;
-        if (m_rc->Timer(0).Resolve(ctx, ms)) m_timing.gpu_total_ms = ms;
-        if (m_rc->Timer(1).Resolve(ctx, ms)) m_timing.gpu_background_ms = ms;
-        if (m_rc->Timer(2).Resolve(ctx, ms)) m_timing.gpu_layers_ms = ms;
-        if (m_rc->Timer(3).Resolve(ctx, ms)) m_timing.gpu_overlay_ms = ms;
+        if (m_timers[0].Resolve(ctx, ms)) m_timing.gpu_total_ms = ms;
+        if (m_timers[1].Resolve(ctx, ms)) m_timing.gpu_background_ms = ms;
+        if (m_timers[2].Resolve(ctx, ms)) m_timing.gpu_layers_ms = ms;
+        if (m_timers[3].Resolve(ctx, ms)) m_timing.gpu_overlay_ms = ms;
     }
     m_timing.background_ms = QpcMs(t1 - t0);
     m_timing.layers_ms = QpcMs(t2 - t1);

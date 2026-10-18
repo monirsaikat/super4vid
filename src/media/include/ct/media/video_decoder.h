@@ -3,7 +3,8 @@
 // Decodes one video stream with a Source Reader (hardware/DXVA through the shared D3D11 device when allowed) into a
 // small pool of NV12 textures that can be sampled (BIND_SHADER_RESOURCE, aperture-cropped, even size). Decoder output
 // surfaces are BIND_DECODER array slices without SRV support, hence the copy (GPU copy for DXGI buffers,
-// UpdateSubresource for software decoders' system-memory buffers).
+// UpdateSubresource for software decoders' system-memory buffers). Owners that keep frames (MediaCache) decode with
+// DecodeFrame and copy straight into their own textures with CopyTo, so each frame is copied once (pool_size = 0).
 // Thread model: one thread at a time; the owner serializes Init/Seek/ReadFrame/ReleaseFrame. The D3D device lock is
 // taken only around the copy, never across ReadSample (MF's decoder threads need the device).
 // Lifetime: Init -> ... -> Shutdown (or the destructor). Pool textures stay valid until Shutdown or a size change.
@@ -36,7 +37,7 @@ public:
     struct Config {
         std::string path;
         int stream_index = -1;       // -1 = first video stream
-        uint32_t pool_size = 8;
+        uint32_t pool_size = 8;      // 0: no pool (DecodeFrame + CopyTo only; ReadFrame returns E_PENDING)
         bool allow_hardware = true;  // false: DXVA off and no D3D manager (software decode, system-memory buffers)
     };
 
@@ -61,6 +62,25 @@ public:
     HRESULT ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen);
     void ReleaseFrame(uint32_t pool_index);
 
+    // A decoded frame still in the decoder's output sample (no copy made yet). Holding it holds one of the decoder's
+    // few output surfaces (DXVA allocates only the DPB plus a handful): copy it with CopyTo and Reset it before the
+    // next DecodeFrame. Destroying it releases the sample.
+    struct PendingFrame {
+        Microsoft::WRL::ComPtr<IMFSample> sample;
+        TimeUs pts_us = 0;
+        TimeUs duration_us = 0;
+        SizeI size;   // Size() when it was decoded
+        void Reset() { sample.Reset(); }
+    };
+    // As ReadFrame(out, skip_before_us, abort_gen, gen) without a pool texture: S_OK with `out` holding the sample,
+    // S_FALSE end of stream, E_ABORT (see above), or a failure.
+    HRESULT DecodeFrame(PendingFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen);
+    // Copies the frame's aperture into dst (NV12, at least Size(), default usage). Takes D3DDevice::Lock itself.
+    HRESULT CopyTo(const PendingFrame&, ID3D11Texture2D* dst);
+    // Presentation time the decoder delivers next: the end of the last frame it consumed (decoded, skipped or
+    // returned); after Seek, the seek time. INT64_MIN when unknown (after Init, or after a failure).
+    TimeUs NextPts() const { return m_next_pts; }
+
     // Views of a pool texture (created once per slot): Y plane R8_UNORM, UV plane R8G8_UNORM.
     ID3D11ShaderResourceView* YSrv(uint32_t pool_index) const;
     ID3D11ShaderResourceView* UvSrv(uint32_t pool_index) const;
@@ -74,6 +94,7 @@ public:
     bool IsHardware() const { return m_hardware; }   // last frame came as a D3D11 surface from a DXVA decoder
     bool AtEnd() const { return m_eos; }
     uint64_t FramesCopied() const { return m_frames_copied; }
+    uint32_t PoolTextures() const { return m_pool.Count(); }
     // Keyframe times learned while decoding (the first frame after Init and after every Seek: the reader lands on a
     // keyframe), sorted. Callers use them to choose between decoding forward and seeking.
     const std::vector<TimeUs>& KnownKeyframes() const { return m_keyframes; }
@@ -86,7 +107,7 @@ public:
 private:
     HRESULT ApplyCurrentType();
     HRESULT CreatePool(SizeI size);
-    HRESULT CopyToPool(struct IMFSample* sample, uint32_t index);
+    HRESULT CopySample(IMFSample* sample, ID3D11Texture2D* dst);
     void NoteKeyframe(TimeUs pts);
 
     platform::D3DDevice* m_dev = nullptr;
@@ -108,6 +129,7 @@ private:
     std::vector<TimeUs> m_keyframes;
     bool m_hardware = false;
     bool m_eos = false;
+    TimeUs m_next_pts = INT64_MIN;
     uint64_t m_frames_copied = 0;
     uint64_t m_frames_skipped = 0;
 };

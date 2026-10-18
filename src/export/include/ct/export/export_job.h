@@ -25,6 +25,15 @@
 
 namespace ct::exportng {
 
+// Fault injection (P11 11.5, tests only): forces the MP4 error paths without a full disk / lost device / missing
+// encoder. All off by default.
+struct ExportFaults {
+    HRESULT write_error_hr = S_OK;          // the n-th WriteSample fails with this (ERROR_DISK_FULL,
+    uint64_t write_error_after_samples = 0; //   DXGI_ERROR_DEVICE_REMOVED) via Mp4Writer::InjectWriteErrorForTest
+    HRESULT hw_encoder_init_hr = S_OK;      // the hardware-first writer setup "fails" with this: software retry
+    HRESULT encoder_init_hr = S_OK;         // every writer setup "fails" with this: no encoder
+};
+
 struct ExportRequest {
     project::Project project_snapshot;   // a copy: edits during the export never reach the file
     Preset preset;
@@ -35,6 +44,7 @@ struct ExportRequest {
     uint32_t frame_timeout_ms = 10'000;  // per-frame wait for decoded media before the export fails
     bool gpu_timing = false;             // measure the compositor's GPU time (Progress::compose_gpu_avg_ms)
     bool below_normal_priority = true;   // false: normal priority (export_demo --normal-priority, benchmarks)
+    ExportFaults faults;                 // P11 11.5 (tests)
 };
 
 class ExportJob {
@@ -60,6 +70,7 @@ public:
         std::atomic<double> elapsed_s{0};
         uint64_t output_bytes = 0;
         std::string encoder;                     // MP4: the video encoder the sink writer loaded
+        bool software_encoder = false;           // MP4: the software encoder was used (no hardware encoder worked)
         // Wall time per stage, summed over the job (ms): ResolveExact (decode waits), render (compositor + scale +
         // convert/copy under the device lock), video (MP4: the ct-export-write thread's WriteVideoSync +
         // WriteAudioSync, overlapped with rendering; GIF: readback + AddFrame), audio (RenderAudio mixing).

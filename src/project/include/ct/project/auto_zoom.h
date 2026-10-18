@@ -9,6 +9,7 @@
 #include <ct/project/camera.h>
 #include <ct/project/project.h>
 
+#include <functional>
 #include <vector>
 
 namespace ct::project {
@@ -50,6 +51,16 @@ struct AutoZoom {
 
     // Inserts generated keys without touching existing keys at the same times (import appends per recording).
     static void AppendKeys(Camera& camera, const std::vector<CameraKey>& keys);
+
+    // The loaded event log of a Recording media, or nullptr (no events, not loaded yet, unreadable).
+    using LogLookup = std::function<const events::EventLog*(const Media&)>;
+    // "Regenerate" (P09 9.5): ForClip over every Screen clip of a Recording media that has a log, in timeline order;
+    // keys sorted with unique times (on equal times the earlier clip wins). Each clip's video size is the media's
+    // (the canvas when unknown), as on import. *clips = number of clips that contributed.
+    static std::vector<CameraKey> ForProject(const Project& p, const LogLookup& log_for, int* clips = nullptr);
+    // Replaces the generated keys of p.camera with ForProject (manual keys stay; a manual key wins at equal times).
+    // Returns false and leaves p untouched when no clip has a log. *changed: the key list differs from before.
+    static bool Regenerate(Project& p, const LogLookup& log_for, bool* changed = nullptr, int* clips = nullptr);
 };
 
 } // namespace ct::project

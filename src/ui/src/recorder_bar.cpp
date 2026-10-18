@@ -20,7 +20,9 @@
 #include <ct/recorder/recording_frame.h>
 #include <ct/recorder/recording_session.h>
 #include <ct/recorder/region_overlay.h>
+#include <ct/ui/dialogs.h>
 #include <ct/ui/error_ux.h>
+#include <ct/ui/recorder_errors.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/settings_window.h>
 #include <ct/ui/icons.h>
@@ -149,6 +151,7 @@ bool Chip(const char* id, ImVec2 size, bool active, bool* hovered_out = nullptr,
     ImU32 bg = fill_override;
     if (!bg) bg = held ? col::bg4 : active ? col::bg3 : hovered ? col::bg3 : 0;
     if (bg) window->DrawList->AddRectFilled(bb.Min, bb.Max, bg, Dp(kRadiusControl));
+    ImGui::RenderNavCursor(bb, gid);   // keyboard focus ring (Tab / arrows, P11 11.6)
     if (hovered_out) *hovered_out = hovered;
     return pressed;
 }
@@ -257,6 +260,15 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     bool quit_after_finish = false;
     std::string last_bundle;
 
+    // Error UX (P11 11.5).
+    ErrorBanner error_banner;
+    std::string error_bundle;     // the kept bundle of the failed recording (Open in editor / Show in folder)
+    bool error_recording = false; // between OnStateChanged(Error) and OnFailure
+    int last_failure_cause = -1;
+    std::string nav_label;        // diagnostics: label of the nav-focused item (last frame)
+    std::string frame_nav_label;
+    bool focus_first = false;     // keyboard focus to the first control on the next frame
+
     // Window geometry and animation.
     bool visible = true;
     POINT anchor{};               // bottom-centre of the bar, px
@@ -313,10 +325,12 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     void OnStateChanged(State s) override {
         const State old = state;
         state = s;
+        if (s == State::Error) error_recording = true;
         Animate(0.3f);
         if (s == State::Countdown || s == State::Starting || s == State::Recording) SetBarSize(kRecW, kRecH);
         if (s == State::Recording && old != State::Paused) {
             rec_started_at = NowS();
+            if (error_banner.Visible() && error_bundle.empty() && last_failure_cause >= 0) error_banner.Clear();
             const capture::DisplayInfo* d = CurrentDisplay();
             if (d) {
                 RectI r = source == 0 ? d->rect : capture::ClampRegionToDisplay(*d, region);
@@ -351,20 +365,81 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     void OnFinished(const std::string& bundle_path) override {
         last_bundle = bundle_path;
         if (quit_after_finish) return;
+        if (error_recording) return;   // the error panel that follows carries Open in editor / Show in folder
         ShowSavedToastImpl(bundle_path);
     }
+    // Only reached through OnFailure's default; kept for the interface.
     void OnError(const std::string& message, HRESULT hr) override {
-        std::string text = message;
-        if (hr == HRESULT_FROM_WIN32(ERROR_DISK_FULL) || hr == HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL))
-            text = ErrorMessage(ErrorKind::DiskFull, session.BundlePath());
-        else if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-            text = ErrorMessage(ErrorKind::DeviceLost);
-        char buf[512];
-        std::snprintf(buf, sizeof(buf), str::kToastRecordingFailed, text.c_str());
-        PushToast(buf, ToastKind::Error, {}, 10);
-        if (!visible) tray.Notify(W(str::kAppName).c_str(), W(buf).c_str());
+        recorder::SessionFailure f;
+        f.message = message;
+        f.hr = hr;
+        OnFailure(f);
+    }
+    void OnFailure(const recorder::SessionFailure& f) override {
+        error_recording = false;
+        last_failure_cause = static_cast<int>(f.cause);
+        const ErrorView v = DescribeFailure(f);
+        ShowErrorView(error_banner, v, f.hr);
+        error_bundle = f.saved ? f.bundle_path : std::string();
+        if (!visible) tray.Notify(W(str::kAppName).c_str(), W(v.message).c_str());
+        CT_LOG_WARN("error panel: %s (%s, cause %s)", v.message.c_str(), HrToString(f.hr).c_str(), recorder::FailureCauseName(f.cause));
+        // TDR: the session is idle now; the app recreates the device before the next frame (P11 11.5).
+        if (v.recreate_device && hooks.recreate_device) hooks.recreate_device();
+        Animate();
     }
     void OnWarning(const std::string& message) override { PushToast(message, ToastKind::Warning); }
+    void OnWarningInfo(const recorder::SessionWarning& w) override {
+        const ErrorView v = DescribeWarning(w);
+        if (!v.banner) {
+            PushToast(w.message, ToastKind::Warning);
+            return;
+        }
+        // Microphone busy / unplugged: the recording goes on; a banner (not a toast) so it is not missed.
+        ShowErrorView(error_banner, v, w.hr);
+        error_bundle.clear();
+        if (!visible) tray.Notify(W(str::kAppName).c_str(), W(v.message).c_str());
+        Animate();
+    }
+
+    void RunErrorAction(int action) {
+        switch (action) {
+        case kActionChooseFolder: {
+            // A modal shell dialog must not run inside the ImGui frame (mouse capture, P09 pitfalls): post it.
+            std::weak_ptr<bool> weak = alive;
+            Impl* self = this;
+            Async::PostToUi([weak, self]() {
+                if (!weak.expired() && *weak.lock()) self->ChooseOutputFolder();
+            });
+            break;
+        }
+        case kActionOpenEditor:
+            if (hooks.open_editor && !error_bundle.empty()) hooks.open_editor(error_bundle);
+            error_banner.Clear();
+            break;
+        case kActionShowFolder:
+            if (!error_bundle.empty()) fs::ShowInExplorer(error_bundle);
+            break;
+        default: break;
+        }
+        Animate();
+    }
+
+    void ChooseOutputFolder() {
+        const std::string start = settings.recording.output_dir.empty() ? platform::Paths::DefaultRecordingsDir()
+                                                                         : settings.recording.output_dir;
+        const std::string folder = dialogs::PickFolder(win->Hwnd(), str::kErrPickFolderTitle, start);
+        if (folder.empty()) return;   // cancelled: the banner stays
+        SetOutputFolder(folder);
+    }
+
+    void SetOutputFolder(const std::string& folder) {
+        settings.recording.output_dir = folder;
+        SaveSettingsAsync();
+        if (settings_win && settings_win->IsOpen()) settings_win->Open(settings, settings_win->Section());
+        error_banner.Clear();
+        PushToast(Format(str::kErrFolderChanged, folder.c_str()), ToastKind::Info, {}, 6);
+        CT_LOG_INFO("output folder changed after an error: %s", folder.c_str());
+    }
     void OnPrepared(HRESULT hr) override {
         preparing = false;
         if (FAILED(hr) && countdown.IsRunning()) countdown.Cancel();
@@ -468,6 +543,13 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         if (std::abs((rc.left + width / 2) - cx) < snap) rc.left = cx - width / 2;   // centre line
         rc.right = rc.left + width;
         rc.bottom = rc.top + height;
+    }
+
+    // The bar was shown from the keyboard (tray icon Enter, tray menu): activate it so Tab / Enter reach it.
+    void FocusForKeyboard() {
+        SetForegroundWindow(win->Hwnd());
+        focus_first = true;
+        Animate();
     }
 
     void ShowBar(bool show) {
@@ -632,6 +714,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
                        : r.keystrokes == "all" ? recorder::KeystrokeMode::All
                                                : recorder::KeystrokeMode::ShortcutsOnly;
         c.cursor_hz = r.cursor_hz;
+        c.faults = opt.faults;
         return c;
     }
 
@@ -653,7 +736,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         return opt.countdown_override >= 0 ? opt.countdown_override : settings.recording.countdown_s;
     }
     bool ArmOutOfDate() const {
-        if (EffectiveCountdown() > 0) return session.IsArmed();
+        if (EffectiveCountdown() > 0 || opt.faults.Any()) return session.IsArmed();   // fault runs never arm
         return displays.empty() || !session.IsArmedFor(MakeConfig());
     }
     void ScheduleArm() {
@@ -665,7 +748,8 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         arm_timer = false;
         const int countdown_s = EffectiveCountdown();
         const bool can_arm = dev && !displays.empty() && state == State::Idle && !preparing && !session.IsActive() &&
-                             !countdown.IsRunning() && (source == 0 || !region.IsEmpty()) && countdown_s <= 0;
+                             !countdown.IsRunning() && (source == 0 || !region.IsEmpty()) && countdown_s <= 0 &&
+                             !opt.faults.Any();
         if (!can_arm) {
             if (session.IsArmed() && state == State::Idle && !preparing) session.Disarm();
             return;
@@ -807,7 +891,10 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         case kMenuRecord: Toggle(Clock::QpcNow()); break;
         case kMenuPause: session.TogglePause(); break;
         case kMenuStop: session.Stop(); break;
-        case kMenuShow: ShowBar(!visible); break;
+        case kMenuShow:
+            ShowBar(!visible);
+            if (visible) FocusForKeyboard();
+            break;
         case kMenuEditor: if (hooks.open_editor) hooks.open_editor(last_bundle); break;
         case kMenuSettings: OpenSettings(); break;
         case kMenuQuit: Quit(); break;
@@ -884,7 +971,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking |
-                                       ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav;
+                                       ImGuiWindowFlags_NoScrollWithMouse;   // Tab/arrows/Enter reach every control (P11 11.6)
         ImGui::Begin("##recorder_bar", nullptr, flags);
         ImGui::PopStyleVar(4);
         open_fps = ImGui::IsPopupOpen("##pop_fps");
@@ -898,8 +985,9 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         if (compact) DrawRecording(dl, a, b);
         else DrawIdle(dl, a, b);
         DrawPopups();
+        UpdateNavLabel();
         ImGui::End();
-        DrawToasts();
+        DrawToasts(DrawErrorPanel());
         DrawCameraHover();
         DrawSettings();
     }
@@ -966,7 +1054,12 @@ struct RecorderBar::Impl final : recorder::SessionListener {
                 ImGui::SetCursorScreenPos(ImVec2(sx, y + pad));
                 bool hovered = false;
                 ImGui::PushID(i);
+                if (i == 0 && focus_first) {   // shown from the keyboard (tray Enter): Tab starts here
+                    ImGui::SetKeyboardFocusHere();
+                    focus_first = false;
+                }
                 const bool pressed = Chip("##src", ImVec2(seg_w[i], h - pad * 2), source == i, &hovered);
+                NoteNav(i == 0 ? "source-monitor" : i == 1 ? "source-region" : "source-window");
                 ImGui::PopID();
                 const ImU32 fg = source == i || hovered ? col::text : col::text_dim;
                 const ImVec2 sa(sx, y + pad), sb(sx + seg_w[i], y + h - pad);
@@ -1021,6 +1114,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             ImGui::SetCursorScreenPos(ImVec2(x, y));
             bool hovered = false;
             const bool pressed = Chip("##fps", ImVec2(w, h), open_fps, &hovered);
+            NoteNav("fps");
             {
                 FontScope f(FontRole::Label);
                 dl->AddText(ImVec2(x + Dp(8), std::floor(y + (h - ImGui::GetFontSize()) * 0.5f)), hovered ? col::text : col::text_dim, label);
@@ -1037,18 +1131,12 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         x = AudioChip(dl, x, y, h, Popup::System) + gap;
         x = CameraChip(dl, x, y, h) + gap;
 
-        // Right side: close, settings, REC (laid out from the right edge).
-        float rx = b.x - Dp(8);
-        {
-            const float w = Dp(28);
-            rx -= w;
-            ImGui::SetCursorScreenPos(ImVec2(rx, y + (h - w) * 0.5f));
-            if (IconButton("##close", ICON_CLOSE, str::kBarCloseTip, false, nullptr, ImVec2(w, w))) ShowBar(false);
-            rx -= Dp(2) + w;
-            ImGui::SetCursorScreenPos(ImVec2(rx, y + (h - w) * 0.5f));
-            if (IconButton("##settings", ICON_SETTINGS, str::kBarSettingsTip, false, nullptr, ImVec2(w, w))) OpenSettings();
-            rx -= gap;
-        }
+        // Right side: REC, settings, close, laid out from the right edge but submitted left to right so that Tab
+        // follows the visual order (P11 11.6 keyboard pass).
+        const float icon_w = Dp(28);
+        const float close_x = b.x - Dp(8) - icon_w;
+        const float settings_x = close_x - Dp(2) - icon_w;
+        float rx = settings_x - gap;
         {
             float tw;
             {
@@ -1064,6 +1152,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             const bool busy = preparing || state != State::Idle;
             const ImU32 fill = busy ? WithAlpha(col::record, 0.5f) : hovered_rec ? Mix(col::record, Rgb(0xFFFFFF), 0.12f) : col::record;
             const bool pressed = Chip("##rec", ImVec2(w, rh), false, &hovered, fill);
+            NoteNav("rec");
             hovered_rec = hovered;
             dl->AddRectFilled(ImVec2(rx, ry), ImVec2(rx + w, ry + rh), fill, Dp(rh * 0.5f));
             const ImVec2 dot(rx + Dp(14) + Dp(4), ry + rh * 0.5f);
@@ -1079,6 +1168,12 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             }
             if (pressed && !busy) BeginRecording(Clock::QpcNow());
         }
+        ImGui::SetCursorScreenPos(ImVec2(settings_x, y + (h - icon_w) * 0.5f));
+        if (IconButton("##settings", ICON_SETTINGS, str::kBarSettingsTip, false, nullptr, ImVec2(icon_w, icon_w))) OpenSettings();
+        NoteNav("settings");
+        ImGui::SetCursorScreenPos(ImVec2(close_x, y + (h - icon_w) * 0.5f));
+        if (IconButton("##close", ICON_CLOSE, str::kBarCloseTip, false, nullptr, ImVec2(icon_w, icon_w))) ShowBar(false);
+        NoteNav("close");
         (void)x;
     }
 
@@ -1091,6 +1186,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         bool hovered = false;
         ImGui::PushID(is_mic ? "mic" : "sys");
         const bool pressed = Chip("##toggle", ImVec2(w, h), false, &hovered);
+        NoteNav(is_mic ? "mic" : "system");
         const ImU32 fg = !available ? col::text_faint : on ? (hovered ? col::text : col::text_dim) : col::text_faint;
         const ImVec2 ic(x + w * 0.5f, y + Dp(13));
         Icon(dl, ic, fg, is_mic ? ICON_MICROPHONE : ICON_VOLUME);
@@ -1107,6 +1203,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::SetCursorScreenPos(ImVec2(x + w, y));
         bool hov2 = false;
         const bool chev = Chip("##chev", ImVec2(cw, h), is_mic ? open_mic : open_sys, &hov2);
+        NoteNav(is_mic ? "mic-devices" : "system-devices");
         Icon(dl, ImVec2(x + w + cw * 0.5f, y + h * 0.5f + Dp(1)), hov2 ? col::text : col::text_faint, ICON_CHEVRON_DOWN, FontRole::Label);
         ItemTooltip(str::kBarDevicesTip);
         if (chev) OpenPopupNow(which);
@@ -1126,6 +1223,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::SetCursorScreenPos(ImVec2(x, y));
         bool hovered = false;
         const bool pressed = Chip("##cam", ImVec2(w, h), false, &hovered);
+        NoteNav("camera");
         camera_hovered = hovered && on;
         const ImU32 fg = on ? (hovered ? col::text : col::accent_hover) : hovered ? col::text_dim : col::text_faint;
         if (on) {
@@ -1151,6 +1249,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::SetCursorScreenPos(ImVec2(x + w, y));
         bool hov2 = false;
         const bool chev = Chip("##camchev", ImVec2(cw, h), open_cam, &hov2);
+        NoteNav("camera-devices");
         Icon(dl, ImVec2(x + w + cw * 0.5f, y + h * 0.5f + Dp(1)), hov2 ? col::text : col::text_faint, ICON_CHEVRON_DOWN, FontRole::Label);
         ItemTooltip(str::kBarDevicesTip);
         if (chev) OpenPopupNow(Popup::Camera);
@@ -1527,13 +1626,49 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         ImGui::PopStyleVar(2);
     }
 
-    // Toasts (bottom-right of the work area of the bar's monitor, newest at the bottom).
-    void DrawToasts() {
+    // Keyboard diagnostics (--bar-keys): remembers which control holds the nav cursor this frame.
+    void NoteNav(const char* label) {
+        if (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible) frame_nav_label = label;
+    }
+    void UpdateNavLabel() {
+        nav_label = frame_nav_label;
+        frame_nav_label.clear();
+    }
+
+    // Error panel (P11 11.5): the ErrorBanner in its own capture-excluded viewport at the bottom-right of the work
+    // area, where the toasts go; it stays until dismissed or resolved. Returns the height it takes (0 when hidden).
+    float DrawErrorPanel() {
+        if (!error_banner.Visible()) return 0;
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(MonitorFromWindow(win->Hwnd(), MONITOR_DEFAULTTOPRIMARY), &mi);
+        const float w = Dp(440);
+        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(mi.rcWork.right) - Dp(16), static_cast<float>(mi.rcWork.bottom) - Dp(16)),
+                                ImGuiCond_Always, ImVec2(1, 1));
+        ImGui::SetNextWindowSize(ImVec2(w, 0), ImGuiCond_Always);   // 0: fit the height every frame
+        ImGui::SetNextWindowBgAlpha(1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Dp(6, 6));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusCard));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, Dp(8, 8));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ToVec4(col::bg2));
+        ImGui::Begin("##bar_error", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoFocusOnAppearing |
+                                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
+        error_banner.Draw("##bar_error_banner");
+        const float h = ImGui::GetWindowHeight();
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(3);
+        if (const int a = error_banner.TakeAction()) RunErrorAction(a);
+        return error_banner.Visible() ? h + Dp(8) : 0;
+    }
+
+    // Toasts (bottom-right of the work area of the bar's monitor, newest at the bottom), above the error panel.
+    void DrawToasts(float bottom_offset) {
         if (toasts.empty()) return;
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
         GetMonitorInfoW(MonitorFromWindow(win->Hwnd(), MONITOR_DEFAULTTOPRIMARY), &mi);
-        float y = static_cast<float>(mi.rcWork.bottom) - Dp(16);
+        float y = static_cast<float>(mi.rcWork.bottom) - Dp(16) - bottom_offset;
         const float x = static_cast<float>(mi.rcWork.right) - Dp(16);
         const float now = NowS();
         int remove_id = 0;
@@ -1555,8 +1690,10 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ToVec4(col::bg2));
             char name[32];
             std::snprintf(name, sizeof(name), "##toast%d", t.id);
+            // Not NoNav: the toast buttons are reachable with Ctrl+Tab / Tab (P11 11.6); NoFocusOnAppearing keeps a
+            // new toast from taking the keyboard away.
             ImGui::Begin(name, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                                            ImGuiWindowFlags_NoFocusOnAppearing |
                                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImU32 accent = t.kind == ToastKind::Success ? col::success : t.kind == ToastKind::Warning ? col::warn
@@ -1801,7 +1938,10 @@ LRESULT RecorderBar::HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     default:
         if (msg == kTrayMsg) {
             const platform::TrayIcon::Event e = platform::TrayIcon::Decode(wparam, lparam);
-            if (e.what == WM_LBUTTONUP || e.what == NIN_SELECT || e.what == NIN_KEYSELECT) s.ShowBar(!s.visible);
+            if (e.what == WM_LBUTTONUP || e.what == NIN_SELECT || e.what == NIN_KEYSELECT) {
+                s.ShowBar(!s.visible);
+                if (s.visible && e.what == NIN_KEYSELECT) s.FocusForKeyboard();
+            }
             else if (e.what == WM_CONTEXTMENU || e.what == WM_RBUTTONUP) s.TrayMenu(e.anchor);
             handled = true;
             return 0;
@@ -1838,5 +1978,30 @@ int64_t RecorderBar::LastTriggerQpc() const { return m->trigger_qpc; }
 void RecorderBar::ShowBar(bool show) { m->ShowBar(show); }
 void RecorderBar::PushToast(const std::string& text, float seconds) { m->PushToast(text, ToastKind::Info, {}, seconds); }
 void RecorderBar::OpenSettings() { m->OpenSettings(); }
+bool RecorderBar::ErrorVisible() const { return m->error_banner.Visible(); }
+std::string RecorderBar::ErrorText() const { return m->error_banner.Message(); }
+int RecorderBar::ErrorAction(int index) const {
+    // The banner keeps labels only; the ids come from the view the bar showed, mirrored here.
+    return m->error_banner.ActionIdAt(index);
+}
+void RecorderBar::RunErrorAction(int action) { m->RunErrorAction(action); }
+void RecorderBar::ClearError() { m->error_banner.Clear(); }
+int RecorderBar::LastFailureCause() const { return m->last_failure_cause; }
+void RecorderBar::SetFaults(const recorder::SessionFaults& faults) { m->opt.faults = faults; }
+void RecorderBar::ChooseOutputFolder(const std::string& folder) { m->SetOutputFolder(folder); }
+std::string RecorderBar::LastBundle() const { return m->last_bundle; }
+std::string RecorderBar::NavItemForTest() const { return m->nav_label; }
+void RecorderBar::ReleaseDeviceObjects() {
+    Impl& s = *m;
+    if (s.preview) {
+        s.preview->src.Stop();
+        s.preview.reset();
+    }
+    s.preview_srv.Reset();
+    s.preview_rtv.Reset();
+    s.preview_tex.Reset();
+    s.preview_has_frame = false;
+    s.blit.Shutdown();
+}
 
 } // namespace ct::ui

@@ -303,8 +303,15 @@ void TimelineWidget::Fit(EditorState& state) {
 void TimelineWidget::ScrollToPlayhead(EditorState& state) {
     const TimeUs ph = state.Playhead();
     const TimeUs vis = m_view.PxToUs(m_view.width);
-    if (ph < state.scroll_us || ph > state.scroll_us + vis) state.scroll_us = std::max<TimeUs>(0, ph - vis / 10);
-    else if (ph > state.scroll_us + vis * 95 / 100) state.scroll_us += vis * 80 / 100;
+    const bool reverse = state.playback && state.playback->Playing() && state.playback->Rate() < 0;
+    if (ph < state.scroll_us || ph > state.scroll_us + vis) {
+        // Far away (seek, loop wrap): the playhead lands 10 % in from the edge it moves away from.
+        state.scroll_us = std::max<TimeUs>(0, reverse ? ph - vis * 90 / 100 : ph - vis / 10);
+    } else if (!reverse && ph > state.scroll_us + vis * 95 / 100) {
+        state.scroll_us += vis * 80 / 100;
+    } else if (reverse && state.scroll_us > 0 && ph < state.scroll_us + vis * 5 / 100) {
+        state.scroll_us = std::max<TimeUs>(0, state.scroll_us - vis * 80 / 100);   // J: page left
+    }
 }
 
 // --- toolbar ----------------------------------------------------------------------------------------------------
@@ -1088,7 +1095,7 @@ void TimelineWidget::DrawClip(EditorState& state, ImDrawList* dl, const Clip& c,
                 if (tb.x <= ta.x) continue;
                 ImTextureID tex = ImTextureID_Invalid;
                 ImVec2 uv0(0, 0), uv1(1, 1);
-                const MediaStatus st = m_media->Thumbnail(c.media, c.MediaTimeAt(m_view.T(sx)), tex, uv0, uv1);
+                const MediaStatus st = m_media->ClipThumbnail(c, c.MediaTimeAt(m_view.T(sx)), tex, uv0, uv1);
                 if (st == MediaStatus::Ready && tex != ImTextureID_Invalid) {
                     dl->AddImageRounded(ImTextureRef(tex), ta, tb, uv0, uv1, WithAlpha(Rgb(0xFFFFFF), alpha), Dp(3));
                 } else if (st == MediaStatus::Loading) {

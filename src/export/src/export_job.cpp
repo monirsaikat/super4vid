@@ -32,6 +32,15 @@
 
 namespace ct::exportng {
 
+namespace {
+// Output path problems (the encoder is not to blame): no software retry, the message names the file.
+bool IsPathError(HRESULT hr) {
+    return hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+           hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) || hr == E_ACCESSDENIED || hr == HRESULT_FROM_WIN32(ERROR_DISK_FULL) ||
+           hr == HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL);
+}
+} // namespace
+
 using Microsoft::WRL::ComPtr;
 
 static_assert(static_cast<int>(VideoCodec::Hevc) == static_cast<int>(media::VideoCodec::Hevc));
@@ -119,7 +128,7 @@ struct ExportJob::Impl {
             extra += frame * kWindowFrames * (md.kind == project::Media::Kind::Recording && md.has_camera ? 2 : 1);
         }
         budget_extra = extra;
-        playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() + budget_extra);
+        playback::CacheBudget::AddExtra(static_cast<int64_t>(budget_extra));
         platform::D3DDevice::Lock lock(*dev);
         return comp.Init(*rc);
     }
@@ -260,7 +269,6 @@ void ExportJob::Main() {
     pr.frames_total.store(total);
 
     if (SUCCEEDED(hr) && preset.container == Preset::Container::Mp4) {
-        media::Mp4Writer w;
         media::Mp4Writer::Config cfg;
         cfg.path = path;
         cfg.has_video = true;
@@ -295,9 +303,32 @@ void ExportJob::Main() {
         // audio) while "ct-export-write" hands frame n-1 to the writer (WriteVideoSync waits for the encoder).
         constexpr int kSlots = 3;
         ComPtr<ID3D11Texture2D> nv12[kSlots];
-        HRESULT h = w.Init(*j.dev, cfg, nullptr);
-        if (FAILED(h)) fail(h, w.ErrorMessage());
-        else if (!w.Start()) fail(E_FAIL, "The video encoder could not start.");
+        // Hardware encoder first (Mp4Writer itself retries its sink setup in software), then a fresh writer set up
+        // for the software encoder only (P11 11.5: "encoder missing -> software MF, or report clearly").
+        const ExportFaults& fl = j.req.faults;
+        std::unique_ptr<media::Mp4Writer> wp;
+        auto init_writer = [&]() -> HRESULT {
+            wp = std::make_unique<media::Mp4Writer>();
+            if (FAILED(fl.encoder_init_hr)) return fl.encoder_init_hr;
+            if (v.prefer_hardware && FAILED(fl.hw_encoder_init_hr)) return fl.hw_encoder_init_hr;
+            return wp->Init(*j.dev, cfg, nullptr);
+        };
+        HRESULT h = init_writer();
+        if (FAILED(h) && !IsPathError(h)) {
+            CT_LOG_WARN("export: encoder setup failed (%s); retrying with the software encoder", HrToString(h).c_str());
+            v.prefer_hardware = false;
+            h = init_writer();
+        }
+        media::Mp4Writer& w = *wp;
+        if (FAILED(h)) {
+            const std::string wm = w.ErrorMessage();
+            fail(h, IsPathError(h) && !wm.empty() ? wm : "No video encoder accepted this export (" + HrToString(h) + ").");
+        } else if (!w.Start()) {
+            fail(E_FAIL, "The video encoder could not start.");
+        } else {
+            pr.software_encoder = !w.IsHardware();
+            if (FAILED(fl.write_error_hr)) w.InjectWriteErrorForTest(fl.write_error_after_samples, fl.write_error_hr);
+        }
         if (SUCCEEDED(hr)) {
             pr.encoder = w.EncoderName();
             h = conv.Init(*j.dev, cc);
@@ -565,7 +596,7 @@ void ExportJob::Main() {
     pr.compose_gpu_avg_ms = j.gpu_frames > 0 ? j.gpu_ms / static_cast<double>(j.gpu_frames) : -1;
     pr.inexact_frames = j.inexact_frames;
     j.tp.Shutdown();
-    if (j.budget_extra) playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() - j.budget_extra);
+    if (j.budget_extra) playback::CacheBudget::AddExtra(-static_cast<int64_t>(j.budget_extra));
     {
         platform::D3DDevice::Lock lock(*j.dev);
         j.comp.Shutdown();

@@ -135,6 +135,7 @@ constexpr const char* kUndoProperty = "Edit property";
 constexpr const char* kUndoKeyframe = "Keyframe";
 constexpr const char* kUndoCanvas = "Edit canvas";
 constexpr const char* kUndoCamera = "Edit camera";
+constexpr const char* kUndoRegenerate = "Regenerate Auto-Zoom";
 constexpr const char* kUndoRemoveMedia = "Remove media";
 
 // --- Properties ------------------------------------------------------------------------------------------------
@@ -251,6 +252,12 @@ constexpr const char* kStatusExportTooltip = "Export in progress: click to show 
 constexpr const char* kCheatSheetTitle = "Keyboard shortcuts";
 constexpr const char* kCheatSheetHint = "Press ? or F1 to toggle";
 constexpr const char* kDemoToast = "Editor demo: sample project loaded. Playback and preview arrive with the compositor.";
+// Editor error banners (P09 9.6). "%d"/"%s" are filled with snprintf by the editor window.
+constexpr const char* kErrMediaUnreadable = "Cannot play %s: damaged file or unsupported codec.";
+constexpr const char* kErrMediaUnreadableN = "Cannot play %d media files: damaged or unsupported codec.";
+constexpr const char* kErrMediaMissingN = "%d media files could not be found. Right-click a card and choose Relink.";
+constexpr const char* kErrNoAudioOutput = "No audio output device is available, so playback is silent.";
+constexpr const char* kErrRecorderLaunch = "The recorder bar could not be started.";
 
 // --- Export dialog (P10) ----------------------------------------------------------------------------------------
 constexpr const char* kExportTitle = "Export";
@@ -314,6 +321,22 @@ constexpr const char* kErrMicBusy = "The microphone is in use by another app. Re
 constexpr const char* kErrDeviceLost = "The graphics device was reset. The recording was saved up to this point.";
 constexpr const char* kErrAccessLost = "Windows blocked screen capture (secure desktop or display change).";
 constexpr const char* kErrMediaMissing = "Media file not found: %s. Relink it from the Media panel.";
+// Additions (P11 11.5 wiring): the other recovery situations of the recorder and the export.
+constexpr const char* kErrDiskFullNotStarted = "Not enough disk space on %s. Nothing was recorded. Choose another folder.";
+constexpr const char* kErrOutputFolder = "Camtesia cannot save to %s. Choose another folder.";
+constexpr const char* kErrMicLost = "The microphone was disconnected. Recording continues with silence until it is back.";
+constexpr const char* kErrDeviceLostNotSaved = "The graphics device was reset. Nothing was recorded; try again.";
+constexpr const char* kErrExportDiskFull = "Not enough disk space on %s. The export was stopped and the partial file deleted.";
+constexpr const char* kErrExportFolder = "Camtesia cannot write the export to %s. Choose another folder.";
+constexpr const char* kErrExportDeviceLost = "The graphics device was reset during the export. Nothing was saved; export again.";
+constexpr const char* kErrDeviceRecreated = "The graphics device was recreated; the next recording uses the new one.";
+constexpr const char* kErrNotFinalized = "The video file could not be finalized; the editor may not open it.";
+constexpr const char* kErrActionChooseFolder = "Choose another folder...";
+constexpr const char* kErrActionOpenEditor = "Open in editor";
+constexpr const char* kErrActionShowFolder = "Show in folder";
+constexpr const char* kErrActionRetry = "Try again";
+constexpr const char* kErrPickFolderTitle = "Save recordings to";
+constexpr const char* kErrFolderChanged = "Recordings are now saved to %s";
 constexpr const char* kErrDetails = "Details";
 constexpr const char* kErrHideDetails = "Hide details";
 constexpr const char* kErrCode = "Error code";
@@ -366,6 +389,12 @@ constexpr const char* kSetSystemAudio = "Record system audio";
 constexpr const char* kSetSystemAudioHint = "Everything you hear through the default speakers or headset.";
 constexpr const char* kSetLoadingDevices = "Looking for devices...";
 constexpr const char* kSetNoMics = "No microphone found";
+constexpr const char* kSetMicTest = "Test microphone";
+constexpr const char* kSetMicTestHint = "Speak: the meter shows the live level. Nothing is recorded.";
+constexpr const char* kSetMicTestStart = "Test";
+constexpr const char* kSetMicTestStop = "Stop";
+constexpr const char* kSetMicTestFailed = "The microphone could not be opened.";
+constexpr const char* kSetMicTestStarting = "Opening the microphone...";
 constexpr const char* kSetWebcam = "Camera";
 constexpr const char* kSetNoWebcam = "None";
 constexpr const char* kSetNoCameras = "No camera found";

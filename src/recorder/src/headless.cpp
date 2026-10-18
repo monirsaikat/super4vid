@@ -326,14 +326,14 @@ BundleReport VerifyBundle(std::string_view bundle_path, const BundleExpect& expe
         hr = media::ScanStream(screen_path, 0, scan);
         r.video_frames = scan.samples;
         const double expected_frames = r.duration_s * r.fps;
-        Check(r, SUCCEEDED(hr) && std::fabs(static_cast<double>(scan.samples) - expected_frames) <= std::max(2.0, expected_frames * 0.03),
+        Check(r, SUCCEEDED(hr) && std::fabs(static_cast<double>(scan.samples) - expected_frames) <= std::max(2.0, expected_frames * expect.max_drop_fraction),
               "%llu video frames (fps x duration = %.0f), max gap %.1f ms", static_cast<unsigned long long>(scan.samples),
               expected_frames, scan.max_gap_us / 1000.0);
         // The MP4 source's MF_MT_FRAME_RATE counts the first frame's offset from 0, so check the sample spacing instead.
         const double spacing_us = scan.samples > 1 ? static_cast<double>(scan.last_us - scan.first_us) / (scan.samples - 1) : 0;
         // Allow the same few dropped frames the count check above accepts (a loaded machine can skip a tick or two);
         // each one lengthens the mean spacing by 1 / (samples - 1).
-        const double allowed_drops = std::max(2.0, expected_frames * 0.03) + 1.0;
+        const double allowed_drops = std::max(2.0, expected_frames * expect.max_drop_fraction) + 1.0;
         const double spacing_tol = scan.samples > 1 ? std::max(0.03, allowed_drops / static_cast<double>(scan.samples - 1)) : 0.03;
         Check(r, r.fps > 0 && std::fabs(spacing_us * r.fps / 1e6 - 1.0) < spacing_tol, "constant %d fps (mean spacing %.2f ms; MF reports %d/%d)",
               r.fps, spacing_us / 1000.0, pr.fps_num, pr.fps_den);
