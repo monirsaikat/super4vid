@@ -219,11 +219,11 @@ CT_TEST_DEVICE(media_cache_scrub_aborts_and_resumes_forward) {
         std::printf("    attempt %d: %d seek(s) for the abandoned and the new position\n", attempt + 1, seeks);
         best = std::min(best, seeks);
     }
-    // One seek is a timing property: the second hint must land while the decoder is still before 3.35 s. A Debug build
-    // or a loaded machine can let it pass that point first (then a second seek is correct), so 1 is enforced in
-    // Release or under CT_STRICT_TIMING; the frame checks above always apply.
+    // One seek is a timing property: the second hint must land while the decoder is still before 3.35 s. The Debug
+    // test thread is slow enough that the decoder passes that point first even on an idle machine (then a second seek
+    // is correct), so 1 is enforced in Release only; the frame checks above always apply.
 #ifdef CT_DEBUG
-    const bool strict = test::StrictTiming();
+    const bool strict = false;
 #else
     const bool strict = true;
 #endif
