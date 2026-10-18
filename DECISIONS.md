@@ -1780,5 +1780,8 @@ A press that has not started a drag 10 frames later is released and retried (at 
 window. Benches and screenshots skip the crash-recovery scan (`EditorWindow::scan_recovery`), and a bench discards its
 own autosave when it closes: a bench closes without the unsaved prompt, so its dirty project's autosave survived, the
 next launch opened the modal "Recover unsaved project?" and the modal took the synthetic mouse (2 of 3 drag runs).
+A bench or screenshot window found minimized is restored (SW_SHOWNOACTIVATE) and the report says so: a minimized
+editor renders nothing and waits for input, and something on the shared desktop minimized bench windows (stack dump:
+main thread idle in MsgWaitForMultipleObjectsEx; one --bench-play frame lasted 846 s).
 Why: a bench number is only useful when the bench did what it claims.
 Impact: none outside the bench modes.

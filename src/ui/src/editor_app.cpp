@@ -124,6 +124,7 @@ struct App {
     int drag_active_frames = 0;
     int drag_moves = 0;              // frames in which the dragged clip's start changed
     int drag_base = 0;               // bench frame offset of the latest press attempt
+    int restored_from_minimized = 0; // times a bench window was found minimized and restored
     int drag_retries = 0;
     TimeUs drag_last_start = -1;
 };
@@ -459,6 +460,8 @@ void ReportBench(App& app) {
                     app.scrub_cold.size(), a.p50, a.p95, a.max, app.scrub_cached.size(), b.p50, b.p95, b.max);
         std::printf("  seeks not exact within 10 s: %d\n", app.scrub_timeouts);
     }
+    if (app.restored_from_minimized)
+        std::printf("  the window was minimized %d time(s) during the run and restored (numbers include it)\n", app.restored_from_minimized);
     CT_LOG_INFO("bench %s done", L.bench.c_str());
 }
 
@@ -493,6 +496,15 @@ int Loop(App& app) {
             frames_requested = 2;
         }
         if (app.quit) break;
+        if (forced && app.win.IsMinimized()) {
+            // A minimized window renders nothing and waits for input, so a bench or screenshot would wait forever
+            // (seen: something on the shared desktop minimized the bench window and --bench-play sat idle for 14
+            // minutes). Restore it without activating and go on.
+            ++app.restored_from_minimized;
+            CT_LOG_WARN("bench/screenshot window was minimized: restoring it");
+            ShowWindow(app.win.Hwnd(), SW_SHOWNOACTIVATE);
+            frames_requested = std::max(frames_requested, 1);
+        }
         if (frames_requested > 0 && !app.win.IsMinimized()) {
             const int64_t wait_start = QpcNow();
             WaitForSingleObject(app.sc.WaitableObject(), 1000);
