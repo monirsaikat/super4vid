@@ -14,6 +14,7 @@
 #include <ct/platform/window.h>
 #include <ct/ui/editor_shell.h>
 #include <ct/ui/editor_window.h>
+#include <ct/ui/first_run.h>
 #include <ct/ui/fonts.h>
 
 #include <imgui.h>
@@ -550,7 +551,10 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
             app.closing = true;
             PostMessageW(app.win.Hwnd(), WM_CLOSE, 0, 0);
         };
+        const bool first_run = launch.screenshot.empty() && launch.bench.empty() && IsFirstRun();
         app.editor.Create(app.win.Hwnd(), app.dev, app.devices_ok ? &app.devices : nullptr);
+        // First run (P11 11.6) when the editor is the first mode launched: folders, settings file, the F9 toast.
+        if (first_run) FirstRun::Run(&app.editor.Shell().Toasts(), Settings::Defaults(), SettingsFilePath());
         app.editor.on_scrub_latency = [&app](double ms) {
             if (!app.scrub_waiting) return;
             app.scrub_waiting = false;

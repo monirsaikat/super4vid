@@ -9,6 +9,7 @@
 #include <ct/media/encoder_caps.h>
 #include <ct/platform/paths.h>
 #include <ct/platform/win.h>
+#include <ct/ui/recorder_errors.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 #include <ct/ui/widgets.h>
@@ -125,6 +126,7 @@ void ExportDialog::Open(const project::Project& project, TimeUs playhead_us, con
     m_open = true;
     m_minimized = false;
     m_error.clear();
+    m_banner.Clear();
     m_range = 0;
     m_builtin = Preset::Builtin();
     const std::string want = !preset_id.empty() ? preset_id : m_last_preset_id;
@@ -214,6 +216,7 @@ void ExportDialog::StartExport() {
     req.project_snapshot = m_project;
     req.preset = m_preset;
     req.output_path = m_dest;
+    req.faults = m_faults;
     if (m_preset.container == Preset::Container::Png) {
         req.range_start = m_playhead;
     } else if (m_range == 1 && m_project.ui.loop) {
@@ -232,8 +235,23 @@ void ExportDialog::StartExport() {
         return;
     }
     m_job_path = m_dest;
+    m_banner.Clear();
     m_open = false;
     m_minimized = false;
+}
+
+void ExportDialog::RunBannerAction(int action) {
+    switch (action) {
+    case kActionChooseFolder:
+        // The save dialog picks the new file (and so the folder); the banner goes once a destination was chosen.
+        if (BrowseDestination()) m_banner.Clear();
+        break;
+    case kActionRetry:
+        m_banner.Clear();
+        StartExport();
+        break;
+    default: break;
+    }
 }
 
 void ExportDialog::OnFinished() {
@@ -244,7 +262,8 @@ void ExportDialog::OnFinished() {
         if (p.cancelled.load()) {
             m_host.toasts->Push(str::kExportCancelled, ToastKind::Info);
         } else if (FAILED(p.hr)) {
-            m_host.toasts->Push(Format(str::kExportFailed, p.error.c_str()), ToastKind::Error, {}, 10.f);
+            // The dialog comes back (same settings) with the banner below; the toast only says that it failed.
+            m_host.toasts->Push(Format(str::kExportFailed, p.error.c_str()), ToastKind::Error, {}, 6.f);
         } else {
             const std::string path = m_job_path;
             std::vector<ToastButton> buttons;
@@ -252,6 +271,10 @@ void ExportDialog::OnFinished() {
             buttons.push_back({str::kExportShowInFolder, [path] { fs::ShowInExplorer(path); }});
             m_host.toasts->Push(Format(str::kExportDone, std::string(PathName(path)).c_str()), ToastKind::Success, std::move(buttons), 10.f);
         }
+    }
+    if (!p.cancelled.load() && FAILED(p.hr)) {
+        ShowErrorView(m_banner, DescribeExportFailure(p.hr, p.error, m_job_path), p.hr);
+        m_open = true;   // reopen with the same settings: choose another folder or try again
     }
     m_job.reset();
     if (m_host.request_redraw) m_host.request_redraw();
@@ -295,8 +318,10 @@ void ExportDialog::DrawSettings() {
     ImGui::EndChild();
     ImGui::SameLine();
 
-    // Right: settings.
+    // Right: settings, under the error banner of a failed export (P11 11.5).
     ImGui::BeginChild("##settings", ImVec2(0, -Dp(44)));
+    m_banner.Draw("##export_error");
+    if (const int action = m_banner.TakeAction()) RunBannerAction(action);
     const project::Canvas& cv = m_project.canvas;
     int container = static_cast<int>(m_preset.container);
     if (SectionHeader(str::kExportFormat)) {
@@ -438,8 +463,17 @@ void ExportDialog::DrawSettings() {
     ImGui::SameLine();
     const bool blocked = m_preset.container == Preset::Container::Mp4 && m_preset.video.codec == exportng::VideoCodec::Hevc && m_caps_known && !m_hevc_hw;
     ImGui::BeginDisabled(blocked);
-    if (Button(str::kExportStart, ButtonKind::Primary, ImVec2(Dp(88), 0))) StartExport();
+    bool start = Button(str::kExportStart, ButtonKind::Primary, ImVec2(Dp(88), 0));
     ImGui::EndDisabled();
+    // Keyboard (P11 11.6): Enter starts the export, Esc closes, unless a text field or a popup has the keys.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_open = false;
+        else if (!blocked && !ImGui::GetIO().NavVisible &&
+                 (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
+            start = true;
+    }
+    if (start && !blocked) StartExport();
     ImGui::End();
 }
 
@@ -468,6 +502,8 @@ void ExportDialog::DrawProgress() {
         if (Button(str::kExportMinimize)) m_minimized = true;
         ImGui::SameLine();
         if (Button(str::kExportCancel, ButtonKind::Danger)) m_job->Cancel();
+        // Esc minimizes the progress window (the export keeps running; Cancel stays an explicit click).
+        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_minimized = true;
     }
     ImGui::End();
 }

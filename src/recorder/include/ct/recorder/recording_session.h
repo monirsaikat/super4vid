@@ -6,7 +6,8 @@
 // writes meta.json (docs/04 section 1), watches free disk space and reports LiveStats at 4 Hz.
 //   Idle --Prepare--> Idle(prepared) --StartCountdown--> Countdown --StartNow--> Starting --> Recording
 //   Recording <--TogglePause--> Paused;  Recording|Paused --Stop--> Finalizing --> Idle + OnFinished
-//   any --Cancel--> Finalizing --> Idle (bundle deleted);  component error --> Error --> Finalizing --> Idle + OnError
+//   any --Cancel--> Finalizing --> Idle (bundle deleted);
+//   component error --> Error --> Finalizing --> Idle (+ OnFinished when frames were kept) + OnFailure
 // Thread model: every component is created, started, paused and stopped on the session's own "ct-session" thread
 // (COM MTA, as WASAPI and Media Foundation want), fed by a command queue: StartNow/TogglePause/AddMarker/Stop/
 // Cancel/PrepareAsync return immediately from any thread (the UI). Prepare() posts and waits (call it from the IO
@@ -32,6 +33,26 @@ namespace ct::recorder {
 enum class State { Idle, Countdown, Starting, Recording, Paused, Finalizing, Error };
 const char* StateName(State s);
 
+// Fault injection (P11 11.5): forces the error paths of a real recording without the real condition (a full disk,
+// a TDR, a missing encoder, a busy microphone). Tests and `Camtesia.exe --fault` only; all off by default.
+struct SessionFaults {
+    HRESULT writer_error_hr = S_OK;          // screen.mp4: the n-th WriteSample fails with this (ERROR_DISK_FULL,
+    uint64_t writer_error_after_samples = 0; //   DXGI_ERROR_DEVICE_REMOVED) through Mp4Writer::InjectWriteErrorForTest
+    HRESULT capture_error_hr = S_OK;         // the screen capturer reports this error (as ScreenCapturer::OnError does
+    int capture_error_after_ms = 0;          //   on a TDR) this long after the recording started
+    HRESULT hw_encoder_init_hr = S_OK;       // the hardware encoder attempts "fail" with this: software fallback
+    HRESULT encoder_init_hr = S_OK;          // every encoder attempt "fails" with this: no encoder at all
+    HRESULT mic_open_hr = S_OK;              // opening the microphone fails with this (AUDCLNT_E_DEVICE_IN_USE)
+    HRESULT audio_error_hr = S_OK;           // an audio stream reports this error (AUDCLNT_E_DEVICE_INVALIDATED:
+    int audio_error_after_ms = 0;            //   unplugged) this long after the recording started
+    uint64_t free_disk_bytes = 0;            // > 0: the disk check sees this much free space
+    int free_disk_after_ms = 0;              //   from this long after the recording started
+    bool Any() const {
+        return writer_error_hr != S_OK || capture_error_hr != S_OK || hw_encoder_init_hr != S_OK || encoder_init_hr != S_OK ||
+               mic_open_hr != S_OK || audio_error_hr != S_OK || free_disk_bytes != 0;
+    }
+};
+
 struct SessionConfig {
     capture::DisplayInfo display;
     RectI region;                       // virtual-screen px; empty = the whole display
@@ -52,6 +73,36 @@ struct SessionConfig {
     KeystrokeMode keystrokes = KeystrokeMode::ShortcutsOnly;
     int cursor_hz = 120;
     bool events = true;                 // false: no event recorder (tests that must not install hooks)
+    SessionFaults faults;               // P11 11.5 fault injection (tests / --fault)
+};
+
+// Why a recording failed or could not start (P11 11.5): the UI picks the plain-language message and the recovery.
+enum class FailureCause {
+    Other,
+    DiskFull,       // the disk filled up (writer error) or free space fell below kStopFreeBytes
+    OutputFolder,   // the output folder cannot be created or written (missing drive, access denied)
+    DeviceLost,     // TDR / device removed: the app should recreate its D3D device before the next recording
+    NoEncoder,      // neither a hardware nor the software encoder accepted the stream
+    CaptureFailed,  // the screen capture could not start (display gone, access denied)
+    AccessLost,     // the capture lost access and did not recover (secure desktop, display change)
+};
+const char* FailureCauseName(FailureCause c);
+struct SessionFailure {
+    FailureCause cause = FailureCause::Other;
+    std::string message;    // log-level text (the UI shows its own strings.h message)
+    HRESULT hr = S_OK;
+    std::string bundle_path;
+    std::string output_dir; // the folder the recording went to (the disk-full / folder messages name its drive)
+    bool during_prepare = false;   // nothing was recorded (prepare / start failed)
+    bool saved = false;     // a finished bundle with at least one frame was kept (OnFinished was also called)
+    bool finalized = true;  // screen.mp4 was finalized cleanly (false: meta.json says "incomplete")
+};
+// Non-fatal problems: the recording continues.
+enum class WarningCause { Other, LowDisk, MicBusy, MicMissing, AudioDeviceLost, SystemAudio, Camera, Events, SoftwareEncoder };
+struct SessionWarning {
+    WarningCause cause = WarningCause::Other;
+    std::string message;
+    HRESULT hr = S_OK;
 };
 
 struct LiveStats {
@@ -77,6 +128,10 @@ struct SessionListener {   // all callbacks posted to the UI thread (see the thr
     // Additions: non-fatal problems (low disk, camera lost, audio device error) and the result of PrepareAsync.
     virtual void OnWarning(const std::string& message) { (void)message; }
     virtual void OnPrepared(HRESULT hr) { (void)hr; }
+    // Additions (P11 11.5): the structured forms. The session calls only these; the defaults forward to
+    // OnError / OnWarning. A failure while recording arrives after Finalizing (and after OnFinished when saved).
+    virtual void OnFailure(const SessionFailure& f) { OnError(f.message, f.hr); }
+    virtual void OnWarningInfo(const SessionWarning& w) { OnWarning(w.message); }
     virtual ~SessionListener() = default;
 };
 

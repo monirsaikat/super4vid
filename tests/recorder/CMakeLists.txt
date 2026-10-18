@@ -8,4 +8,5 @@ ct_add_test(ct_recorder_tests DEPS ct_recorder SOURCES
   tray_hotkeys_test.cpp
   overlay_geometry_test.cpp
   layered_window_test.cpp
-  session_test.cpp)
+  session_test.cpp
+  session_faults_test.cpp)

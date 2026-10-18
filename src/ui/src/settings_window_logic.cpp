@@ -15,6 +15,7 @@
 #include <ct/platform/win.h>
 #include <ct/ui/error_ux.h>
 #include <ct/ui/first_run.h>
+#include <ct/ui/level_monitor.h>
 #include <ct/ui/strings.h>
 #include <ct/version.h>
 
@@ -381,12 +382,28 @@ void SettingsWindow::Open(const Settings& current, SettingsSection section) {
 
 void SettingsWindow::Close() {
     if (m_capturing >= 0) EndCapture();
+    StopMeterTest();
     m_open = false;
 }
 
+void SettingsWindow::StartMeterTest(bool system_audio) {
+    if (!m_meter) m_meter = std::make_unique<LevelMonitor>();
+    m_meter_device = system_audio ? std::string() : m_settings.recording.mic_device;
+    m_meter->Start(system_audio ? LevelMonitor::Source::SystemAudio : LevelMonitor::Source::Microphone,
+                   Utf8ToWide(m_meter_device));
+}
+
+void SettingsWindow::StopMeterTest() {
+    if (m_meter) m_meter->Stop();
+}
+
+bool SettingsWindow::MeterTestActive() const { return m_meter && m_meter->Active(); }
+
+float SettingsWindow::MeterTestDb() const { return m_meter ? m_meter->PeakDb() : -120.0f; }
+
 bool SettingsWindow::WantsRedraw() const {
     if (!m_open) return false;
-    if (m_capturing >= 0 || AsyncBusy()) return true;
+    if (m_capturing >= 0 || AsyncBusy() || MeterTestActive()) return true;
     return ImGui::GetCurrentContext() && ImGui::GetTime() - m_copied_at < 2.5;
 }
 
