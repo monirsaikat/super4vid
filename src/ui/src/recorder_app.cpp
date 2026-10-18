@@ -779,7 +779,8 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         if (!temp_out.empty()) app.launch_editor = [](const std::wstring& a) { std::printf("forwarded editor launch: %ls (ignored)\n", a.c_str()); };
         else app.launch_editor = &LaunchEditorArgs;
         // Diagnostics runs never write the user's settings (the hotkey bench uses its own chord).
-        app.bar.Init(app.dev, app.win, settings, screenshot || bench.runs > 0 || fault_test ? std::string() : settings_path, bo,
+        const bool diagnostics = screenshot || bench.runs > 0 || fault_test || !extra.bar_keys.empty();
+        app.bar.Init(app.dev, app.win, settings, diagnostics ? std::string() : settings_path, bo,
                      std::move(hooks));
         KeyScript keys;
         keys.Parse(extra.bar_keys);
@@ -839,6 +840,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
             if (fault_test) fault.Step(app);
             next_keys = keys.Step(app, frames_rendered);
             if (next_keys) frames_requested = std::max(frames_requested, 1);
+            else if (!keys.keys.empty() && !fault_test && !screenshot) app.quit = true;   // --bar-keys alone: done
             if (app.device_reset) {
                 // Wait until the session finalized its bundle on the old device, then recreate (P11 11.5).
                 if (!app.bar.IsIdle()) continue;

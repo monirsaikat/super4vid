@@ -265,6 +265,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     int last_failure_cause = -1;
     std::string nav_label;        // diagnostics: label of the nav-focused item (last frame)
     std::string frame_nav_label;
+    bool focus_first = false;     // keyboard focus to the first control on the next frame
 
     // Window geometry and animation.
     bool visible = true;
@@ -539,6 +540,13 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         if (std::abs((rc.left + width / 2) - cx) < snap) rc.left = cx - width / 2;   // centre line
         rc.right = rc.left + width;
         rc.bottom = rc.top + height;
+    }
+
+    // The bar was shown from the keyboard (tray icon Enter, tray menu): activate it so Tab / Enter reach it.
+    void FocusForKeyboard() {
+        SetForegroundWindow(win->Hwnd());
+        focus_first = true;
+        Animate();
     }
 
     void ShowBar(bool show) {
@@ -837,7 +845,10 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         case kMenuRecord: Toggle(Clock::QpcNow()); break;
         case kMenuPause: session.TogglePause(); break;
         case kMenuStop: session.Stop(); break;
-        case kMenuShow: ShowBar(!visible); break;
+        case kMenuShow:
+            ShowBar(!visible);
+            if (visible) FocusForKeyboard();
+            break;
         case kMenuEditor: if (hooks.open_editor) hooks.open_editor(last_bundle); break;
         case kMenuSettings: OpenSettings(); break;
         case kMenuQuit: Quit(); break;
@@ -996,6 +1007,10 @@ struct RecorderBar::Impl final : recorder::SessionListener {
                 ImGui::SetCursorScreenPos(ImVec2(sx, y + pad));
                 bool hovered = false;
                 ImGui::PushID(i);
+                if (i == 0 && focus_first) {   // shown from the keyboard (tray Enter): Tab starts here
+                    ImGui::SetKeyboardFocusHere();
+                    focus_first = false;
+                }
                 const bool pressed = Chip("##src", ImVec2(seg_w[i], h - pad * 2), source == i, &hovered);
                 NoteNav(i == 0 ? "source-monitor" : i == 1 ? "source-region" : "source-window");
                 ImGui::PopID();
@@ -1862,7 +1877,10 @@ LRESULT RecorderBar::HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     default:
         if (msg == kTrayMsg) {
             const platform::TrayIcon::Event e = platform::TrayIcon::Decode(wparam, lparam);
-            if (e.what == WM_LBUTTONUP || e.what == NIN_SELECT || e.what == NIN_KEYSELECT) s.ShowBar(!s.visible);
+            if (e.what == WM_LBUTTONUP || e.what == NIN_SELECT || e.what == NIN_KEYSELECT) {
+                s.ShowBar(!s.visible);
+                if (s.visible && e.what == NIN_KEYSELECT) s.FocusForKeyboard();
+            }
             else if (e.what == WM_CONTEXTMENU || e.what == WM_RBUTTONUP) s.TrayMenu(e.anchor);
             handled = true;
             return 0;

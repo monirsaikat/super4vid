@@ -719,7 +719,7 @@ struct EditorWindow::Impl {
         ImGui::SameLine(0, Dp(8));
         if (Button("Not now", ButtonKind::Normal, ImVec2(bw, bh)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) choice = 2;
         ImGui::SameLine(0, Dp(8));
-        if (Button("Recover", ButtonKind::Primary, ImVec2(bw, bh))) choice = 0;
+        if (Button("Recover", ButtonKind::Primary, ImVec2(bw, bh)) || ImGui::IsKeyPressed(ImGuiKey_Enter)) choice = 0;   // P11 11.6: Enter = default
         if (choice >= 0) {
             recover.erase(recover.begin());
             recover_open = false;
