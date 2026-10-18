@@ -87,6 +87,7 @@ public:
         double last_seek_to_frame_ms = 0;   // far hint -> exact playhead frame cached
         uint64_t decoder_copies = 0;        // GPU copies out of decoder surfaces (one per cached frame, into its slot)
         uint32_t decoder_pool_textures = 0; // intermediate textures the decoder owns (0: frames go straight to slots)
+        uint64_t over_budget_stores = 0;    // playhead frames stored with the budget full of other caches' frames
     };
     Stats GetStats() const;
     TimeUs FrameDurationUs() const;   // nominal (video), 0 for images/audio-only
@@ -121,6 +122,7 @@ private:
     HintState ReadHint() const;
     TimeUs NextNeed(const Window&) const;            // first uncached time the window wants, or -1
     TimeUs FillFrom(const Window&, TimeUs need) const;   // skip_before for decoding towards `need`
+    void TrimToBudget(const Window&);                    // evicts own frames while the process total is over budget
     bool CachedExact(TimeUs t) const;
     // Copies the decoded frame into a cache slot (evicting as needed). False: budget full of frames that must stay.
     bool StoreFrame(const media::VideoDecoder::PendingFrame&, const Window&);

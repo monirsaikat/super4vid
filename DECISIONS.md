@@ -1628,3 +1628,40 @@ Done instead:
   worst case) or a faster decoder; not changed here (it is a P04/P05 file-size decision).
 Why: measured (PROGRESS "Perf follow-ups" F1).
 Impact: P09 scrubbing benefits without changes; GOP length is the remaining lever for the seek budget.
+
+## 2026-10-18 · Perf follow-up (P08/P10) · GPU timing span; D3DDevice::Batch; export does not batch
+Spec said: docs/06 section 6: `ID3D11Query` timestamp pairs around each compositor pass, in `RenderContext`, shown by
+the F11 overlay / status bar; docs/03 section 8: immediate context under `ContextLock` (our CS) for every use.
+Done instead:
+- `D3DDevice::Batch` (new): holds the device's own multithread lock (`ID3D11Multithread::Enter`, the same lock as
+  `ID3D10Multithread`) for a span. MF's decoder/encoder threads use the context under that lock only, never under
+  `D3DDevice::Lock`. Rule: take `Lock` first; never hold a Batch across a wait on another thread.
+- `Compositor::RenderFrame` holds a Batch only while `RenderOptions::gpu_timing` is set, so no MF command interleaves
+  with the measured span. The span starts after the Direct2D text pass (D2D flushes the context) and the context is
+  flushed right after the end timestamp (otherwise it waits for the next Present). Each Compositor owns its 4 timers
+  (they were RenderContext's, shared by the editor's and an export's compositors, which resolved each other's queries).
+  `RenderContext::Timer` stays for compatibility but the compositor no longer uses it.
+- Not batched when not measuring, and ExportJob does not batch: measured on export_demo, one wait for a whole MF hold
+  per frame cost more (RenderFrame CPU 2-3 ms) than per-call contention after F1 (0.2-0.3 ms). `export_demo` measures GPU
+  time only with `--gpu-timing` now (it changes the timing it reports).
+Why: the status bar's "GPU 166 ms" was this measurement, not GPU work (PROGRESS F3a); F2 numbers.
+Impact: the editor's preview (gpu_timing on) waits once per rendered frame for MF to leave the lock; the editor's
+redraws are event-driven, so this is per preview frame, not per vsync.
+
+## 2026-10-18 · Perf follow-up (P06/P10) · Cache budget: atomic reservation, separate export extra, trim, playhead frame
+Spec said: docs/03 section 9 / P06 6.4: 256 MB total, LRU; caches evict their own frames before exceeding the budget;
+frames ahead of the playhead inside the window are never evicted (the cache stalls instead, DECISIONS 6.4).
+Done instead:
+- `CacheBudget::TryReserve(bytes)` (CAS): StoreFrame reserves before the copy (was Fits() then Add() after the copy).
+- `CacheBudget::AddExtra` / `ConfiguredBytes`: ExportJob's temporary extra is kept apart from the configured budget
+  (it did SetBytes(Bytes() + extra) and SetBytes(Bytes() - extra), which lost or undercut a settings change made during
+  the export).
+- `MediaCache::TrimToBudget`: when the total is over budget (it shrank under cached frames) the prefetch thread evicts
+  its own frames: the usual order, then frames ahead of the playhead, farthest first; never pinned frames or the frame
+  at the playhead. `GetVideoFrame` wakes the prefetch thread while over budget.
+- The frame at the playhead is stored even when the budget is full of other caches' frames and the cache has nothing
+  of its own to evict (`Stats::over_budget_stores`); the other caches trim on their next lookup. Before, that cache
+  stalled until the next hint, so a caller repeating the same exact request (a paused preview, `ResolveExact`,
+  `WaitForFrame`) never got the frame. The overshoot is at most one frame per cache and short-lived.
+Why: status bar "cache 258/256 MB" (PROGRESS F3b); the stall reproduced by a test.
+Impact: the editor shows at most a frame over budget briefly; P11 memory audit can rely on Used <= Bytes otherwise.

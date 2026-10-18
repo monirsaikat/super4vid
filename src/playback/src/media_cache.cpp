@@ -228,12 +228,28 @@ bool MediaCache::StoreFrame(const media::VideoDecoder::PendingFrame& f, const Wi
             return true;
         }
         for (;;) {
-            if (CacheBudget::Fits(bytes)) {
+            // Reserve the bytes atomically before the copy: with a Fits() check here and the Add() after the copy,
+            // two caches could both pass the check and overshoot the budget (status bar "cache 258/256 MB").
+            if (CacheBudget::TryReserve(bytes)) {
                 slot = AcquireSlot(f.size);
                 if (slot >= 0) break;
+                CacheBudget::Add(-static_cast<int64_t>(bytes));
             }
             const int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned);
-            if (v < 0) return false;
+            if (v < 0) {
+                // Nothing of ours to evict and the budget is full of other caches' frames (e.g. the camera's window).
+                // The frame at the playhead is stored anyway, briefly over budget: refusing it stalled this cache
+                // until the next hint, and a caller that keeps asking for the same exact frame (a paused preview,
+                // ResolveExact) never got it. The other caches trim their farthest frames on their next lookup.
+                const bool at_playhead = f.pts_us <= w.playhead + FrameCache::kContiguousUs &&
+                                         w.playhead < f.pts_us + f.duration_us + FrameCache::kContiguousUs;
+                if (!at_playhead) return false;
+                slot = AcquireSlot(f.size);
+                if (slot < 0) return false;
+                CacheBudget::Add(static_cast<int64_t>(bytes));
+                ++m_stats.over_budget_stores;
+                break;
+            }
             const FrameCache::Entry e = m_cache.Erase(v);
             m_free.push_back(e.slot);
             CacheBudget::Add(-static_cast<int64_t>(e.bytes));
@@ -256,6 +272,7 @@ bool MediaCache::StoreFrame(const media::VideoDecoder::PendingFrame& f, const Wi
         if (FAILED(hr)) {
             CT_LOG_ERROR("MediaCache: frame texture %dx%d: %s", f.size.w, f.size.h, HrToString(hr).c_str());
             s = Slot{};
+            CacheBudget::Add(-static_cast<int64_t>(bytes));
             ExclusiveGuard g(m_lock);
             m_free.push_back(static_cast<uint32_t>(slot));
             return false;
@@ -265,6 +282,7 @@ bool MediaCache::StoreFrame(const media::VideoDecoder::PendingFrame& f, const Wi
     // The slot is reserved (no entry references it and the UI never reads it), so the copy runs outside m_lock.
     if (const HRESULT hr = m_dec.CopyTo(f, s.tex.Get()); FAILED(hr)) {
         CT_LOG_WARN("MediaCache: frame copy failed: %s", HrToString(hr).c_str());
+        CacheBudget::Add(-static_cast<int64_t>(bytes));
         ExclusiveGuard g(m_lock);
         m_free.push_back(static_cast<uint32_t>(slot));
         return false;
@@ -277,12 +295,41 @@ bool MediaCache::StoreFrame(const media::VideoDecoder::PendingFrame& f, const Wi
         e.bytes = bytes;
         e.slot = static_cast<uint32_t>(slot);
         e.last_used = ++m_tick;
-        m_cache.Insert(e);
-        CacheBudget::Add(static_cast<int64_t>(bytes));
+        m_cache.Insert(e);   // the bytes were reserved above
         ++m_stats.frames_decoded;
         m_stats.decoder_copies = m_dec.FramesCopied();
     }
     return true;
+}
+
+void MediaCache::TrimToBudget(const Window& w) {
+    // The budget can shrink under frames already cached: the settings change it, and ExportJob gives back its extra
+    // bytes when it ends. Evict this cache's own frames until the process total fits again: the usual order first,
+    // then (only when over budget) frames ahead of the playhead, farthest first. Pinned frames stay.
+    if (CacheBudget::Used() <= CacheBudget::Bytes()) return;
+    ExclusiveGuard g(m_lock);
+    while (CacheBudget::Used() > CacheBudget::Bytes()) {
+        int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned);
+        if (v < 0) {
+            TimeUs farthest = -1;
+            for (int i = 0; i < static_cast<int>(m_cache.Count()); ++i) {
+                const FrameCache::Entry& e = m_cache.At(i);
+                bool pinned = false;
+                for (uint32_t p : m_pinned) pinned |= p == e.slot;
+                const TimeUs d = e.pts_us > w.playhead ? e.pts_us - w.playhead : w.playhead - e.pts_us;
+                const bool at_playhead = e.pts_us <= w.playhead && w.playhead < e.pts_us + e.duration_us + FrameCache::kContiguousUs;
+                if (!pinned && !at_playhead && d > farthest) {
+                    farthest = d;
+                    v = i;
+                }
+            }
+        }
+        if (v < 0) return;
+        const FrameCache::Entry e = m_cache.Erase(v);
+        m_free.push_back(e.slot);
+        CacheBudget::Add(-static_cast<int64_t>(e.bytes));
+        ++m_stats.evictions;
+    }
 }
 
 void MediaCache::PrefetchMain() {
@@ -291,6 +338,7 @@ void MediaCache::PrefetchMain() {
     while (!m_stop.load()) {
         HintState h = ReadHint();
         Window w = ComputeWindow(h);
+        TrimToBudget(w);
         const TimeUs need = NextNeed(w);
         if (need < 0 || h.gen == stalled_gen) {
             m_wake.Wait(INFINITE);
@@ -322,8 +370,10 @@ void MediaCache::PrefetchMain() {
             {
                 SharedGuard g(m_lock);
                 const size_t bytes = static_cast<size_t>(m_dec.Size().w) * m_dec.Size().h * 3 / 2;
+                bool playhead_cached = false;
                 const bool room = (CacheBudget::Fits(bytes) && (m_slots_used < m_slots.size() || !m_free.empty())) ||
-                                  m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned) >= 0;
+                                  m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned) >= 0 ||
+                                  (m_cache.Find(w.playhead, playhead_cached) < 0 || !playhead_cached);   // see StoreFrame
                 if (!room) {
                     stalled_gen = h.gen;
                     break;
@@ -438,6 +488,8 @@ bool MediaCache::GetVideoFrame(TimeUs t_us, FrameRef& out, bool& exact) {
         if (exact) ++m_stats.hits;
         else ++m_stats.misses;
     }
+    // Over budget (it shrank under cached frames): let the idle prefetch thread trim this cache.
+    if (CacheBudget::Used() > CacheBudget::Bytes()) m_wake.Set();
     if (!exact) {
         const HintState h = ReadHint();
         const Window w = ComputeWindow(h);

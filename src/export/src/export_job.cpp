@@ -119,7 +119,7 @@ struct ExportJob::Impl {
             extra += frame * kWindowFrames * (md.kind == project::Media::Kind::Recording && md.has_camera ? 2 : 1);
         }
         budget_extra = extra;
-        playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() + budget_extra);
+        playback::CacheBudget::AddExtra(static_cast<int64_t>(budget_extra));
         platform::D3DDevice::Lock lock(*dev);
         return comp.Init(*rc);
     }
@@ -565,7 +565,7 @@ void ExportJob::Main() {
     pr.compose_gpu_avg_ms = j.gpu_frames > 0 ? j.gpu_ms / static_cast<double>(j.gpu_frames) : -1;
     pr.inexact_frames = j.inexact_frames;
     j.tp.Shutdown();
-    if (j.budget_extra) playback::CacheBudget::SetBytes(playback::CacheBudget::Bytes() - j.budget_extra);
+    if (j.budget_extra) playback::CacheBudget::AddExtra(-static_cast<int64_t>(j.budget_extra));
     {
         platform::D3DDevice::Lock lock(*j.dev);
         j.comp.Shutdown();

@@ -176,6 +176,28 @@ binaries of master b4d6553 run alternately with after; numbers are not CT_STRICT
   load); seek-bench 1080p 50 seeks p95 223 -> 216 ms, 4K 30 seeks p95 481 -> 545 ms (noise): the exact-seek p95 is bound
   by the DXVA decoder (2.1 ms per ReadSample measured, 119 frames to the end of a 2 s GOP), not by copies; window fill
   after a seek: 2 seeks -> 1; a scrub during a fast-forward: 2-3 seeks -> 1. Seek budget (150 ms) still missed, see DECISIONS
+- [x] F2 Export camera contention — `export_demo --seconds 20` (screen + 1080p60 camera PIP + overlay + cursor + 2
+  annotations), 2026-10-18, alternating, CPU 30-60 % busy: before (b4d6553) RenderFrame CPU 5.59 / 5.94 ms, render
+  6.5 / 7.0 ms, 0.95x / 0.98x real time; after F1 (one copy per frame, no decoder pool) RenderFrame CPU 0.30 / 0.20 ms,
+  render 1.0 / 0.64 ms, 1.06x / 1.23x. Holding the device's multithread lock (`D3DDevice::Batch`) over the export frame
+  was measured too and made it worse (RenderFrame CPU 2-3 ms: one wait for a whole MF hold), so export does not take it.
+  The remaining limit is the encoder side, not the device lock: the writer thread needs 13-15 ms per frame with the
+  camera decoder running and 7.7 ms without it (both decoders and the H.264 encoder share the iGPU's video engine; the
+  synthetic camera is a 1080p60 copy of the pattern, a real webcam is 720p30). 1.5x not reached here; no prefetch-depth
+  change was needed (resolve 0.5-0.8 ms per frame)
+- [x] F3a Status bar "GPU 166 ms": a measurement bug, not a units error or a sum — the timestamp span included other
+  threads' context work (MF decoders use the immediate context under the multithread lock only, so they interleaved
+  with RenderFrame call by call), the end timestamp waited unflushed for the next Present, Direct2D's flush in the text
+  pass started the clock early, and the editor's and an export's compositors shared RenderContext's timers.
+  `render_gpu_timing_excludes_concurrent_context_work` (a thread copying 4K textures under the multithread lock while
+  frames render): before 3.51 ms alone / 35.0 ms busy (and 3.25 / 6.42), after 2.46 / 1.56 ms (and 4.73 / 4.60)
+- [x] F3b Status bar "cache 258/256 MB": a reservation race (Fits() before the copy, Add() after it, so two caches
+  could both pass) plus no trimming when the budget shrinks under cached frames (export gives its extra back, settings).
+  `cache_budget_reserve_is_atomic_and_extra_is_separate`, `media_cache_two_caches_stay_within_a_shrinking_budget`: max
+  used 30.0 of 30.5 frames with two caches prefetching; shrink to 10 frames -> 10.0 used after 17-20 ms (before: never
+  trimmed). Also fixed: a cache whose playhead frame found the budget held by another cache's window stalled until the
+  next hint, so `WaitForFrame`/`ResolveExact` on that frame timed out (`media_cache_playhead_frame_when_another_cache_holds_the_budget`:
+  before "no" after 5 s, after "yes", 1 over-budget store, trimmed back)
 
 ## P11 Performance & polish
 - [ ] 11.1 Idle power: 0 redraws, timers coalesced, no busy waits (verify with WPR)
