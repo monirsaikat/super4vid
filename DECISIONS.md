@@ -1663,3 +1663,32 @@ Why: a developer/CI machine runs many Camtesia.exe; the uninstaller must not kil
 available to the agents, so as much of 12.5 as possible is scripted and repeatable.
 Impact: interactive editing and the clean Windows 10 / Windows 11 runs stay human checks (checklist section 6). CI
 could run `release_smoke.ps1 -TrayCheck $false` after `build.cmd package` (not wired up).
+
+## 2026-10-18 · P09 9.7 / P06 · The playhead frame may exceed the shared frame-cache budget by one frame
+Spec said: docs/03 section 9: decoded frame cache 256 MB total, LRU; `CacheBudget`: caches evict their own frames
+before exceeding it. P09 pitfalls: scrubbing shows the nearest cached frame and redraws when the exact one lands.
+Done instead: `MediaCache` never refuses the frame at its hinted playhead. The prefetch room check passes while that
+frame is missing, and `StoreFrame` for it evicts the usual victim, else this cache's unpinned frame farthest from the
+playhead (prefetched-ahead frames), else exceeds the global budget by that one frame (only the 4 pinned frames left).
+Every other frame keeps the old rule.
+Why: `--bench-scrub` on `preview_bench.ctproj` (screen + camera + 4K B-roll) hung for good. The other caches' paused
+windows filled the budget while every frame of one cache was pinned or in its window ahead of the playhead; the room
+check failed before the playhead frame was decoded, the prefetch thread marked the hint generation stalled and slept
+until the next hint, which a paused playhead never sends. The preview stayed inexact (and the editor redrew at 60 fps)
+until the user moved the playhead. Test `timeline_player_paused_seek_exact_under_full_budget` (ct_render_tests)
+failed on every seek before the change.
+Impact: `CacheBudget::Used()` can exceed `Bytes()` by at most one frame per open cache (12 MB for a 4K file); it
+drains as soon as a victim exists again. The decoder/seek performance work in src/media and src/playback should keep
+this rule (or an equivalent priority for the playhead frame).
+
+## 2026-10-18 · P09 9.7 · Bench input survives focus loss; benches report what they measured
+Spec said: `--bench-drag N` drags a clip for N frames and reports fps.
+Done instead: benches set `io.ConfigDebugIgnoreFocusLoss`: a bench window launched from a script is often not (or
+stops being) the foreground window, and the Win32 backend's focus-loss event made ImGui clear the mouse, releasing the
+synthetic button two frames into the press (the 59.9 fps on master measured an idle timeline: drag active in 0
+frames). The drag re-asserts the button every frame and reports the frames in which the clip moved (INVALID when it
+did not move in most of them). `--bench-scrub` reports a seek that is not exact after 10 s instead of waiting forever,
+keeps cold seeks a third of a short project away from the playhead, and steps the other way at either end. Drag and
+play reports add the preview renders, their compositor GPU time and the swapchain frame-latency waits.
+Why: a bench number is only useful when the bench did what it claims.
+Impact: none outside the bench modes.
