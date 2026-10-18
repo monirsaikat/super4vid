@@ -195,11 +195,14 @@ CT_TEST(autosave_interval_and_edit_count) {
     const int64_t t0 = Clock::NowUs();
     a.Tick(p, t0 + 120 * kUsPerSecond);
     CT_CHECK_EQ(a.Saves(), uint64_t(0));   // not dirty
+    CT_CHECK(!a.NeedsTick());              // an idle editor may disarm its 1 Hz timer
     a.NotifyChanged();
+    CT_CHECK(a.NeedsTick());
     a.Tick(p, t0 + 30 * kUsPerSecond);
     CT_CHECK_EQ(a.Saves(), uint64_t(0));   // interval not reached
     a.Tick(p, t0 + 61 * kUsPerSecond);
     CT_CHECK_EQ(a.Saves(), uint64_t(1));
+    CT_CHECK(!a.NeedsTick());              // saved, nothing in flight
     std::string text;
     CT_REQUIRE(fs::ReadAll(a.AutosavePath(), text));
     CT_CHECK_EQ(text, ToJson(p));

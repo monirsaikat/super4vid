@@ -12,6 +12,7 @@
 #include <ct/platform/single_instance.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
+#include <ct/playback/cache_budget.h>
 #include <ct/ui/editor_shell.h>
 #include <ct/ui/editor_window.h>
 #include <ct/ui/first_run.h>
@@ -21,6 +22,7 @@
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
+#include <psapi.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -401,23 +403,46 @@ void ReportBench(App& app) {
 
 int Loop(App& app) {
     const EditorLaunch& L = app.launch;
+    // 1 Hz kernel timer for the autosave tick and --stats. Armed only while it has work (P11 11.1): an idle editor
+    // with a saved (or unchanged) project waits on messages alone and wakes 0 times a second.
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
-    LARGE_INTEGER due;
-    due.QuadPart = -10'000'000LL;
-    SetWaitableTimer(timer, &due, 1000, nullptr, nullptr, FALSE);
+    bool timer_armed = false;
+    const auto arm_timer = [&](bool on) {
+        if (!timer || on == timer_armed) return;
+        timer_armed = on;
+        if (on) {
+            LARGE_INTEGER due;
+            due.QuadPart = -10'000'000LL;
+            // 100 ms tolerable delay: the tick may coalesce with other timers in the system.
+            SetWaitableTimerEx(timer, &due, 1000, nullptr, nullptr, nullptr, 100);
+        } else {
+            CancelWaitableTimer(timer);
+        }
+    };
     HANDLE handles[1] = {timer};
     int screenshot_frames = L.frames;
     int frames_requested = 2;
     const bool forced = !L.screenshot.empty() || !L.bench.empty();
+    int64_t second_start_qpc = QpcNow();
     while (!app.quit) {
+        arm_timer(L.stats || app.editor.State().autosave.NeedsTick());
         const DWORD timeout = frames_requested > 0 ? 0 : INFINITE;
-        const DWORD wait = MsgWaitForMultipleObjectsEx(1, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (wait == WAIT_OBJECT_0) {
-            // 1 Hz: autosave tick (no redraw) and --stats.
-            app.editor.OnTimer();
+        const DWORD wait = MsgWaitForMultipleObjectsEx(timer ? 1 : 0, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (timer && wait == WAIT_OBJECT_0) app.editor.OnTimer();   // autosave tick (no redraw)
+        // Redraws per second for the status bar and --stats, bucketed by wall time (the timer may be disarmed).
+        if (const int64_t now = QpcNow(); static_cast<double>(now - second_start_qpc) >= 0.95 * app.qpc_freq) {
             app.redraws_last_second = app.redraws_this_second;
-            if (L.stats) std::printf("redraws/s: %u\n", app.redraws_this_second);
+            if (L.stats) {
+                // P11 11.3: memory next to the redraw count (docs/06 section 6: --stats prints cache bytes and RSS).
+                PROCESS_MEMORY_COUNTERS_EX pmc{};
+                pmc.cb = sizeof(pmc);
+                GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
+                std::printf("redraws/s: %u  frame cache: %.1f / %.0f MB  rss: %.1f MB (peak %.1f)  private: %.1f MB\n",
+                            app.redraws_this_second, playback::CacheBudget::Used() / 1048576.0, playback::CacheBudget::Bytes() / 1048576.0,
+                            pmc.WorkingSetSize / 1048576.0, pmc.PeakWorkingSetSize / 1048576.0, pmc.PrivateUsage / 1048576.0);
+            }
             app.redraws_this_second = 0;
+            second_start_qpc = now;
         }
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -575,15 +600,19 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
             const std::string preset = launch.export_preset;
             EditorWindow* ed = &app.editor;
             // Two hops: the open job posts from the IO pool after its work; give it time by re-posting until loaded.
-            std::function<void(int)> apply;
             auto attempt = std::make_shared<std::function<void(int)>>();
-            *attempt = [ed, seek, sel, open_export, preset, attempt](int left) {
+            // The function refers to itself weakly: a strong self-capture is a reference cycle that leaked it (and its
+            // strings) at exit (P11 11.3, found by the Debug CRT leak check). The pending posts hold the strong refs.
+            std::weak_ptr<std::function<void(int)>> weak_attempt = attempt;
+            *attempt = [ed, seek, sel, open_export, preset, weak_attempt](int left) {
                 EditorState& s = ed->State();
                 const bool loaded = !s.project.clips.empty();
                 if (!loaded && left > 0) {
-                    Async::Run([attempt, left] {
+                    std::shared_ptr<std::function<void(int)>> again = weak_attempt.lock();
+                    if (!again) return;
+                    Async::Run([again, left] {
                         Sleep(20);
-                        Async::PostToUi([attempt, left] { (*attempt)(left - 1); });
+                        Async::PostToUi([again, left] { (*again)(left - 1); });
                     });
                     return;
                 }
@@ -597,8 +626,10 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
         app.win.Show(show_cmd);
         exit_code = Loop(app);
 
+        const int64_t quit_qpc = QpcNow();
         Async::SetUiPoster(nullptr, nullptr);
         app.editor.Destroy();
+        CT_LOG_INFO("editor shutdown: EditorWindow::Destroy %.0f ms", static_cast<double>(QpcNow() - quit_qpc) * 1000.0 / app.qpc_freq);
         ImGui_ImplDX11_Shutdown();
         ImGui_ImplWin32_Shutdown();
         Fonts::Unload();
@@ -613,6 +644,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
     app.dev.ReportLiveObjects();
     g_app = nullptr;
     delete app_ptr;
+    CT_LOG_INFO("editor exit %d", exit_code);
     return exit_code;
 }
 

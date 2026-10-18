@@ -309,6 +309,7 @@ int RunUi(App& app, const Options& opt) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
+    const double entry_ms = MsSinceProcessStart();   // P11 11.2: loader + static imports + CRT init before this
 #if defined(CT_DEBUG)
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
     // Leak reports also go to stderr so they are visible without a debugger (e.g. `Camtesia.exe 2>leaks.txt`).
@@ -330,7 +331,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         return 0;   // forwarded to the running instance via WM_COPYDATA
     }
     ct::Log::Init(ct::platform::Paths::LogsDir().c_str());
-    CT_LOG_INFO("Camtesia %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
+    CT_LOG_INFO("Camtesia %s (%s) starting; wWinMain entered %.1f ms after process creation", CT_VERSION_STRING, CT_GIT_HASH,
+                entry_ms);
 
     const Options opt = ParseArgs();
     if (opt.stats || opt.time_to_window || headless) OpenConsole();

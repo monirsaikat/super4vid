@@ -56,6 +56,8 @@ public:
 
     // Builds the ImGui frame (bar window, popovers, toasts). Between NewFrame and Render.
     void Frame();
+    // Call once after the first present: starts the slow discovery (encoder caps, camera modes) on the IO pool.
+    void AfterFirstFrame();
     // GPU work before ImGui renders (camera preview NV12 -> RGBA), with D3DDevice::Lock held by the caller.
     void RenderGpu(ID3D11DeviceContext* ctx);
     // 0 = event driven (no redraw until input); otherwise the bar wants a frame every `interval_ms` (recording timer,

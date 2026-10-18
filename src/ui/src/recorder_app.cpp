@@ -6,6 +6,7 @@
 #include <ct/core/fs.h>
 #include <ct/core/log.h>
 #include <ct/core/strings.h>
+#include <ct/core/thread.h>
 #include <ct/core/time.h>
 #include <ct/platform/d3d_device.h>
 #include <ct/platform/image_io.h>
@@ -24,6 +25,7 @@
 #include <imgui_impl_win32.h>
 
 #include <dwmapi.h>
+#include <psapi.h>
 #include <shellapi.h>
 
 #include <audioclient.h>
@@ -95,6 +97,35 @@ double MsSinceProcessStart() {
     const auto v = [](const FILETIME& ft) { return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime; };
     return static_cast<double>(v(now) - v(creation)) / 10'000.0;
 }
+
+// Startup profile (P11 11.2): ms since process creation at each step before the first frame; logged at the first
+// frame and printed by --time-to-window.
+struct StartupMarks {
+    const char* name[12] = {};
+    double ms[12] = {};
+    double cpu_ms[12] = {};   // process user + kernel time: unlike wall time, barely moved by other processes' load
+    int n = 0;
+    void Mark(const char* what) {
+        if (n >= 12) return;
+        name[n] = what;
+        ms[n] = MsSinceProcessStart();
+        FILETIME c, e, k, u;
+        if (GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) {
+            const auto v = [](const FILETIME& ft) { return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime; };
+            cpu_ms[n] = static_cast<double>(v(k) + v(u)) / 10'000.0;
+        }
+        ++n;
+    }
+    void Report(bool print) const {
+        char line[768];
+        int len = 0;
+        for (int i = 0; i < n && len < static_cast<int>(sizeof(line)) - 64; ++i)
+            len += std::snprintf(line + len, sizeof(line) - static_cast<size_t>(len), "%s%s %.1f (cpu %.0f)", i ? ", " : "", name[i],
+                                 ms[i], cpu_ms[i]);
+        CT_LOG_INFO("startup (ms since process start): %s", line);
+        if (print) std::printf("startup (ms since process start): %s\n", line);
+    }
+};
 
 struct App {
     platform::D3DDevice dev;
@@ -674,6 +705,8 @@ bool IsRecorderBarCommandLine(const wchar_t* cmdline) {
 }
 
 int RunRecorderApp(const RecorderAppOptions& options) {
+    StartupMarks marks;
+    marks.Mark("bar-entry");
     const Extra extra = ParseExtra();
     App* app_ptr = new App();
     App& app = *app_ptr;
@@ -689,13 +722,16 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     const bool debug_layer = false;
 #endif
     app.debug_layer = debug_layer;
-    HRESULT hr = app.dev.Init(debug_layer);
-    if (FAILED(hr)) {
-        CT_LOG_ERROR("no usable D3D11 device: %s", HrToString(hr).c_str());
-        MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
-        delete app_ptr;
-        g_app = nullptr;
-        return 1;
+    // P11 11.2: the D3D11 device (driver DLLs, adapter enumeration: the largest step before the first frame) is
+    // created on a helper thread while this thread loads the settings, creates the window and sets up ImGui and the
+    // fonts. The swapchain waits for both. No message is pumped in between, so the window sees no input meanwhile.
+    HRESULT hr = E_PENDING;
+    Thread device_thread;
+    {
+        Thread::Options o;
+        o.name = "ct-device-init";
+        o.com_mta = false;
+        if (!device_thread.Start(o, [&app, &hr, debug_layer] { hr = app.dev.Init(debug_layer); })) hr = app.dev.Init(debug_layer);
     }
 
     const std::string settings_path = SettingsFilePath();
@@ -739,9 +775,10 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     desc.resizable = false;
     desc.icon = options.icon;
     desc.quit_on_destroy = true;
-    if (app.win.Create(desc, &Handler, &app) && SUCCEEDED(app.sc.Init(app.dev, app.win.Hwnd()))) {
-        Async::SetUiPoster(&PostToUi, app.win.Hwnd());
-
+    marks.Mark("settings");
+    const bool window_ok = app.win.Create(desc, &Handler, &app);
+    if (window_ok) {
+        marks.Mark("window");
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
@@ -756,11 +793,31 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         st.PopupBorderSize = 0;
         Fonts::Load(*io.Fonts);
         app.base_style = ImGui::GetStyle();
-        ImGui_ImplWin32_Init(app.win.Hwnd());
-        ImGui_ImplDX11_Init(app.dev.Device(), app.dev.Context());
+        ImGui_ImplWin32_Init(app.win.Hwnd());   // before anything can send the window a message ImGui handles
         g_orig_create_window = ImGui::GetPlatformIO().Platform_CreateWindow;
         ImGui::GetPlatformIO().Platform_CreateWindow = &CreateViewportWindow;
         ApplyDpi(app);
+        marks.Mark("imgui+fonts");
+    }
+    device_thread.Join();
+    marks.Mark("device");
+    if (FAILED(hr)) {
+        CT_LOG_ERROR("no usable D3D11 device: %s", HrToString(hr).c_str());
+        MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
+        if (window_ok) {
+            ImGui_ImplWin32_Shutdown();
+            Fonts::Unload();
+            ImGui::DestroyContext();
+        }
+        app.win.Destroy();
+        delete app_ptr;
+        g_app = nullptr;
+        return 1;
+    }
+    if (window_ok && SUCCEEDED(app.sc.Init(app.dev, app.win.Hwnd()))) {
+        marks.Mark("swapchain");
+        Async::SetUiPoster(&PostToUi, app.win.Hwnd());
+        ImGui_ImplDX11_Init(app.dev.Device(), app.dev.Context());
 
         RecorderBar::Options bo;
         bo.start_hidden = options.tray;
@@ -779,13 +836,15 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         if (!temp_out.empty()) app.launch_editor = [](const std::wstring& a) { std::printf("forwarded editor launch: %ls (ignored)\n", a.c_str()); };
         else app.launch_editor = &LaunchEditorArgs;
         // Diagnostics runs never write the user's settings (the hotkey bench uses its own chord).
-        const bool diagnostics = screenshot || bench.runs > 0 || fault_test || !extra.bar_keys.empty();
+        // --time-to-window is a diagnostic too: no first-run folders/settings, no settings path for the bar.
+        const bool diagnostics = screenshot || bench.runs > 0 || fault_test || !extra.bar_keys.empty() || options.time_to_window;
         app.bar.Init(app.dev, app.win, settings, diagnostics ? std::string() : settings_path, bo,
                      std::move(hooks));
+        marks.Mark("bar-init");
         KeyScript keys;
         keys.Parse(extra.bar_keys);
         if (!options.tray) ShowWindow(app.win.Hwnd(), SW_SHOWNOACTIVATE);
-        if (first_run && !screenshot && bench.runs == 0 && !fault_test && FirstRun::Run(nullptr, settings, settings_path))
+        if (first_run && !diagnostics && FirstRun::Run(nullptr, settings, settings_path))
             app.bar.PushToast(str::kFirstRunToast, 12.0f);
         fault.phase_qpc = Clock::QpcNow();
 
@@ -817,7 +876,12 @@ int RunRecorderApp(const RecorderAppOptions& options) {
             const DWORD wait = MsgWaitForMultipleObjectsEx(stats_timer ? 1 : 0, stats_timer ? handles : nullptr, timeout,
                                                            QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             if (stats_timer && wait == WAIT_OBJECT_0) {
-                std::printf("redraws/s: %u  messages/s: %u (last 0x%04X)\n", app.redraws, app.messages, app.last_message);
+                PROCESS_MEMORY_COUNTERS_EX pmc{};
+                pmc.cb = sizeof(pmc);
+                GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
+                std::printf("redraws/s: %u  messages/s: %u (last 0x%04X)  rss: %.1f MB (peak %.1f)  private: %.1f MB\n", app.redraws,
+                            app.messages, app.last_message, pmc.WorkingSetSize / 1048576.0, pmc.PeakWorkingSetSize / 1048576.0,
+                            pmc.PrivateUsage / 1048576.0);
                 CT_LOG_INFO("stats: redraws/s: %u messages/s: %u (last 0x%04X)", app.redraws, app.messages, app.last_message);
                 app.redraws = 0;
                 app.messages = 0;
@@ -862,6 +926,9 @@ int RunRecorderApp(const RecorderAppOptions& options) {
                 if (first_frame) {
                     first_frame = false;
                     const double ms = MsSinceProcessStart();
+                    marks.Mark("first-present");
+                    marks.Report(options.time_to_window);
+                    app.bar.AfterFirstFrame();
                     CT_LOG_INFO("time-to-window (recorder bar): %.1f ms", ms);
                     if (options.time_to_window) {
                         std::printf("time-to-window: %.1f ms\n", ms);
@@ -905,6 +972,11 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         ImGui::DestroyContext();
     } else {
         CT_LOG_ERROR("recorder bar window or swapchain creation failed");
+        if (window_ok) {
+            ImGui_ImplWin32_Shutdown();
+            Fonts::Unload();
+            ImGui::DestroyContext();
+        }
     }
     app.sc.Shutdown();
     app.win.Destroy();

@@ -50,8 +50,16 @@ public:
     ID3D11VideoDevice* VideoDevice() const { return m_video_device.Get(); }
     ID3D11VideoContext* VideoContext() const { return m_video_context.Get(); }
     // Debug only: ReportLiveDeviceObjects(DETAIL | IGNORE_INTERNAL), with the debug-layer messages copied into the log.
-    // Call after Shutdown(); it then sees only the device itself.
-    void ReportLiveObjects();
+    // Call after Shutdown(); it then sees only the device itself. Also logs (and prints to stderr when not clean) a
+    // summary: errors/warnings the debug layer raised during the run, and live objects other than the device.
+    struct DebugReport {
+        uint32_t corruption = 0, errors = 0, warnings = 0, infos = 0;
+        uint32_t live_objects = 0;     // "Live ID3D11..." lines other than the device itself
+        uint64_t discarded = 0;        // messages lost to the info queue's count limit
+        bool available = false;        // false in Release or without the debug layer
+        bool Clean() const { return corruption == 0 && errors == 0 && warnings == 0 && live_objects == 0; }
+    };
+    DebugReport ReportLiveObjects();
 
     // CRITICAL_SECTION around the immediate context.
     class Lock {
@@ -83,7 +91,7 @@ public:
     void Shutdown();
 
 private:
-    void DrainDebugMessages();
+    void DrainDebugMessages(DebugReport* report = nullptr);
 
     Microsoft::WRL::ComPtr<ID3D11Multithread> m_multithread;
 

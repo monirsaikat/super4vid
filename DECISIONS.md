@@ -1822,3 +1822,57 @@ Why: the conditions cannot be produced on demand on a shared machine without adm
 inline banner; a TDR used to end the app.
 Impact: P12 smoke tests can call `--fault-test`; the editor could reuse `DescribeExportFailure` and the device
 recreation sequence for its own device loss.
+
+## 2026-10-18 · P11 task 11.1 · Idle power measured by thread sampling; audio output stops while paused
+Spec said: `wpr -start GeneralProfile -start Power`, 60 s idle, WPA context switches < 20/s; fixes listed in P11 11.1.
+Done instead: WPR's kernel providers need admin rights, which the agents' account does not have, so
+`tools/idle_probe` samples NtQuerySystemInformation(SystemProcessInformation) twice: per-thread context switches
+(= wake-ups) and kernel+user time, threads named by GetThreadDescription or their Win32 start module. It launches the
+app (or attaches with `--pid`), and ends it with WM_QUIT so Debug exit checks still run. Fixes: the ct-log thread
+waits without a timeout while its ring is empty (a producer wakes it once, then the 500 ms batching applies); the
+editor's 1 Hz timer is armed only while `Autosave::NeedsTick()` (unsaved edits, a write in flight or failed) or with
+`--stats`, and redraws/s is bucketed by QPC instead of by that timer; `TimelinePlayer` parks its mixer thread while
+paused and stops the WASAPI render stream after `kEngineIdleStopMs` = 250 ms (after the engine's 5 ms fade), Play
+restarts it synchronously (`WasapiRender` keeps its IAudioClient, so only prefill + Start). Start/Stop are serialized
+by a lock; the mixer thread does the stop.
+Why: an idle editor woke 170 times a second (silence rendering at 100 Hz plus a 10 ms ring poll), every mode woke
+twice a second for the log. Measured: all modes 0.1-0.5 wakes/s, 0 redraws/s, 0.0 ms CPU over 30 s.
+Impact: the first Play after a pause longer than 250 ms pays the stream start (a few ms); the clock asks
+`DeviceOk()` after the restart, so it still follows the device. Test: `timeline_player_audio_output_stops_while_paused`.
+
+## 2026-10-18 · P11 task 11.2 · Device on a helper thread, delay-loaded MF/D2D/DWrite, caps after the first frame
+Spec said: `wWinMain` presents the first frame before anything heavy; MfRuntime, EncoderCaps, AudioDevices, webcam
+enumeration and D2D/DWrite on the IO pool after the first frame; prewarm (MfRuntime + InitMfManager + EncoderCaps)
+on hovering REC.
+Done instead: the bar creates the D3D11 device on a "ct-device-init" thread while the UI thread loads settings,
+creates the window and sets up ImGui, the fonts and the Win32 backend (no message is pumped before the join, so the
+window cannot see input without a device); the DX11 backend and swapchain follow the join. Camtesia.exe delay-loads
+mfplat, mf, mfreadwrite, d2d1, dwrite and propsys (`/DELAYLOAD` + delayimp): the loader no longer maps and initializes
+them before wWinMain. `MfRuntime::Ensure` loads mfplat.dll explicitly first and returns its error, so an N edition
+without the Media Feature Pack gets an HRESULT instead of a delay-load exception (every MF call is behind Ensure).
+Not delay-loaded: d3d11/dxgi/d3dcompiler (first frame) and dbghelp (the crash filter must not run the loader). The bar
+keeps listing displays and audio endpoints at Init on the IO pool (popovers need them; MMDevice enumeration does not
+open a stream, so the mic LED stays off); encoder caps and camera modes start in `RecorderBar::AfterFirstFrame`. The
+hover prewarm uses `EnsureForProcess` (MF then stays up for the process, so the first recording skips MFStartup).
+`--time-to-window` prints each step's ms since process creation and the process CPU time.
+Why: the device is the largest step (47-110 ms of a 130-250 ms start) and is independent of the window; the static MF
+imports cost loader time on every start, and the recorder bar does not need them until a recording.
+Impact: measured warm median 282 -> 248 ms on a loaded machine (noisy; cold not measured, needs a reboot). The editor
+still initializes its WASAPI stream (~170 ms) before its first frame (TimelinePlayer::Init on the UI thread): moving it
+needs the clock to attach to the engine later; left for the editor owner.
+
+## 2026-10-18 · P11 task 11.3 / P00 0.7 · Exit leak check and crash-dump stack check run under ctest
+Spec said: Debug exit prints nothing from the CRT and `ReportLiveDeviceObjects` lists only the device and swapchain;
+the crash test's dump opens in WinDbg/VS and shows the faulting line.
+Done instead: `D3DDevice::ReportLiveObjects` drains the run's own info-queue messages first and returns a
+`DebugReport` (corruption/errors/warnings/live objects besides the device, discarded); it logs the summary and prints
+`d3d11 debug: ...` to stderr when not clean. ctest `camtesia_exit_leak_check` (tests/app) starts 8 self-ending app
+modes and fails on the CRT's "Detected memory leaks" or that stderr line (Debug; Release checks exit 0 only; skipped
+under CT_CI because it opens windows and records). ctest `camtesia_crash_dump` runs `--crash-test` and checks the new
+dump with `tools/dump_check`, which walks the faulting thread with StackWalk64 over the dump's memory, serving code
+and .pdata/unwind data from the module files mapped as images (no cdb/WinDbg on this machine), and requires main.cpp
+on the stack.
+Why: both checks were manual; an automated run found a real leak (editor `--seek` retry std::function holding its
+own shared_ptr) that the earlier manual bar-only check could not see.
+Impact: `build.cmd test` launches Camtesia.exe windows for ~20 s per config; the crash test leaves no dump behind.
+

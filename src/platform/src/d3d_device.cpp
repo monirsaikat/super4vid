@@ -7,6 +7,8 @@
 #include <d3d10.h>   // ID3D10Multithread
 #include <mfapi.h>    // MFCreateDXGIDeviceManager
 
+#include <cstdio>
+#include <string_view>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -200,22 +202,33 @@ void D3DDevice::Shutdown() {
     m_factory.Reset();
 }
 
-void D3DDevice::ReportLiveObjects() {
+D3DDevice::DebugReport D3DDevice::ReportLiveObjects() {
+    DebugReport report;
 #if defined(CT_DEBUG)
     if (m_debug) {
+        report.available = true;
+        DrainDebugMessages(&report);   // the run's own messages first
         // IGNORE_INTERNAL hides objects the runtime holds itself. A clean exit lists only the device,
         // whose references are the m_debug/m_info_queue interfaces held here.
         m_debug->ReportLiveDeviceObjects(D3D11_RLDO_DETAIL | D3D11_RLDO_IGNORE_INTERNAL);
-        DrainDebugMessages();
+        DrainDebugMessages(&report);
+        CT_LOG_INFO("d3d11 debug summary: %u corruption, %u errors, %u warnings, %u live objects besides the device, "
+                    "%llu discarded", report.corruption, report.errors, report.warnings, report.live_objects,
+                    static_cast<unsigned long long>(report.discarded));
+        if (!report.Clean())
+            std::fprintf(stderr, "d3d11 debug: %u corruption, %u errors, %u warnings, %u live objects besides the device (see log)\n",
+                         report.corruption, report.errors, report.warnings, report.live_objects);
     }
 #endif
     m_info_queue.Reset();
     m_debug.Reset();
+    return report;
 }
 
-void D3DDevice::DrainDebugMessages() {
+void D3DDevice::DrainDebugMessages(DebugReport* report) {
     if (!m_info_queue) return;
     const UINT64 count = m_info_queue->GetNumStoredMessages();
+    if (report) report->discarded += m_info_queue->GetNumMessagesDiscardedByMessageCountLimit();
     std::vector<char> storage;
     for (UINT64 i = 0; i < count; ++i) {
         SIZE_T size = 0;
@@ -223,7 +236,25 @@ void D3DDevice::DrainDebugMessages() {
         storage.resize(size);
         auto* message = reinterpret_cast<D3D11_MESSAGE*>(storage.data());
         if (FAILED(m_info_queue->GetMessage(i, message, &size))) continue;
-        CT_LOG_INFO("d3d11 debug: %.*s", static_cast<int>(message->DescriptionByteLength), message->pDescription);
+        std::string_view text(message->pDescription, message->DescriptionByteLength);
+        while (!text.empty() && text.back() == '\0') text.remove_suffix(1);
+        // The live-object report arrives as warnings ("Live ID3D11Texture2D at 0x..., Refcount: 1"); the device's own
+        // line is expected on a clean exit.
+        const bool live = text.substr(0, 5) == "Live ";
+        const bool live_device = text.substr(0, 20) == "Live ID3D11Device at";
+        const char* sev = "info";
+        if (live) {
+            sev = live_device ? "live (expected)" : "LIVE";
+            if (report && !live_device) ++report->live_objects;
+        } else {
+            switch (message->Severity) {
+            case D3D11_MESSAGE_SEVERITY_CORRUPTION: sev = "CORRUPTION"; if (report) ++report->corruption; break;
+            case D3D11_MESSAGE_SEVERITY_ERROR: sev = "ERROR"; if (report) ++report->errors; break;
+            case D3D11_MESSAGE_SEVERITY_WARNING: sev = "WARNING"; if (report) ++report->warnings; break;
+            default: if (report) ++report->infos; break;
+            }
+        }
+        CT_LOG_INFO("d3d11 debug [%s #%d]: %.*s", sev, static_cast<int>(message->ID), static_cast<int>(text.size()), text.data());
     }
     m_info_queue->ClearStoredMessages();
 }

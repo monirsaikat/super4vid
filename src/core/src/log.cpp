@@ -13,8 +13,9 @@
 #include <vector>
 
 // Producers format a line on their own stack, then take an SRW lock only for the memcpy into a 1 MB ring.
-// The "ct-log" thread drains the ring to the file every 500 ms, when a Warn/Error is logged, when the ring is half
-// full, and on Flush(). No file IO, allocation or kernel call happens on the caller's thread, except SetEvent to wake
+// The "ct-log" thread drains the ring to the file 500 ms after the first pending line, when a Warn/Error is logged,
+// when the ring is half full, and on Flush(). With nothing pending it sleeps without a timeout (P11 11.1: an idle
+// app must not wake twice a second to find an empty ring); the first line after that wakes it (one SetEvent). No file IO, allocation or kernel call happens on the caller's thread, except SetEvent to wake
 // the writer (Warn/Error and the half-full mark). When the ring is full the new line is dropped and counted
 // ("log.dropped" in Stats). Files rotate at 10 MB; the newest 5 are kept.
 
@@ -41,6 +42,7 @@ struct LogState {
     HANDLE thread = nullptr;
     std::atomic<bool> stop{false};
     std::atomic<bool> wake_pending{false};
+    std::atomic<bool> idle{false};            // ct-log waits without a timeout; the next producer wakes it
     std::atomic<int> level{static_cast<int>(LogLevel::Info)};
     std::atomic<uint64_t> dropped{0};
     std::atomic<uint64_t> warnings{0};        // Warn + Error lines (WarningCount)
@@ -249,7 +251,20 @@ DWORD WINAPI LogThreadProc(void*) {
     SetThreadDescription(GetCurrentThread(), L"ct-log");
     Stats::Counter& dropped = Stats::C("log.dropped");
     while (!g_log.stop.load(std::memory_order_acquire)) {
-        WaitForSingleObject(g_log.wake.load(std::memory_order_acquire), kFlushIntervalMs);
+        // Nothing buffered: sleep until a producer wakes us. `idle` is published before re-checking the ring (and the
+        // producer commits before reading `idle`, both seq_cst), so a line written meanwhile is never left waiting.
+        DWORD timeout = kFlushIntervalMs;
+        if (g_log.write.load(std::memory_order_seq_cst) == g_log.read.load(std::memory_order_relaxed)) {
+            g_log.idle.store(true, std::memory_order_seq_cst);
+            if (g_log.write.load(std::memory_order_seq_cst) == g_log.read.load(std::memory_order_relaxed)) timeout = INFINITE;
+            else g_log.idle.store(false, std::memory_order_relaxed);
+        }
+        const DWORD r = WaitForSingleObject(g_log.wake.load(std::memory_order_acquire), timeout);
+        g_log.idle.store(false, std::memory_order_relaxed);
+        // Woken from idle by an ordinary line: batch it with what follows for up to 500 ms, like before.
+        if (r == WAIT_OBJECT_0 && timeout == INFINITE && !g_log.wake_pending.load(std::memory_order_relaxed) &&
+            !g_log.stop.load(std::memory_order_acquire))
+            continue;
         AcquireSRWLockExclusive(&g_log.io_lock);
         DrainLocked();
         ReleaseSRWLockExclusive(&g_log.io_lock);
@@ -337,6 +352,10 @@ void Log::Write(LogLevel level, const char* category, const char* file, int line
         Wake();
     } else if (used + len > kRingBytes / 2 && !g_log.wake_pending.exchange(true, std::memory_order_relaxed)) {
         Wake();
+    } else {
+        // The writer sleeps without a timeout while the ring is empty: the first line after that wakes it once.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (g_log.idle.load(std::memory_order_relaxed) && g_log.idle.exchange(false, std::memory_order_relaxed)) Wake();
     }
 }
 
