@@ -27,6 +27,7 @@ public:
 
     bool InBurst() const { return m_open; }
     TimeUs LastKeyUs() const { return m_last; }
+    TimeUs GapUs() const { return m_gap; }
 
 private:
     TimeUs m_gap;

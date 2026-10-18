@@ -346,6 +346,21 @@ struct EventRecorder::Impl final : platform::HooksHandler {
     static constexpr TimeUs kHoldBackUs = 5'000;
     TimeUs drained_to = INT64_MIN;   // every record with t_us <= drained_to has been written
 
+    // Merge helpers for the typing hold-back in Drain (batch vectors are each in time order).
+    bool IsTypingKeyDown(size_t ir, TimeUs tr, TimeUs t) const {
+        return ir < batch_raw.size() && tr == t && batch_raw[ir].kind == Kind::Key && batch_raw[ir].typing_key;
+    }
+    TimeUs NextTypingKeyDown(size_t ir) const {
+        for (size_t i = ir; i < batch_raw.size(); ++i)
+            if (batch_raw[i].kind == Kind::Key && batch_raw[i].typing_key) return batch_raw[i].t_us;
+        return INT64_MAX;
+    }
+    TimeUs NextPauseStart(size_t ic) const {
+        for (size_t i = ic; i < batch_controls.size(); ++i)
+            if (batch_controls[i].ev.kind == Kind::Pause && batch_controls[i].ev.paused) return batch_controls[i].ev.t_us;
+        return INT64_MAX;
+    }
+
     void Drain(DrainMode mode) {
         TimeUs cutoff = INT64_MAX;
         {
@@ -369,17 +384,37 @@ struct EventRecorder::Impl final : platform::HooksHandler {
         while (samples.Pop(s)) batch_samples.push_back(s);
         size_t ir = 0, is = 0, ic = 0;
         constexpr TimeUs kEnd = INT64_MAX;
+        TimeUs held_at = kEnd;   // first record held back by an undecided typing burst
         for (;;) {
             const TimeUs tr = ir < batch_raw.size() ? batch_raw[ir].t_us : kEnd;
             const TimeUs ts = is < batch_samples.size() ? batch_samples[is].t_us : kEnd;
             const TimeUs tc = ic < batch_controls.size() ? batch_controls[ic].ev.t_us : kEnd;
             const TimeUs t = std::min(tr, std::min(ts, tc));
             if (t == kEnd || (cutoff != kEnd && t > cutoff)) break;
+            // A burst's TYPING "ended" record carries its last key's time, but it is only known once no typing key
+            // follows within the gap. Records after that key wait until the burst's fate is decided, so the end
+            // record is never written after a later record (the file stays in time order).
+            if (typing.InBurst() && t > typing.LastKeyUs() && !IsTypingKeyDown(ir, tr, t)) {
+                const TimeUs close_at = typing.LastKeyUs() + typing.GapUs();
+                const TimeUs tk = NextTypingKeyDown(ir);
+                const TimeUs tp = NextPauseStart(ic);
+                const bool pause_first = tp < close_at && tp < tk;
+                if (!pause_first && tk < close_at) {
+                    // Extended by a later key: nothing to emit.
+                } else if (pause_first || cutoff == kEnd || cutoff >= close_at) {
+                    TypingDetector::Edge edge[1];
+                    WriteTypingEdges(edge, typing.Finish(edge));   // ends at the last key (<= t)
+                } else {
+                    held_at = t;
+                    break;
+                }
+            }
             if (tc <= tr && tc <= ts) WriteControl(batch_controls[ic++]);
             else if (ts <= tr) WriteSample(batch_samples[is++]);
             else WriteRaw(batch_raw[ir++]);
         }
-        if (cutoff > drained_to) drained_to = cutoff;
+        const TimeUs drained = held_at != kEnd ? held_at - 1 : cutoff;
+        if (drained > drained_to) drained_to = drained;
         // Shapes not referenced yet (a sample still in flight or held back) are written now; the move that uses them
         // comes later.
         for (auto& p : pending_shapes) WriteShape(p, last_t);

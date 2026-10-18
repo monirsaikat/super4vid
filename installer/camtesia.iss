@@ -72,5 +72,44 @@ Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: n
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/im {#MyAppExeName} /f"; Flags: runhidden; RunOnceId: "KillCamtesia"
+; No [UninstallRun] "taskkill /im Camtesia.exe": that ends every Camtesia.exe on the machine (portable copies, other
+; builds, another user's per-user install). The [Code] below closes only processes started from this {app}.
+
+[Code]
+// Ends the Camtesia.exe processes whose image is {app}\Camtesia.exe (a tray-only instance does not react to
+// CloseApplications). WMI Win32_Process; a failure is logged and the uninstall goes on (a file still in use is then
+// left for deletion at the next reboot, as Inno does for any locked file).
+procedure KillInstalledInstances();
+var
+  Locator, Services, Procs, P: Variant;
+  I, Killed, Pid: Integer;
+  Target, Path: String;
+begin
+  Target := Lowercase(ExpandConstant('{app}\{#MyAppExeName}'));
+  Killed := 0;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Services := Locator.ConnectServer('.', 'root\CIMV2');
+    Procs := Services.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE Name = ''{#MyAppExeName}''');
+    for I := 0 to Procs.Count - 1 do begin
+      P := Procs.ItemIndex(I);
+      if not VarIsNull(P.ExecutablePath) then begin
+        Path := P.ExecutablePath;
+        Pid := P.ProcessId;
+        if Lowercase(Path) = Target then begin
+          Log('Ending ' + Path + ' (pid ' + IntToStr(Pid) + ')');
+          P.Terminate(0);
+          Killed := Killed + 1;
+        end;
+      end;
+    end;
+  except
+    Log('KillInstalledInstances failed: ' + GetExceptionMessage);
+  end;
+  if Killed > 0 then Sleep(1000);   // Terminate is asynchronous; let the image unlock before files are deleted
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then KillInstalledInstances();
+end;
