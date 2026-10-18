@@ -121,3 +121,5 @@ so use the suffix for idle measurements next to another running instance.
 | Windows 11 laptop with NVIDIA or Intel GPU (any) | HW encoder detected, HEVC availability reported correctly, loopback audio records |
 | Clean user profile | first run creates folders, settings defaults, no prompts, no missing fonts |
 | Uninstall | removes program files, shortcuts, association; keeps `%APPDATA%`/`%LOCALAPPDATA%`/Videos data |
+
+The automatable part (per-user install into a temp folder, headless record + verify with the installed exe, import + MP4 export, association open, uninstall while a tray instance runs, leftover scan) is `tools\release_smoke.ps1`; the full per-release list is `tools/release_checklist.md`.

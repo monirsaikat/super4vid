@@ -1604,3 +1604,28 @@ clicking it calls `Restore()`. `DrawStatusBar` returns `StatusBarClick` instead 
 opens the dialog after load (screenshots). Closing the editor during an export cancels it without a prompt.
 Why: docs/05 section 4 layout; ExportDialog's lifetime contract.
 Impact: a "cancel the running export?" prompt on close could be added with the P11 error UX work.
+
+## 2026-10-18 · P12 tasks 12.4/12.5 · Uninstall ends only {app}'s processes; scripted release smoke test
+Spec said: (P12 12.2) `[UninstallRun] taskkill /im Camtesia.exe /f` covers a tray-only instance at uninstall; 12.5 is a
+manual checklist (`tools/release_checklist.md`) run on clean machines.
+Done instead:
+- The `[UninstallRun]` taskkill is gone: it ended every Camtesia.exe on the machine (portable copies, dev builds,
+  other agents' instances). A `[Code]` `CurUninstallStepChanged(usUninstall)` queries WMI `Win32_Process` for
+  `Camtesia.exe` and terminates only processes whose `ExecutablePath` equals `{app}\Camtesia.exe` (case-insensitive),
+  then waits 1 s; a WMI failure is logged and the uninstall continues.
+- `tools/release_smoke.ps1` automates the installable part of the checklist: refuses to run when Camtesia is already
+  installed/registered; per-user silent install into `%TEMP%\camtesia-smoke-*\app` with both tasks; checks files,
+  HKCU uninstall entry (and no HKLM one), `.ctproj` association, open command, Run value, shortcuts, exe version;
+  installed exe `--record --seconds 5 --verify --synthetic-camera --out <temp>`; `export_demo --recording <bundle>
+  --save-project` (new flag: imports the bundle like the editor's Import recording, saves + reloads the .ctproj, exports);
+  runs the registered open command with `--screenshot`; starts the installed exe `--tray` and a build-tree decoy
+  `--tray` (own CT_INSTANCE_SUFFIX); uninstalls in `finally`; checks the tray instance ended, the decoy survived, and
+  lists leftovers. Every child has a timeout and is killed with its tree when it runs over.
+- Inno's uninstaller self-copy `%TEMP%\is-XXXX-uninstall.tmp\{_unins.tmp,_unins-done.tmp}` is not counted as a
+  product leftover: Inno 6.3+ cannot delete its running copy and cleans these on the next Inno uninstall. The script
+  removes the one its own run created.
+- The installed app has no headless export mode, so export uses the build tree's `export_demo` (same ExportJob code).
+Why: a developer/CI machine runs many Camtesia.exe; the uninstaller must not kill unrelated ones. Clean VMs are not
+available to the agents, so as much of 12.5 as possible is scripted and repeatable.
+Impact: interactive editing and the clean Windows 10 / Windows 11 runs stay human checks (checklist section 6). CI
+could run `release_smoke.ps1 -TrayCheck $false` after `build.cmd package` (not wired up).

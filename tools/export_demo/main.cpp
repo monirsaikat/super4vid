@@ -1,11 +1,13 @@
 // export_demo: builds the P10 acceptance project from the tests/data pattern media (a synthetic .ctrec bundle with
 // screen.mp4 + cam.mp4 + a synthetic events.ctev; 3 video layers: screen with cursor and keystroke badges, camera PIP,
 // scaled overlay; 2 annotations; mic audio, looped to --seconds) and exports it with ct::exportng::ExportJob, printing
-// progress, the speed against real time and the time spent per stage. With --project a .ctproj is exported instead.
+// progress, the speed against real time and the time spent per stage. With --project a .ctproj is exported instead;
+// with --recording a .ctrec bundle is imported into a new project the way the editor's "Import recording" does it
+// (default style, auto-zoom) and exported; --save-project writes that project as a .ctproj too (release smoke test).
 //
 //   export_demo [--preset mp4-1080p] [--seconds 60] [--out file] [--quality N] [--vbr KBPS]
 //               [--pattern data/pattern_1080p60_5s.mp4] [--project file.ctproj] [--start S --end S] [--normal-priority]
-//               [--no-bframes] [--no-camera]
+//               [--no-bframes] [--no-camera] [--recording take.ctrec [--save-project file.ctproj]]
 #include "test_project.h"
 
 #include <ct/audio/devices.h>
@@ -17,6 +19,7 @@
 #include <ct/export/export_job.h>
 #include <ct/platform/d3d_device.h>
 #include <ct/platform/win.h>
+#include <ct/project/importer.h>
 #include <ct/project/serialize.h>
 #include <ct/render/render_context.h>
 
@@ -31,7 +34,8 @@ using namespace ct;
 using namespace ct::exportng;
 
 int main(int argc, char** argv) {
-    std::string preset_id = "mp4-1080p", out, pattern = "tests/data/pattern_1080p60_5s.mp4", project_path;
+    std::string preset_id = "mp4-1080p", out, pattern = "tests/data/pattern_1080p60_5s.mp4", project_path, recording,
+                save_project;
     double seconds = 60, start_s = 0, end_s = 0;
     int quality = -1, vbr = -1;
     bool normal_priority = false, no_bframes = false, no_camera = false;
@@ -50,6 +54,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--vbr")) vbr = std::atoi(next("--vbr"));
         else if (!std::strcmp(argv[i], "--pattern")) pattern = next("--pattern");
         else if (!std::strcmp(argv[i], "--project")) project_path = next("--project");
+        else if (!std::strcmp(argv[i], "--recording")) recording = next("--recording");
+        else if (!std::strcmp(argv[i], "--save-project")) save_project = next("--save-project");
         else if (!std::strcmp(argv[i], "--start")) start_s = std::atof(next("--start"));
         else if (!std::strcmp(argv[i], "--end")) end_s = std::atof(next("--end"));
         else if (!std::strcmp(argv[i], "--normal-priority")) normal_priority = true;
@@ -57,7 +63,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--no-camera")) no_camera = true;
         else {
             std::fprintf(stderr, "usage: export_demo [--preset id] [--seconds 60] [--out file] [--quality N] [--vbr KBPS]\n"
-                                 "                   [--pattern mp4] [--project file.ctproj] [--start S --end S]\n");
+                                 "                   [--pattern mp4] [--project file.ctproj] [--start S --end S]\n"
+                                 "                   [--recording take.ctrec [--save-project file.ctproj]]\n");
             return 2;
         }
     }
@@ -82,7 +89,29 @@ int main(int argc, char** argv) {
     }
     if (no_bframes) req.preset.video.bframes = false;
     std::string bundle;
-    if (!project_path.empty()) {
+    if (!recording.empty()) {
+        Err err;
+        project::Project& p = req.project_snapshot;
+        p.id = Uuid4();
+        if (!project::ImportRecording(p, recording, &err)) {
+            std::fprintf(stderr, "cannot import %s: %s\n", recording.c_str(), err.message.c_str());
+            return 1;
+        }
+        std::printf("imported %s: %zu clips, %zu tracks, %.3f s\n", recording.c_str(), p.clips.size(), p.tracks.size(),
+                    static_cast<double>(p.Duration()) / 1e6);
+        if (!save_project.empty()) {
+            if (!project::Save(p, save_project, &err)) {
+                std::fprintf(stderr, "cannot save %s: %s\n", save_project.c_str(), err.message.c_str());
+                return 1;
+            }
+            project::Project check;
+            if (!project::Load(save_project, check, &err)) {
+                std::fprintf(stderr, "cannot reload %s: %s\n", save_project.c_str(), err.message.c_str());
+                return 1;
+            }
+            std::printf("saved and reloaded %s\n", save_project.c_str());
+        }
+    } else if (!project_path.empty()) {
         Err err;
         if (!project::Load(project_path, req.project_snapshot, &err)) {
             std::fprintf(stderr, "cannot load %s: %s\n", project_path.c_str(), err.message.c_str());
