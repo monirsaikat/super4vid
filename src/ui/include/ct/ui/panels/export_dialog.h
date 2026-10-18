@@ -13,6 +13,7 @@
 #include <ct/export/export_job.h>
 #include <ct/export/preset.h>
 #include <ct/project/project.h>
+#include <ct/ui/error_ux.h>
 
 #include <functional>
 #include <memory>
@@ -58,6 +59,15 @@ public:
     // Status-bar hook: shows the minimized progress window again.
     void Restore() { m_minimized = false; }
 
+    // P11 11.5: a failed export reopens the dialog with a red banner (plain-language message, Details, and
+    // "Choose another folder..." / "Try again"). Tests drive it through these hooks.
+    const ErrorBanner& Banner() const { return m_banner; }
+    void SetFaultsForTest(const exportng::ExportFaults& f) { m_faults = f; }
+    void SetDestinationForTest(std::string path) { m_dest = std::move(path); }
+    void StartExportForTest() { StartExport(); }
+    void RunBannerActionForTest(int action) { RunBannerAction(action); }
+    const std::string& Destination() const { return m_dest; }
+
     // Pure helpers (tests).
     static std::string DefaultFileName(const std::string& project_name, exportng::Preset::Container);
     static std::string SanitizeFileName(const std::string& name);
@@ -68,6 +78,7 @@ private:
     void DrawProgress();
     void StartExport();
     void OnFinished();
+    void RunBannerAction(int action);
     bool BrowseDestination();
     void SelectPreset(const exportng::Preset&);
     void FixExtension();
@@ -91,6 +102,8 @@ private:
     std::string m_job_path;
     std::string m_last_preset_id;
     std::string m_error;
+    ErrorBanner m_banner;
+    exportng::ExportFaults m_faults;
 };
 
 } // namespace ct::ui
