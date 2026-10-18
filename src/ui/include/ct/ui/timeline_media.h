@@ -22,6 +22,11 @@ public:
     virtual ~TimelineMediaProvider() = default;
     // Thumbnail of `media` near media time `t` (160x90 nominal). Ready fills tex (+ uv rect for atlases).
     virtual MediaStatus Thumbnail(const project::Id& media, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) = 0;
+    // Filmstrip thumbnail of a timeline clip at media time `t`. Default: Thumbnail(clip.media, ...); a provider with
+    // camera files overrides it so Source::Camera clips of a recording show the webcam, not the screen.
+    virtual MediaStatus ClipThumbnail(const project::Clip& clip, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) {
+        return Thumbnail(clip.media, t, tex, uv0, uv1);
+    }
     // Mono min/max peak pairs for audio stream `stream` (index into Media::audio_streams) of `media`:
     // out[2*i] = min, out[2*i+1] = max in [-1, 1], at `*per_second` pairs per second of media time (100 in P06).
     // Returns nullptr while loading/unavailable (`*status` says which).

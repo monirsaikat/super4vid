@@ -9,6 +9,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ct::ui {
 
@@ -19,11 +20,25 @@ enum class ErrorKind {
     DeviceLost,
     AccessLost,
     MediaMissing,   // arg: the missing file's path
+    // Additions (P11 11.5 wiring).
+    DiskFullNotStarted,   // arg: a path on the full volume
+    OutputFolder,         // arg: the folder that cannot be written
+    MicLost,
+    DeviceLostNotSaved,
+    ExportDiskFull,       // arg: a path on the full volume
+    ExportFolder,         // arg: the export path or its folder
+    ExportDeviceLost,
 };
 
-// The strings.h message for `kind` with "%s" replaced: DiskFull gets DriveOf(arg) (str::kErrUnknownDrive when that
-// is empty), MediaMissing gets arg (str::kErrUnknownPath when empty). Kinds without "%s" ignore arg.
+// The strings.h message for `kind` with "%s" replaced: the disk-full kinds get DriveOf(arg) (str::kErrUnknownDrive
+// when that is empty), MediaMissing/OutputFolder/ExportFolder get arg (str::kErrUnknownPath when empty). Kinds without
+// "%s" ignore arg.
 std::string ErrorMessage(ErrorKind kind, std::string_view arg = {});
+// The kind an HRESULT stands for in a recording / export context, when it has one: disk full (ERROR_DISK_FULL,
+// ERROR_HANDLE_DISK_FULL), device lost (DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG), access lost (DXGI_ERROR_ACCESS_LOST),
+// microphone busy (AUDCLNT_E_DEVICE_IN_USE, exclusive mode), microphone gone (AUDCLNT_E_DEVICE_INVALIDATED), no
+// encoder (MF_E_TOPO_CODEC_NOT_FOUND). false otherwise.
+bool ErrorKindForHr(long hr, ErrorKind* out);
 // Replaces the first "%s" in `fmt` with `arg` (no printf: messages may contain '%').
 std::string FillPlaceholder(std::string_view fmt, std::string_view arg);
 // Volume of a path for messages: "D:\x\y.mp4" -> "D:", "d:" -> "D:", "\\server\share\x" -> "\\server\share",
@@ -42,6 +57,15 @@ public:
     void Show(std::string message, long hr = 0, std::string extra = {});
     void Show(ErrorKind kind, std::string_view arg = {}, long hr = 0, std::string extra = {});
     void Clear();
+    // Recovery buttons drawn under the message, in order (Show clears them). `id` > 0 is the caller's.
+    void AddAction(int id, std::string label, bool primary = false);
+    size_t ActionCount() const { return m_actions.size(); }
+    int ActionIdAt(size_t i) const { return i < m_actions.size() ? m_actions[i].id : 0; }
+    // The id of the action button clicked during the last Draw (0 = none); reading it resets it. The banner stays
+    // visible: the caller decides (Clear) whether the action resolved the problem.
+    int TakeAction();
+    // Tests: as if the button were clicked.
+    void ClickActionForTest(int id) { m_clicked = id; }
     bool Visible() const { return m_visible; }
     const std::string& Message() const { return m_message; }
     long Hr() const { return m_hr; }
@@ -54,7 +78,14 @@ public:
     bool Draw(const char* id);
 
 private:
+    struct Action {
+        int id = 0;
+        std::string label;
+        bool primary = false;
+    };
     std::string m_message, m_extra, m_log_dir;
+    std::vector<Action> m_actions;
+    int m_clicked = 0;
     long m_hr = 0;
     bool m_visible = false;
     bool m_details_open = false;

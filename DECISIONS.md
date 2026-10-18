@@ -1753,6 +1753,76 @@ than not (260 -> 306 / 421 ms, 554 -> 923 ms in A/B runs), while the p50 gain ca
 Why: seek latency of the playhead frame comes first.
 Impact: none outside MediaCache; the test is now `media_cache_one_copy_per_frame_window_fill` (<= 2 seeks).
 
+## 2026-10-18 · P09 tasks 9.4/9.5 · Media provider, scrub/auto-scroll, Regenerate with undo
+Spec said: filmstrips from `MediaCache::Thumbnail(media_t)` and peaks at 100/s, never blocking; scrubbing calls
+`player.HintScrub`; playback auto-scrolls (page by 80 %); Camera section: auto parameters with live regeneration
+(debounced 300 ms) and "Regenerate"; every mutation is one undo entry through `state.Edit`.
+Done instead / interpreted:
+- `TimelineMediaProvider` gained `ClipThumbnail(clip, t, ...)` (default: `Thumbnail(clip.media, ...)`); the editor's
+  `CacheMediaProvider` takes a second cache function and serves `Source::Camera` clips of a recording from
+  `TimelinePlayer::CameraCache`, so the camera lane shows the webcam instead of the screen.
+- Auto-scroll in reverse (J) pages left when the playhead reaches the left 5 %; a far jump puts the playhead 90 % in
+  (10 % going forward), so it is not immediately off-screen again.
+- "Regenerate" covers everything generated from events.ctev: click/typing zooms and the Auto-Follow cursor pans (the
+  cursor's look, click ripples and keystrokes are drawn live from the log by the compositor and need no regeneration).
+  The logic moved from the editor window to `AutoZoom::ForProject/Regenerate(project, log lookup)` (ct_project) so it
+  is tested without a window; screen clips are processed in timeline order and the earlier clip wins at equal times.
+  It runs on the UI thread: a 30 min recording takes 0.5-2.6 ms (the IO pool is only used to load the logs).
+- Undo: an explicit Regenerate is its own entry ("Regenerate Auto-Zoom") and none when the keys did not change. The live
+  regeneration amends the parameter edit's entry (`UndoStack::Amend`, `EditorState::EditAmend(label, revision, fn)`)
+  when `EditorState::revision` still equals the value right after that edit; any edit, undo or redo in between makes
+  it a separate entry. Otherwise one undo would revert only the keys and leave the new parameters (or the reverse).
+  `PropertiesPanel::on_live_regenerate(state, amend_revision)` carries the revision; `on_regenerate` is unchanged.
+- Test-only finding: `MediaCache::Thumbnail` calls `Async::Run` while holding its aux lock, so after
+  `Async::Shutdown()` (inline jobs) it deadlocks. Never happens in the app (the pool lives until exit); ct_ui_tests
+  restart the pool around MediaCache tests. Left for the playback owner.
+Why: undo must restore what the user saw; camera clips showed the wrong video; reverse playback lost the playhead.
+Impact: providers other than CacheMediaProvider are unaffected (default ClipThumbnail).
+
+## 2026-10-18 · P11 tasks 11.5/11.6 · Error UX wiring, fault injection, device recreation, meter test, keyboard
+Spec said: every OnError path shows a banner/toast with what happened, what to do and Details; each message tested by
+forcing the condition (invalid output dir, mic held by another process, `dxcap -forcetdr`); disk full -> warning at
+1 GB, auto-stop at 200 MB; settings Audio "meters test"; keyboard: bar actions reachable with Tab/Enter.
+Done instead:
+- Structured reports: `SessionListener::OnFailure(SessionFailure)` / `OnWarningInfo(SessionWarning)` (defaults forward
+  to OnError/OnWarning, so headless and older listeners keep working). A failure while recording is reported after
+  Finalizing (and after OnFinished when frames were kept), so it can say whether the bundle was saved. After a failure
+  the session probes screen.mp4 and writes meta.json with `"incomplete": true` when it does not open.
+- Fault injection instead of real conditions for the automated tests: `recorder::SessionFaults` (SessionConfig) and
+  `exportng::ExportFaults` (ExportRequest) inject an Mp4Writer write HRESULT (existing `InjectWriteErrorForTest`), a
+  capture error, hardware/all encoder setup failures, a mic open failure, an audio stream error and a fake free-disk
+  value. A VHD needs admin rights and `dxcap -forcetdr` needs the Graphics Tools + admin; both stay HUMAN checks.
+- Mic busy: the stream is left out of the file (no empty mic track) and the recording continues; the banner says
+  "Recording continues without it". Mic unplugged mid-recording: the P03 capture engine already writes silence and
+  reopens; the session reports it once as a warning (banner).
+- Encoder: Mp4Writer already retries its sink setup with the software MFT; the session and the export add a final
+  software-only attempt with a fresh writer when the hardware-first setup fails for a non-path reason. No encoder at
+  all = `FailureCause::NoEncoder` / kErrNoEncoder.
+- Device lost: the recorder app recreates the D3D device, the swapchain and both ImGui backends (the DX11 backend's
+  shutdown destroys every platform window including the main viewport's Win32 data, so Win32 is re-initialized too,
+  and the viewport-window hook re-installed) once the session is idle, on a DeviceLost failure or a failed Present
+  (it used to quit). The editor's device loss handling is unchanged (editor shell area of another task).
+- Recorder bar UI: no banner fits in the 260x44 bar, so the ErrorBanner is drawn in its own capture-excluded viewport at
+  the bottom-right of the work area (where the toasts go, toasts stack above it) and stays until dismissed or
+  resolved. Recovery actions: Choose another folder... (folder picker posted out of the ImGui frame; sets
+  `recording.output_dir`, saves, refreshes an open settings window), Open in editor, Show in folder. The "Saved"
+  toast is not shown for a failed recording (the panel carries the same actions).
+- Export dialog: a failed export reopens the dialog with the banner (Choose another folder... = the save dialog,
+  Try again); the error toast stays (shorter). Without a UI poster (headless tests) ExportRequest::on_finished runs on
+  ct-export and would destroy the job from its own thread; tests install a poster.
+- ErrorBanner gained action buttons (AddAction/TakeAction); new ErrorKinds for the recorder/export variants;
+  `ErrorKindForHr`; long-path prefixes are stripped from folder messages.
+- Settings > Audio > Test microphone uses a new `ui::LevelMonitor` (WASAPI capture/loopback with a null sink opened on
+  the IO pool). The live meter test uses the loopback of a rendered tone (no microphone on the reference machine).
+- Keyboard: the bar window is no longer NoNav, the app enables NavEnableKeyboard, custom chips draw the nav cursor,
+  the right-hand buttons are submitted left to right so Tab follows the visual order; tray Enter / tray menu Show
+  activates the bar and focuses its first control. Diagnostics `--fault-test KIND [--no-exclude --fault-shot png]`
+  and `--bar-keys "tab,enter,..."` (skip the single-instance check like the other diagnostics).
+Why: the conditions cannot be produced on demand on a shared machine without admin; the bar is too small for an
+inline banner; a TDR used to end the app.
+Impact: P12 smoke tests can call `--fault-test`; the editor could reuse `DescribeExportFailure` and the device
+recreation sequence for its own device loss.
+
 ## 2026-10-18 · P11 task 11.1 · Idle power measured by thread sampling; audio output stops while paused
 Spec said: `wpr -start GeneralProfile -start Power`, 60 s idle, WPA context switches < 20/s; fixes listed in P11 11.1.
 Done instead: WPR's kernel providers need admin rights, which the agents' account does not have, so

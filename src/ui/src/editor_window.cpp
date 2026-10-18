@@ -49,6 +49,7 @@
 #include <cstdio>
 #include <ctime>
 #include <map>
+#include <optional>
 #include <set>
 
 using Microsoft::WRL::ComPtr;
@@ -215,6 +216,7 @@ struct EditorWindow::Impl {
     std::map<std::string, std::shared_ptr<events::EventLog>> events;   // recording path -> log (Regenerate)
     std::set<std::string> events_loading;
     bool regen_after_load = false;
+    std::optional<uint64_t> regen_amend;   // the pending regeneration is a live one (see Regenerate)
     int busy = 0;   // IO jobs whose result the UI waits for (spinner in the status bar)
     std::shared_ptr<int> alive = std::make_shared<int>(1);
     Settings settings;
@@ -630,42 +632,37 @@ struct EditorWindow::Impl {
                     events[bundle] = ok ? log : nullptr;
                     if (regen_after_load && events_loading.empty()) {
                         regen_after_load = false;
-                        Regenerate();
+                        Regenerate(regen_amend);
                     }
                 });
             });
         }
     }
 
-    bool Regenerate() {
+    // Regenerate (Camera menu / button) or live regeneration (amend = the revision right after the parameter edit,
+    // so parameters and keys undo together). Waits for event logs still loading. Unchanged keys push no undo entry.
+    bool Regenerate(std::optional<uint64_t> amend = std::nullopt) {
         if (!events_loading.empty()) {
             regen_after_load = true;
+            regen_amend = amend;
             return false;
         }
-        const Project& p = st().project;
-        std::vector<CameraKey> keys;
-        int clips = 0;
-        for (const Clip& c : p.clips) {
-            if (c.source != Clip::Source::Screen) continue;
-            const Media* m = p.FindMedia(c.media);
-            if (!m || m->kind != Media::Kind::Recording) continue;
-            auto it = events.find(m->path);
-            if (it == events.end() || !it->second) continue;
-            const SizeI vs{m->width > 0 ? m->width : p.canvas.width, m->height > 0 ? m->height : p.canvas.height};
-            std::vector<CameraKey> k = AutoZoom::ForClip(c, *it->second, vs, p.camera.auto_params);
-            keys.insert(keys.end(), k.begin(), k.end());
-            ++clips;
-        }
-        if (!clips) {
-            Toast("No recording with click or typing events on the timeline", ToastKind::Warning);
+        const AutoZoom::LogLookup log_for = [this](const Media& m) -> const events::EventLog* {
+            auto it = events.find(m.path);
+            return it == events.end() ? nullptr : it->second.get();
+        };
+        Project work = st().project;
+        bool changed = false;
+        if (!AutoZoom::Regenerate(work, log_for, &changed)) {
+            if (!amend) Toast("No recording with click or typing events on the timeline", ToastKind::Warning);
             return false;
         }
-        std::sort(keys.begin(), keys.end(), [](const CameraKey& a, const CameraKey& b) { return a.t_us < b.t_us; });
-        keys.erase(std::unique(keys.begin(), keys.end(), [](const CameraKey& a, const CameraKey& b) { return a.t_us == b.t_us; }), keys.end());
-        const bool ok = st().Edit("Regenerate Auto-Zoom", [&](Project& pp) {
-            pp.camera.ReplaceGenerated(keys);
+        if (!changed) return true;
+        const auto apply = [&](Project& pp) {
+            pp.camera.keys = std::move(work.camera.keys);
             return true;
-        });
+        };
+        const bool ok = amend ? st().EditAmend(str::kUndoRegenerate, *amend, apply) : st().Edit(str::kUndoRegenerate, apply);
         st().PruneSelection();
         return ok;
     }
@@ -836,7 +833,7 @@ struct EditorWindow::Impl {
         ImGui::SameLine(0, Dp(8));
         if (Button("Not now", ButtonKind::Normal, ImVec2(bw, bh)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) choice = 2;
         ImGui::SameLine(0, Dp(8));
-        if (Button("Recover", ButtonKind::Primary, ImVec2(bw, bh))) choice = 0;
+        if (Button("Recover", ButtonKind::Primary, ImVec2(bw, bh)) || ImGui::IsKeyPressed(ImGuiKey_Enter)) choice = 0;   // P11 11.6: Enter = default
         if (choice >= 0) {
             recover.erase(recover.begin());
             recover_open = false;
@@ -948,11 +945,22 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     }
     I.transport = std::make_unique<detail::PlayerTransport>(s, I.player);
     s.playback = I.transport.get();
-    I.provider = std::make_unique<detail::CacheMediaProvider>(&s.project, [this](const Id& id, bool* failed) {
-        playback::MediaCache* c = m_impl->player.Cache(id);
-        if (!c) *failed = !m_impl->player.MediaPending();   // nothing opening any more: it has no (openable) file
-        return c;
-    });
+    I.provider = std::make_unique<detail::CacheMediaProvider>(
+        &s.project,
+        [this](const Id& id, bool* failed) {
+            playback::MediaCache* c = m_impl->player.Cache(id);
+            if (!c) *failed = !m_impl->player.MediaPending();   // nothing opening any more: it has no (openable) file
+            return c;
+        },
+        [this](const Id& id, bool* failed) -> playback::MediaCache* {
+            if (!m_impl->player.Cache(id)) {   // the recording's slot (screen + camera files) is still opening
+                *failed = !m_impl->player.MediaPending();
+                return nullptr;
+            }
+            playback::MediaCache* cam = m_impl->player.CameraCache(id);
+            *failed = cam == nullptr;   // slot open without a camera file
+            return cam;
+        });
     m_shell->SetMediaProvider(I.provider.get());
 
     // Shell hooks.
@@ -976,6 +984,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     };
     m_shell->Media().on_relink = [this](const Id& id) { m_impl->Defer([this, id] { m_impl->Relink(id); }); };
     m_shell->Properties().on_regenerate = [this](EditorState&) { return m_impl->Regenerate(); };
+    m_shell->Properties().on_live_regenerate = [this](EditorState&, uint64_t rev) { return m_impl->Regenerate(rev); };
     PreviewPanel& pv = m_shell->Preview();
     pv.render = [this](EditorState& st, const PreviewView& v) { return m_impl->RenderPreview(st, v); };
     pv.video_size = [this](const Clip& c) -> SizeI {

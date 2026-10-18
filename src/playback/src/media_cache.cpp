@@ -580,31 +580,38 @@ bool MediaCache::Thumbnail(TimeUs t_us, ID3D11ShaderResourceView*& srv) {
     }
     if (!m_has_video) return false;
     const int64_t bucket = std::max<TimeUs>(t_us, 0) / 1'000'000;
-    ExclusiveGuard g(m_aux_lock);
-    auto it = m_thumbs.find(bucket);
-    if (it != m_thumbs.end()) {
-        it->second.last_used = ++m_aux_tick;
-        if (!it->second.ready) return false;
-        srv = it->second.srv.Get();
-        return true;
+    // The job is started after m_aux_lock is released: Async::Run runs jobs inline once the pool is shut down, and
+    // the job takes m_aux_lock itself.
+    bool start_job = false;
+    {
+        ExclusiveGuard g(m_aux_lock);
+        auto it = m_thumbs.find(bucket);
+        if (it != m_thumbs.end()) {
+            it->second.last_used = ++m_aux_tick;
+            if (!it->second.ready) return false;
+            srv = it->second.srv.Get();
+            return true;
+        }
+        if (m_thumbs.size() >= kMaxThumbs) {
+            auto victim = m_thumbs.end();
+            for (auto t = m_thumbs.begin(); t != m_thumbs.end(); ++t)
+                if (t->second.ready && (victim == m_thumbs.end() || t->second.last_used < victim->second.last_used)) victim = t;
+            if (victim != m_thumbs.end()) m_thumbs.erase(victim);
+        }
+        Thumb& th = m_thumbs[bucket];
+        th.last_used = ++m_aux_tick;
+        m_thumb_queue.push_back(bucket);
+        if (!m_thumb_job_running) {
+            m_thumb_job_running = true;
+            BeginJob();
+            start_job = true;
+        }
     }
-    if (m_thumbs.size() >= kMaxThumbs) {
-        auto victim = m_thumbs.end();
-        for (auto t = m_thumbs.begin(); t != m_thumbs.end(); ++t)
-            if (t->second.ready && (victim == m_thumbs.end() || t->second.last_used < victim->second.last_used)) victim = t;
-        if (victim != m_thumbs.end()) m_thumbs.erase(victim);
-    }
-    Thumb& th = m_thumbs[bucket];
-    th.last_used = ++m_aux_tick;
-    m_thumb_queue.push_back(bucket);
-    if (!m_thumb_job_running) {
-        m_thumb_job_running = true;
-        BeginJob();
+    if (start_job)
         Async::Run([this] {
             ThumbJob();
             EndJob();
         });
-    }
     return false;
 }
 
@@ -705,17 +712,19 @@ const media::Peaks* MediaCache::GetPeaks(int stream_index) {
         if (a.empty()) return nullptr;
         stream_index = a[0];
     }
-    ExclusiveGuard g(m_aux_lock);
-    auto it = m_peaks.find(stream_index);
-    if (it != m_peaks.end()) return it->second.get();
-    if (!m_peaks_requested[stream_index]) {
+    {
+        ExclusiveGuard g(m_aux_lock);
+        auto it = m_peaks.find(stream_index);
+        if (it != m_peaks.end()) return it->second.get();
+        if (m_peaks_requested[stream_index]) return nullptr;
         m_peaks_requested[stream_index] = true;
         BeginJob();
-        Async::Run([this, stream_index] {
-            PeaksJob(stream_index);
-            EndJob();
-        });
     }
+    // Started outside m_aux_lock (see Thumbnail).
+    Async::Run([this, stream_index] {
+        PeaksJob(stream_index);
+        EndJob();
+    });
     return nullptr;
 }
 
