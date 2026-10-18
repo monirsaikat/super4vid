@@ -82,6 +82,27 @@ decode a frame and assert its index without OCR (`tests/common/frame_index.h` re
 | Scrub latency | overlay shows `seek->frame ms` for the last scrub; test with `pattern_1080p60_5s.mp4` random seeks (`player_demo --seek-bench`). |
 | Export speed | export dialog prints `x realtime` at completion; log it. |
 | Binary sizes | `dir out\build\ninja-release\bin\Camtesia.exe`, `out\dist\*.exe`, installed folder size in Settings > Apps. |
+| Editor benches (P09 9.7) | `Camtesia.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt`; `--editor out\testmedia\preview_bench.ctproj --bench-scrub 60` / `--bench-play 600`; `--editor --stats` (redraws/s, mouse still). `preview_bench.ctproj` is written by `ct_ui_tests` (`editor_fixtures_synthetic_bundle_and_preview_project`, run from `tests\`). Redirect stdout to a file: the app is a GUI exe. |
+
+### Running several instances side by side (dev/test only)
+
+Camtesia is single-instance per session: the first launch holds the named mutex `Local\Camtesia.Instance` and a
+second launch forwards its command line to the window of class `CamtesiaMain`, then exits. Parallel worktrees,
+benches and agents on one machine would block each other, so the environment variable **`CT_INSTANCE_SUFFIX`**
+gives a launch its own instance: when set, `.<suffix>` is appended to the mutex name and to the main window class
+(`Local\Camtesia.Instance.wt1`, `CamtesiaMain.wt1`), so only launches with the same suffix forward to each other.
+Allowed characters are letters, digits, `-`, `_` and `.` (others are dropped, at most 32 are kept; nothing left =
+no suffix). Processes started by the app (the bar's "Open in editor") inherit it. Unset, which is every normal
+user's case, the names are exactly the release names. There are no named pipes or other named objects to rename.
+
+```
+set CT_INSTANCE_SUFFIX=wt-a256
+out\build\ninja-release\bin\Camtesia.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt
+```
+
+Diagnostics never forward anyway: `--screenshot`, `--time-to-window`, `--bench-*`, `--record`, `--selftest` and
+editors started from the bar (`CAMTESIA_SEPARATE_INSTANCE=1`) skip the single-instance check. `--stats` does not,
+so use the suffix for idle measurements next to another running instance.
 
 ## 6. Profiling workflow (P11, and any time a budget fails)
 

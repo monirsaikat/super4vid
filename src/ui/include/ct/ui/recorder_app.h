@@ -29,12 +29,20 @@ struct RecorderAppOptions {
 // Returns the process exit code.
 int RunRecorderApp(const RecorderAppOptions& options);
 
-// Launches that must not forward to a running instance: diagnostics (--screenshot, --time-to-window, --bench-hotkey)
-// and an editor started from the bar (environment CAMTESIA_SEPARATE_INSTANCE=1).
+// Launches that must not forward to a running instance: diagnostics (--screenshot, --time-to-window, --bench-hotkey,
+// the editor's --bench-drag/--bench-scrub/--bench-play) and an editor started from the bar (environment
+// CAMTESIA_SEPARATE_INSTANCE=1).
 bool RunsAsSeparateInstance(const wchar_t* cmdline);
 
 // True when the command line starts the recorder bar (the default mode): no --editor / --editor-demo /
 // --settings-demo and no .ctproj/.ctrec file argument.
 bool IsRecorderBarCommandLine(const wchar_t* cmdline);
+
+// A command line forwarded to the running bar (SingleInstance, WM_COPYDATA): when it asks for the editor
+// (!IsRecorderBarCommandLine: `--editor`, a .ctproj/.ctrec argument), its arguments without argv[0], re-quoted for
+// CreateProcess, so the bar can start the editor as a fresh launch would. Empty for recorder-bar command lines.
+std::wstring ForwardedEditorArguments(const wchar_t* cmdline);
+// Quotes one argument so CommandLineToArgvW returns it unchanged (plain arguments stay as they are).
+std::wstring QuoteCommandLineArg(const std::wstring& arg);
 
 } // namespace ct::ui

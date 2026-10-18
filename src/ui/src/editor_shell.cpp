@@ -4,6 +4,7 @@
 
 #include <ct/core/log.h>
 #include <ct/core/strings.h>
+#include <ct/export/preset.h>
 #include <ct/platform/image_io.h>
 #include <ct/project/edit_ops.h>
 #include <ct/project/serialize.h>
@@ -83,6 +84,7 @@ ImU32 ToU32(const ColorF& c) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r,
 
 EditorShell::EditorShell() {
     m_preview.run_action = [this](Action a) { Run(a); };
+    for (const exportng::Preset& p : exportng::Preset::Builtin()) m_export_presets.emplace_back(p.id, p.name);
 }
 EditorShell::~EditorShell() = default;
 
@@ -317,6 +319,8 @@ void EditorShell::DrawMenuBar() {
         }
         if (ImGui::BeginMenu(str::kMenuExport)) {
             item(str::kExportEllipsis, Action::Export);
+            ImGui::Separator();
+            DrawExportPresetItems();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(str::kMenuHelp)) {
@@ -342,10 +346,10 @@ void EditorShell::DrawMenuBar() {
                 }
             }
         }
-        // Right: Record | Export.
+        // Right: Record | Export (opens the dialog) + chevron (preset list).
         const float bh = Dp(26);
-        const float rec_w = Dp(92), exp_w = Dp(96);
-        ImGui::SameLine(ImGui::GetWindowWidth() - rec_w - exp_w - Dp(20));
+        const float rec_w = Dp(92), exp_w = Dp(72), chev_w = Dp(26);
+        ImGui::SameLine(ImGui::GetWindowWidth() - rec_w - exp_w - chev_w - Dp(22));
         ImGui::SetCursorPosY((ImGui::GetFrameHeight() - bh) * 0.5f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Dp(10, 4));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusControl));
@@ -355,14 +359,34 @@ void EditorShell::DrawMenuBar() {
         ItemTooltip(str::kRecord, Shortcuts::KeysFor(Action::OpenRecorder));
         ImGui::SameLine(0, Dp(8));
         ImGui::SetCursorPosY((ImGui::GetFrameHeight() - bh) * 0.5f);
-        char exp[48];
-        std::snprintf(exp, sizeof(exp), "%s  %s", str::kExport, ICON_CHEVRON_DOWN);
-        if (Button(exp, ButtonKind::Primary, ImVec2(exp_w, bh))) Run(Action::Export);
+        if (Button(str::kExport, ButtonKind::Primary, ImVec2(exp_w, bh))) Run(Action::Export);
         ItemTooltip(str::kExport, Shortcuts::KeysFor(Action::Export));
+        ImGui::SameLine(0, Dp(2));
+        ImGui::SetCursorPosY((ImGui::GetFrameHeight() - bh) * 0.5f);
+        char chev[32];
+        std::snprintf(chev, sizeof(chev), "%s##exportpresets", ICON_CHEVRON_DOWN);
+        if (Button(chev, ButtonKind::Primary, ImVec2(chev_w, bh))) ImGui::OpenPopup("##exportpresetmenu");
+        ItemTooltip(str::kExportPresetsMenu);
         ImGui::PopStyleVar(2);
+        if (ImGui::BeginPopup("##exportpresetmenu")) {
+            if (ImGui::MenuItem(str::kExportEllipsis, Shortcuts::KeysFor(Action::Export))) Run(Action::Export);
+            ImGui::Separator();
+            DrawExportPresetItems();
+            ImGui::EndPopup();
+        }
         ImGui::EndMainMenuBar();
     }
     ImGui::PopStyleVar(4);
+}
+
+void EditorShell::DrawExportPresetItems() {
+    std::string pick;
+    for (const auto& [id, name] : m_export_presets) {
+        ImGui::PushID(id.c_str());
+        if (ImGui::MenuItem(name.c_str(), nullptr, false, static_cast<bool>(on_export_preset))) pick = id;
+        ImGui::PopID();
+    }
+    if (!pick.empty()) on_export_preset(pick);
 }
 
 // --- layout ---------------------------------------------------------------------------------------------------------
@@ -425,8 +449,14 @@ void EditorShell::Frame() {
     UpdateTitle();
 
     DrawMenuBar();
-    if (DrawStatusBar(m_state, status)) {
+    switch (DrawStatusBar(m_state, status)) {
+    case StatusBarClick::Warnings:
         if (on_open_logs) on_open_logs();
+        break;
+    case StatusBarClick::Export:
+        if (on_export_restore) on_export_restore();
+        break;
+    case StatusBarClick::None: break;
     }
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const ImGuiID dock_id = ImGui::GetID("##editordock");

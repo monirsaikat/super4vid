@@ -112,6 +112,10 @@ struct App {
     std::mt19937 rng{12345};
     int64_t bench_start_qpc = 0;
     bool bench_done = false;
+    // --bench-drag sanity: the dragged clip, where it started, and how many frames had a drag active.
+    project::Id drag_clip;
+    TimeUs drag_clip_start = -1;
+    int drag_active_frames = 0;
 };
 
 App* g_app = nullptr;
@@ -217,21 +221,29 @@ void BenchInput(App& app) {
         static ImVec2 start;
         const int f = app.bench_frame - warm - 1;
         if (f == 0) {
-            const auto& lanes = app.editor.Shell().Timeline().Lanes();
-            (void)lanes;
-            // Zoom so clips are wide enough to grab, then choose the first clip whose rect is visible.
-            app.editor.Shell().Timeline().ZoomBy(s, 8.0, s.project.Duration() / 2);
+            // The last clip of the first track has free time after it, so every frame of the drag really moves it
+            // (in the middle of a packed track each +-150 px position overlaps a neighbour and the move is refused).
+            // Zoom so clips are wide enough to grab and scroll so that clip sits ~400 px into the lanes.
+            app.editor.Shell().Timeline().ZoomBy(s, 16.0, s.project.Duration() / 2);
+            const project::Clip* last = nullptr;
+            if (!s.project.tracks.empty())
+                for (const auto& c : s.project.clips)
+                    if (c.track == s.project.tracks.front().id && (!last || c.start_us > last->start_us)) last = &c;
+            if (last) {
+                clip = last->id;
+                s.scroll_us = std::max<TimeUs>(0, last->start_us - static_cast<TimeUs>(400.0 / std::max(1e-6, s.pps) * 1e6));
+            }
             return;
         }
         if (f == 1) {
-            for (const auto& c : s.project.clips) {
-                ImVec2 mn, mx;
-                if (app.editor.Shell().Timeline().ClipRect(s, c.id, &mn, &mx) && mx.x - mn.x > 40 && mn.x > 200 && mx.x < io.DisplaySize.x - 200 &&
-                    mn.y > 0 && mx.y < io.DisplaySize.y) {
-                    clip = c.id;
-                    start = ImVec2((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
-                    break;
-                }
+            ImVec2 mn, mx;
+            const bool visible = !clip.empty() && app.editor.Shell().Timeline().ClipRect(s, clip, &mn, &mx) && mx.x - mn.x > 40 &&
+                                 mn.x > 200 && mn.x + 340 < io.DisplaySize.x && mn.y > 0 && mx.y < io.DisplaySize.y;
+            if (visible) start = ImVec2(mn.x + 20, (mn.y + mx.y) * 0.5f);   // body, clear of the 8 px trim handle
+            else {
+                std::printf("bench-drag: clip %s rect (%.0f,%.0f)-(%.0f,%.0f), display %.0fx%.0f, pps %.2f, scroll %.2f s\n", clip.c_str(), mn.x, mn.y,
+                            mx.x, mx.y, io.DisplaySize.x, io.DisplaySize.y, s.pps, static_cast<double>(s.scroll_us) / 1e6);
+                clip.clear();
             }
             if (clip.empty()) {
                 std::printf("bench-drag: no clip visible to drag\n");
@@ -244,16 +256,19 @@ void BenchInput(App& app) {
         if (f == 2) {
             io.AddMousePosEvent(start.x, start.y);
             io.AddMouseButtonEvent(0, true);
+            app.drag_clip = clip;
+            if (const project::Clip* c = s.project.FindClip(clip)) app.drag_clip_start = c->start_us;
             app.frame_ms.clear();
             app.cpu_ms.clear();
             app.build_ms.clear();
             return;
         }
         const int n = std::max(60, L.bench_count);
+        if (s.DragActive()) ++app.drag_active_frames;
         if (f < n + 3) {
-            // Triangle wave +-150 px, 3 px per frame.
+            // Triangle wave 0..+300 px (into the free time after the clip), 3 px per frame.
             const int k = (f - 3) % 200;
-            const float dx = static_cast<float>(k < 100 ? k * 3 : (200 - k) * 3) - 150.0f;
+            const float dx = static_cast<float>(k < 100 ? k * 3 : (200 - k) * 3);
             io.AddMousePosEvent(start.x + dx, start.y);
             return;
         }
@@ -366,6 +381,12 @@ void ReportBench(App& app) {
         for (double x : app.frame_ms) over += x > 1000.0 / 60.0 * 1.5 ? 1 : 0;
         std::printf("  frames longer than 25 ms: %d, clips %zu, undo entries %zu\n", over, app.editor.State().project.clips.size(),
                     app.editor.State().undo.UndoEntries());
+        if (L.bench == "--bench-drag") {
+            const project::Clip* dc = app.editor.State().project.FindClip(app.drag_clip);
+            std::printf("  dragged clip %s: start %.3f s -> %.3f s, drag active in %d frames\n", app.drag_clip.c_str(),
+                        static_cast<double>(app.drag_clip_start) / 1e6, dc ? static_cast<double>(dc->start_us) / 1e6 : -1.0,
+                        app.drag_active_frames);
+        }
         if (L.bench == "--bench-play")
             std::printf("  preview: %llu frames rendered while playing, %llu without every exact frame, render CPU last %.2f ms\n",
                         static_cast<unsigned long long>(st.playing_frames), static_cast<unsigned long long>(st.frames_inexact_playing), st.last_render_cpu_ms);
@@ -451,6 +472,10 @@ bool ParseEditorLaunch(const wchar_t* cmdline, EditorLaunch* out) {
         else if (wcscmp(a, L"--seek") == 0) out->seek_s = std::atof(next().c_str());
         else if (wcscmp(a, L"--select-clip") == 0) out->select_clip = next();
         else if (wcscmp(a, L"--overlay") == 0) out->show_stats_overlay = true;
+        else if (wcscmp(a, L"--open-export") == 0) {
+            out->open_export = true;
+            if (i + 1 < argc && argv[i + 1][0] != L'-') out->export_preset = WideToUtf8(argv[++i]);
+        }
         else if (wcscmp(a, L"--fit") == 0) out->fit_mode = std::atoi(next().c_str());
         else if (wcscmp(a, L"--size") == 0) {
             const std::string s = next();
@@ -491,7 +516,8 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
     }
     app.devices_ok = SUCCEEDED(app.devices.Init());
     Window::Desc desc;
-    desc.class_name = L"CamtesiaMain";   // SingleInstance forwards to this class
+    const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
+    desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
     desc.title = L"Camtesia";
     desc.w_dip = launch.width_dip;
     desc.h_dip = launch.height_dip;
@@ -537,15 +563,17 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
         if (!launch.paths.empty()) app.editor.OpenPaths(launch.paths);
         if (launch.show_stats_overlay) app.editor.Shell().Run(Action::ToggleStats);
         if (launch.fit_mode >= 0) app.editor.Shell().Preview().fit_mode = std::clamp(launch.fit_mode, 0, 3);
-        if (launch.seek_s >= 0 || !launch.select_clip.empty()) {
+        if (launch.seek_s >= 0 || !launch.select_clip.empty() || launch.open_export) {
             // After the files opened (their posts run before this one is dequeued).
             const double seek = launch.seek_s;
             const std::string sel = launch.select_clip;
+            const bool open_export = launch.open_export;
+            const std::string preset = launch.export_preset;
             EditorWindow* ed = &app.editor;
             // Two hops: the open job posts from the IO pool after its work; give it time by re-posting until loaded.
             std::function<void(int)> apply;
             auto attempt = std::make_shared<std::function<void(int)>>();
-            *attempt = [ed, seek, sel, attempt](int left) {
+            *attempt = [ed, seek, sel, open_export, preset, attempt](int left) {
                 EditorState& s = ed->State();
                 const bool loaded = !s.project.clips.empty();
                 if (!loaded && left > 0) {
@@ -557,6 +585,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
                 }
                 if (seek >= 0) s.playback->Seek(static_cast<TimeUs>(seek * 1e6));
                 if (!sel.empty() && s.project.FindClip(sel)) s.selection.Set(sel);
+                if (open_export) ed->OpenExportDialog(preset);
             };
             Async::PostToUi([attempt] { (*attempt)(200); });
         }
