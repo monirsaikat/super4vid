@@ -118,6 +118,8 @@ struct App {
     project::Id drag_clip;
     TimeUs drag_clip_start = -1;
     int drag_active_frames = 0;
+    int drag_moves = 0;              // frames in which the dragged clip's start changed
+    TimeUs drag_last_start = -1;
 };
 
 App* g_app = nullptr;
@@ -267,11 +269,16 @@ void BenchInput(App& app) {
         }
         const int n = std::max(60, L.bench_count);
         if (s.DragActive()) ++app.drag_active_frames;
+        if (const project::Clip* c = s.project.FindClip(app.drag_clip)) {
+            if (app.drag_last_start >= 0 && c->start_us != app.drag_last_start) ++app.drag_moves;
+            app.drag_last_start = c->start_us;
+        }
         if (f < n + 3) {
             // Triangle wave 0..+300 px (into the free time after the clip), 3 px per frame.
             const int k = (f - 3) % 200;
             const float dx = static_cast<float>(k < 100 ? k * 3 : (200 - k) * 3);
             io.AddMousePosEvent(start.x + dx, start.y);
+            io.AddMouseButtonEvent(0, true);   // re-assert (ignored while already down): nothing else may release it
             return;
         }
         io.AddMouseButtonEvent(0, false);
@@ -402,6 +409,8 @@ void ReportBench(App& app) {
             std::printf("  dragged clip %s: start %.3f s -> %.3f s, drag active in %d frames\n", app.drag_clip.c_str(),
                         static_cast<double>(app.drag_clip_start) / 1e6, dc ? static_cast<double>(dc->start_us) / 1e6 : -1.0,
                         app.drag_active_frames);
+            std::printf("  clip moved in %d frames%s\n", app.drag_moves,
+                        app.drag_moves * 2 < static_cast<int>(app.frame_ms.size()) ? " -- INVALID: the drag did not edit in most frames" : "");
         }
         if (L.bench == "--bench-play")
             std::printf("  preview: %llu frames rendered while playing, %llu without every exact frame, render CPU last %.2f ms\n",
@@ -557,6 +566,9 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
         // Layout persistence (docs/phases/P09 9.1). Screenshots and benches use the default layout.
         app.ini_path = platform::Paths::SettingsDir() + "\\editor_layout.ini";
         io.IniFilename = (launch.screenshot.empty() && launch.bench.empty()) ? app.ini_path.c_str() : nullptr;
+        // Benches drive a synthetic mouse; the window often is not (or stops being) the foreground window when launched
+        // from a script, and the Win32 backend's focus-loss event would release the synthetic button mid-drag.
+        if (!launch.bench.empty()) io.ConfigDebugIgnoreFocusLoss = true;
         EditorShell::SetupImGui();
         app.base_style = ImGui::GetStyle();
         ImGui_ImplWin32_Init(app.win.Hwnd());
