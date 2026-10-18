@@ -97,6 +97,9 @@ public:
             return v >= 0 ? static_cast<uint8_t>(v) : Fill(k);
         }
         const uint32_t* Palette() const { return m_palette.data(); }
+        // Fills keys [begin, end) of the 32768 now (after that Lookup only reads them: safe from several threads).
+        void FillRange(uint32_t begin, uint32_t end);
+        void FillAll() { FillRange(0, 32768); }
 
     private:
         uint8_t Fill(uint32_t key);
@@ -104,7 +107,9 @@ public:
         std::vector<int16_t> m_table;
     };
     // Quantizes a w x h region. skip (nullable, w*h bytes): pixels with skip != 0 get `skip_index` and neither
-    // receive nor spread dither error. out: w*h indices.
+    // receive nor spread dither error. out: w*h indices. The region is dithered in horizontal bands laid out from h
+    // alone (about 48 rows each), with no error carried across a band edge, so the encoder can quantize the bands in
+    // parallel and still produce exactly this output.
     static void QuantizeRegion(const uint8_t* bgra, int w, int h, int stride, NearestCache& cache, bool dither,
                                const uint8_t* skip, uint8_t skip_index, uint8_t* out);
 

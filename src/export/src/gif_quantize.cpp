@@ -1,6 +1,8 @@
 // Palette (median cut on a 15-bit histogram), nearest-color cache and Floyd-Steinberg quantization.
 #include <ct/export/gif_encoder.h>
 
+#include "gif_internal.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -225,8 +227,28 @@ void DitherRow(const uint8_t* src, uint8_t* out, const uint8_t* skip, const int3
 void GifEncoder::QuantizeRegion(const uint8_t* bgra, int w, int h, int stride, NearestCache& cache, bool dither,
                                 const uint8_t* skip, uint8_t skip_index, uint8_t* out) {
     if (w <= 0 || h <= 0) return;
+    const int bands = gif_detail::QuantBands(h);
+    for (int k = 0; k < bands; ++k)
+        gif_detail::QuantizeBand(bgra, w, h, stride, cache, dither, skip, skip_index, out, gif_detail::BandStart(h, k),
+                                 gif_detail::BandStart(h, k + 1));
+}
+
+void GifEncoder::NearestCache::FillRange(uint32_t begin, uint32_t end) {
+    end = std::min<uint32_t>(end, kBins);
+    for (uint32_t k = begin; k < end; ++k)
+        if (m_table[k] < 0) Fill(k);
+}
+
+namespace gif_detail {
+
+int QuantBands(int h) { return std::clamp(h / 48, 1, 64); }
+
+void QuantizeBand(const uint8_t* bgra, int w, int h, int stride, GifEncoder::NearestCache& cache, bool dither, const uint8_t* skip,
+                  uint8_t skip_index, uint8_t* out, int y0, int y1) {
+    (void)h;
+    if (w <= 0 || y1 <= y0) return;
     if (!dither) {
-        for (int y = 0; y < h; ++y) {
+        for (int y = y0; y < y1; ++y) {
             const uint8_t* p = bgra + static_cast<ptrdiff_t>(y) * stride;
             uint8_t* o = out + static_cast<ptrdiff_t>(y) * w;
             const uint8_t* s = skip ? skip + static_cast<ptrdiff_t>(y) * w : nullptr;
@@ -242,7 +264,7 @@ void GifEncoder::QuantizeRegion(const uint8_t* bgra, int w, int h, int stride, N
     std::vector<int32_t> err_a(row, 0), err_b(row, 0);
     int32_t* cur = err_a.data();
     int32_t* next = err_b.data();
-    for (int y = 0; y < h; ++y) {
+    for (int y = y0; y < y1; ++y) {
         const uint8_t* src = bgra + static_cast<ptrdiff_t>(y) * stride;
         uint8_t* o = out + static_cast<ptrdiff_t>(y) * w;
         const bool ltr = (y & 1) == 0;
@@ -257,6 +279,8 @@ void GifEncoder::QuantizeRegion(const uint8_t* bgra, int w, int h, int stride, N
         std::swap(cur, next);
     }
 }
+
+} // namespace gif_detail
 
 void GifEncoder::Quantize(const uint8_t* bgra, int w, int h, int stride, const std::vector<uint32_t>& palette, bool dither,
                           std::vector<uint8_t>& indices) {

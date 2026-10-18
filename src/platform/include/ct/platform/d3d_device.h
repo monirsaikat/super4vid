@@ -72,10 +72,28 @@ public:
         D3DDevice& m_dev;
     };
 
+    // Holds the device's own multithread lock (ID3D11Multithread::Enter) for a span of many immediate-context calls.
+    // Media Foundation's decoder and encoder threads use the context under that lock only (never under Lock), so
+    // without a batch each of our calls competes with them separately; with one the span waits at most once and MF
+    // work cannot interleave with it (which also keeps GPU timestamps around the span honest). The lock is recursive.
+    // Take Lock first; never hold a Batch across a wait on another thread (ReadSample, WriteSample, Join, Present):
+    // MF threads need this lock to make progress.
+    class Batch {
+    public:
+        explicit Batch(D3DDevice&);
+        ~Batch();
+        Batch(const Batch&) = delete;
+        Batch& operator=(const Batch&) = delete;
+    private:
+        ID3D11Multithread* m_mt;
+    };
+
     void Shutdown();
 
 private:
     void DrainDebugMessages(DebugReport* report = nullptr);
+
+    Microsoft::WRL::ComPtr<ID3D11Multithread> m_multithread;
 
     Microsoft::WRL::ComPtr<IDXGIFactory6> m_factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter4> m_adapter;

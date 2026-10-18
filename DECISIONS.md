@@ -1604,3 +1604,151 @@ clicking it calls `Restore()`. `DrawStatusBar` returns `StatusBarClick` instead 
 opens the dialog after load (screenshots). Closing the editor during an export cancels it without a prompt.
 Why: docs/05 section 4 layout; ExportDialog's lifetime contract.
 Impact: a "cancel the running export?" prompt on close could be added with the P11 error UX work.
+
+## 2026-10-18 · P09 tasks 9.1/9.2/9.6/9.7 · Editor window leftovers: UI posts, warnings count, media health banner, Ctrl+R
+Spec said: `Async::PostToUi` lambdas run at the start of `Frame()`; status bar shows a warning count; error banners per
+docs/05; `Ctrl+R` opens the recorder bar; shortcuts dispatched once per frame when `!io.WantTextInput`.
+Done instead / interpreted:
+- PostToUi: the editor's poster posts `WM_APP+0x31` to its own window and the window procedure runs the lambda between
+  frames (not at the start of `Frame()`). Same thread, same "never inside NewFrame/Render" guarantee, and a posted
+  result also wakes the event-driven loop (0 redraws when idle), which a queue drained in `Frame()` would not.
+- Warning count: `Log::WarningCount()` (new, core): Warn + Error lines that passed the level filter since process start.
+  The status bar shows it; a click opens the log folder. Editor banners log a warning, so they count too.
+- Media banner: `CheckMediaHealth` (runs after an edit, or once the player's pending opens finish) gives one Media-panel
+  banner for missing files (`ErrorMessage(MediaMissing, path)` for one, a count for more) or, when none is missing, for
+  media the player could not open (TimelinePlayer slot state "failed": damaged file / unsupported codec). It shows again
+  only when the set of affected media changes, so a dismissed banner does not come back on every edit; it clears itself
+  after a relink. `Impl::Banner` skips a message identical to the one the panel already shows (a frame that keeps
+  failing to render no longer logs every frame). No audio output (AudioDevices missing or TimelinePlayer without a
+  stream) shows a Preview banner once at startup.
+- Ctrl+R / Record button: the bar is another process (DECISIONS "P09b/P05 integration"). `FindRecorderBarWindow` finds
+  a top-level window of class `SingleInstance::MainWindowClass()` with `WS_EX_TOOLWINDOW` (the editor's own window of
+  that class has none); `ShowRecorderBar` sends it `WM_COPYDATA` with a plain command line (the bar shows itself), else
+  starts `Camtesia.exe` with no arguments, with `CAMTESIA_SEPARATE_INSTANCE=1` only while some process holds the
+  single-instance mutex (otherwise the launch would just forward back to the editor); the inherited value is restored.
+- Shortcuts are not dispatched while a modal popup is open (unsaved changes, recovery, remove media, settings): Space or
+  Delete must not act on the document behind the prompt.
+Why: event-driven loop; docs/05 status bar and error UX; separate bar process; modal prompts.
+Impact: when bar and editor share one process, replace `ShowRecorderBar` with an in-process call.
+
+## 2026-10-18 · Integration · TYPING end records stay in time order
+Decision: in the event drain, a record later than an open typing burst's last key is written only once the burst's fate
+is known: a typing key-down within the gap extends it; a pause, or the cutoff passing last key + gap (1 s), closes it
+first (the "ended" record keeps the last key's time). Until then the record and everything after it wait for the next drain.
+Why: the "ended" record was written up to 1 s after records with later times, so files were not in time order.
+Impact: while a burst is open, up to ~1 s of records are held in memory (a kill can lose up to ~2 s of events, the 5.8
+budget); Flush() no longer guarantees records after the last key are on disk during an open burst.
+
+## 2026-10-18 · P12 tasks 12.4/12.5 · Uninstall ends only {app}'s processes; scripted release smoke test
+Spec said: (P12 12.2) `[UninstallRun] taskkill /im Camtesia.exe /f` covers a tray-only instance at uninstall; 12.5 is a
+manual checklist (`tools/release_checklist.md`) run on clean machines.
+Done instead:
+- The `[UninstallRun]` taskkill is gone: it ended every Camtesia.exe on the machine (portable copies, dev builds,
+  other agents' instances). A `[Code]` `CurUninstallStepChanged(usUninstall)` queries WMI `Win32_Process` for
+  `Camtesia.exe` and terminates only processes whose `ExecutablePath` equals `{app}\Camtesia.exe` (case-insensitive),
+  then waits 1 s; a WMI failure is logged and the uninstall continues.
+- `tools/release_smoke.ps1` automates the installable part of the checklist: refuses to run when Camtesia is already
+  installed/registered; per-user silent install into `%TEMP%\camtesia-smoke-*\app` with both tasks; checks files,
+  HKCU uninstall entry (and no HKLM one), `.ctproj` association, open command, Run value, shortcuts, exe version;
+  installed exe `--record --seconds 5 --verify --synthetic-camera --out <temp>`; `export_demo --recording <bundle>
+  --save-project` (new flag: imports the bundle like the editor's Import recording, saves + reloads the .ctproj, exports);
+  runs the registered open command with `--screenshot`; starts the installed exe `--tray` and a build-tree decoy
+  `--tray` (own CT_INSTANCE_SUFFIX); uninstalls in `finally`; checks the tray instance ended, the decoy survived, and
+  lists leftovers. Every child has a timeout and is killed with its tree when it runs over.
+- Inno's uninstaller self-copy `%TEMP%\is-XXXX-uninstall.tmp\{_unins.tmp,_unins-done.tmp}` is not counted as a
+  product leftover: Inno 6.3+ cannot delete its running copy and cleans these on the next Inno uninstall. The script
+  removes the one its own run created.
+- The installed app has no headless export mode, so export uses the build tree's `export_demo` (same ExportJob code).
+Why: a developer/CI machine runs many Camtesia.exe; the uninstaller must not kill unrelated ones. Clean VMs are not
+available to the agents, so as much of 12.5 as possible is scripted and repeatable.
+Impact: interactive editing and the clean Windows 10 / Windows 11 runs stay human checks (checklist section 6). CI
+could run `release_smoke.ps1 -TrayCheck $false` after `build.cmd package` (not wired up).
+
+## 2026-10-17 · Perf follow-up (P06) · One copy per decoded frame; single-pass window; scrub aborts keep the position
+Spec said: P06 6.2 `ReadFrame` copies decoder output into a pool texture; 6.4 each cache entry owns a texture "copied
+from the decoder pool". DECISIONS 6.7 suggested the cache take the decoder pool texture instead of copying it.
+Done instead:
+- `VideoDecoder::DecodeFrame(PendingFrame&, ...)` returns the decoded frame still inside its `IMFSample` and
+  `CopyTo(pending, dst)` copies the aperture into any NV12 texture. `MediaCache` decodes this way and copies straight
+  into the cache slot it reserved (`Config::pool_size = 0`: the decoder owns no pool). One GPU copy per frame instead of
+  two. The cache does *not* keep decoder surfaces themselves: they are BIND_DECODER array slices without SRVs, and the
+  DXVA allocator has only the DPB plus a few surfaces, so holding them in a 256 MB cache would starve the decoder.
+  `PendingFrame` is reset right after the copy (before the next `DecodeFrame`), so the sample refcount is held only
+  for the copy. `ReadFrame` (pool) stays for thumbnails, tools and tests and is now `DecodeFrame + CopyTo`.
+- `VideoDecoder::NextPts()` (end of the last consumed frame). After an `E_ABORT` the cache keeps that position instead
+  of "unknown", so the next request decodes forward when that is cheaper than a seek.
+- `MediaCache::Hint` aborts a fast-forward on every paused move (a scrub), not only on jumps > 1 s.
+- Frames of the paused window behind the playhead that the fast-forward passes are stored (`FillFrom`) instead of
+  skipped and then decoded again by a second seek to the keyframe. When the budget has no room for such an optional
+  frame it is skipped (never a stall before the playhead frame). Adds `Stats::decoder_copies/decoder_pool_textures`.
+- The exact-seek p95 stays over 150 ms here: `ReadSample` takes 2.1 ms per frame on this DXVA decoder even when the
+  frame is skipped (measured; `MF_LOW_LATENCY` off was the same or worse: p95 239-283 ms), so a seek to the end of a
+  2 s GOP costs ~210-250 ms whatever the cache does. Reaching the budget needs a shorter recording GOP (1 s halves the
+  worst case) or a faster decoder; not changed here (it is a P04/P05 file-size decision).
+Why: measured (PROGRESS "Perf follow-ups" F1).
+Impact: P09 scrubbing benefits without changes; GOP length is the remaining lever for the seek budget.
+
+## 2026-10-18 · Perf follow-up (P08/P10) · GPU timing span; D3DDevice::Batch; export does not batch
+Spec said: docs/06 section 6: `ID3D11Query` timestamp pairs around each compositor pass, in `RenderContext`, shown by
+the F11 overlay / status bar; docs/03 section 8: immediate context under `ContextLock` (our CS) for every use.
+Done instead:
+- `D3DDevice::Batch` (new): holds the device's own multithread lock (`ID3D11Multithread::Enter`, the same lock as
+  `ID3D10Multithread`) for a span. MF's decoder/encoder threads use the context under that lock only, never under
+  `D3DDevice::Lock`. Rule: take `Lock` first; never hold a Batch across a wait on another thread.
+- `Compositor::RenderFrame` holds a Batch only while `RenderOptions::gpu_timing` is set, so no MF command interleaves
+  with the measured span. The span starts after the Direct2D text pass (D2D flushes the context) and the context is
+  flushed right after the end timestamp (otherwise it waits for the next Present). Each Compositor owns its 4 timers
+  (they were RenderContext's, shared by the editor's and an export's compositors, which resolved each other's queries).
+  `RenderContext::Timer` stays for compatibility but the compositor no longer uses it.
+- Not batched when not measuring, and ExportJob does not batch: measured on export_demo, one wait for a whole MF hold
+  per frame cost more (RenderFrame CPU 2-3 ms) than per-call contention after F1 (0.2-0.3 ms). `export_demo` measures GPU
+  time only with `--gpu-timing` now (it changes the timing it reports).
+Why: the status bar's "GPU 166 ms" was this measurement, not GPU work (PROGRESS F3a); F2 numbers.
+Impact: the editor's preview (gpu_timing on) waits once per rendered frame for MF to leave the lock; the editor's
+redraws are event-driven, so this is per preview frame, not per vsync.
+
+## 2026-10-18 · Perf follow-up (P06/P10) · Cache budget: atomic reservation, separate export extra, trim, playhead frame
+Spec said: docs/03 section 9 / P06 6.4: 256 MB total, LRU; caches evict their own frames before exceeding the budget;
+frames ahead of the playhead inside the window are never evicted (the cache stalls instead, DECISIONS 6.4).
+Done instead:
+- `CacheBudget::TryReserve(bytes)` (CAS): StoreFrame reserves before the copy (was Fits() then Add() after the copy).
+- `CacheBudget::AddExtra` / `ConfiguredBytes`: ExportJob's temporary extra is kept apart from the configured budget
+  (it did SetBytes(Bytes() + extra) and SetBytes(Bytes() - extra), which lost or undercut a settings change made during
+  the export).
+- `MediaCache::TrimToBudget`: when the total is over budget (it shrank under cached frames) the prefetch thread evicts
+  its own frames: the usual order, then frames ahead of the playhead, farthest first; never pinned frames or the frame
+  at the playhead. `GetVideoFrame` wakes the prefetch thread while over budget.
+- The frame at the playhead is stored even when the budget is full of other caches' frames and the cache has nothing
+  of its own to evict (`Stats::over_budget_stores`); the other caches trim on their next lookup. Before, that cache
+  stalled until the next hint, so a caller repeating the same exact request (a paused preview, `ResolveExact`,
+  `WaitForFrame`) never got the frame. The overshoot is at most one frame per cache and short-lived.
+Why: status bar "cache 258/256 MB" (PROGRESS F3b); the stall reproduced by a test.
+Impact: the editor shows at most a frame over budget briefly; P11 memory audit can rely on Used <= Bytes otherwise.
+
+## 2026-10-18 · Perf follow-up (P10 task 10.4) · GIF encoder: banded dithering, segmented LZW, own worker threads
+Spec said: P10 10.4: serpentine Floyd-Steinberg over the frame, one LZW stream per image, quantization on the IO pool in
+parallel with rendering; DECISIONS 10.4: "No AVX2 path: the scalar code meets the budget".
+Done instead:
+- Floyd-Steinberg runs in horizontal bands of ~48 rows (`gif_detail::QuantBands(h)`, laid out from the region height
+  only); error does not cross a band edge, direction follows the absolute row parity. `GifEncoder::QuantizeRegion` /
+  `Quantize` produce the same banded result sequentially, so tests and the encoder agree byte for byte. A seam every
+  48 rows carries no error from above (not visible in the gradient fidelity test).
+- `NearestCache::FillRange/FillAll` (new): the encoder fills all 32768 entries when a palette is set (in parallel), so
+  the bands only read the table.
+- LZW: `gif_detail::LzwEncodeSegmented` encodes 128 K-symbol segments in parallel (each starts with a fresh table) and
+  stitches them with a clear code at the previous segment's final code width; decoders see an ordinary stream.
+  `GifEncoder::LzwEncode` itself is unchanged (single stream). +1.2 % size on a dithered 720p frame.
+- The per-frame LZW is no longer a separate Async job overlapping the next frame: everything per frame runs on
+  `gif_detail::Workers` (a fork-join set of up to 8 `ct-gif-worker` threads, half the logical processors, at the
+  priority of the thread that opened the encoder). The frame-diff mask and canvas passes are split by rows too.
+Why: GIF 720p20 export at 1.41x (31 ms per frame on the CPU, PROGRESS F4).
+Impact: an export uses up to 8 more threads while it encodes a GIF (below normal priority when the job is).
+
+## 2026-10-18 · Perf follow-up (P06) · Correction to the 2026-10-17 entry: behind-window frames after the playhead frame
+Spec said: (the 2026-10-17 perf entry) frames behind the playhead are stored during the fast-forward after a seek.
+Done instead: `MediaCache::FillFrom` stores them only once the playhead frame is cached, so a seek fills playhead,
+then ahead, then behind (a second seek, aborted by the next scrub). Storing them first put up to 15 copies and their
+locks in front of the frame a scrub waits for; on the loaded machine the seek-bench p95 came out worse more often
+than not (260 -> 306 / 421 ms, 554 -> 923 ms in A/B runs), while the p50 gain came from the scrub abort/resume.
+Why: seek latency of the playhead frame comes first.
+Impact: none outside MediaCache; the test is now `media_cache_one_copy_per_frame_window_fill` (<= 2 seeks).

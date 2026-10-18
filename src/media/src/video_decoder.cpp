@@ -113,6 +113,7 @@ void VideoDecoder::Shutdown() {
     m_size = {};
     m_frame = {};
     m_eos = false;
+    m_next_pts = INT64_MIN;
     m_seek_target = -1;
     m_first_after_seek = true;
     m_keyframes.clear();
@@ -150,7 +151,10 @@ HRESULT VideoDecoder::CreatePool(SizeI size) {
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    const uint32_t count = std::clamp<uint32_t>(m_cfg.pool_size, 1u, 64u);
+    const uint32_t count = std::min<uint32_t>(m_cfg.pool_size, 64u);
+    m_size = size;
+    m_scratch.assign(static_cast<size_t>(size.w) * size.h * 3 / 2, 0);
+    if (count == 0) return S_OK;   // the owner copies into its own textures (CopyTo)
     CT_RETURN_IF_FAILED(m_pool.Init(*m_dev, desc, count, "decode-nv12"));
     m_y_srv.resize(count);
     m_uv_srv.resize(count);
@@ -163,8 +167,6 @@ HRESULT VideoDecoder::CreatePool(SizeI size) {
         sd.Format = DXGI_FORMAT_R8G8_UNORM;
         CT_RETURN_IF_FAILED(m_dev->Device()->CreateShaderResourceView(m_pool.At(i), &sd, m_uv_srv[i].GetAddressOf()));
     }
-    m_size = size;
-    m_scratch.assign(static_cast<size_t>(size.w) * size.h * 3 / 2, 0);
     return S_OK;
 }
 
@@ -174,6 +176,7 @@ HRESULT VideoDecoder::Seek(TimeUs t_us) {
     m_seek_target = t_us < 0 ? 0 : t_us;
     m_first_after_seek = true;
     m_eos = false;
+    m_next_pts = m_seek_target;
     return S_OK;
 }
 
@@ -184,26 +187,45 @@ HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us) { retu
 HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen) {
     if (!m_reader) return E_ILLEGAL_METHOD_CALL;
     if (m_eos) return S_FALSE;
+    // Every pool texture held: nothing is consumed (the caller releases frames and retries). The owner is the only
+    // thread that acquires, so a free texture found here is still free after DecodeFrame (a type change recreates the
+    // pool, which frees every slot).
+    if (m_pool.InUse() >= m_pool.Count()) return E_PENDING;
+    PendingFrame f;
+    const HRESULT hr = DecodeFrame(f, skip_before_us, abort_gen, gen);
+    if (hr != S_OK) return hr;
     uint32_t index = 0;
-    if (!m_pool.Acquire(index)) return E_PENDING;   // nothing read: the caller releases frames and retries
+    if (!m_pool.Acquire(index)) return E_PENDING;
+    const HRESULT copy_hr = CopyTo(f, m_pool.At(index));
+    if (FAILED(copy_hr)) {
+        m_pool.Release(index);
+        return copy_hr;
+    }
+    out.nv12 = m_pool.At(index);
+    out.pool_index = index;
+    out.pts_us = f.pts_us;
+    out.duration_us = f.duration_us;
+    out.size = m_size;
+    return S_OK;
+}
+
+HRESULT VideoDecoder::DecodeFrame(PendingFrame& out, TimeUs skip_before_us, const std::atomic<uint64_t>* abort_gen, uint64_t gen) {
+    out.Reset();
+    if (!m_reader) return E_ILLEGAL_METHOD_CALL;
+    if (m_eos) return S_FALSE;
     for (;;) {
         DWORD actual = 0, flags = 0;
         LONGLONG ts = 0;
         ComPtr<IMFSample> sample;
         const HRESULT hr = m_reader->ReadSample(m_stream, 0, &actual, &flags, &ts, sample.GetAddressOf());
         if (FAILED(hr)) {
-            m_pool.Release(index);
+            m_next_pts = INT64_MIN;
             CT_LOG_WARN("VideoDecoder: ReadSample failed: %s", HrToString(hr).c_str());
             return hr;
         }
-        if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-            m_pool.Release(index);
-            CT_RETURN_IF_FAILED(ApplyCurrentType());
-            if (!m_pool.Acquire(index)) return E_PENDING;
-        }
+        if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) CT_RETURN_IF_FAILED(ApplyCurrentType());
         if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
             m_eos = true;
-            m_pool.Release(index);
             return S_FALSE;
         }
         if (!sample) continue;   // MF_SOURCE_READERF_STREAMTICK / gap
@@ -217,22 +239,13 @@ HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const 
         // Decoders flag every output sample as a clean point, so only seek landings identify keyframes.
         if (m_first_after_seek) NoteKeyframe(pts);
         m_first_after_seek = false;
+        m_next_pts = pts + dur;
         if (pts + dur <= skip_before_us) {
             ++m_frames_skipped;
-            if (abort_gen && abort_gen->load(std::memory_order_relaxed) != gen) {
-                m_pool.Release(index);
-                return E_ABORT;
-            }
+            if (abort_gen && abort_gen->load(std::memory_order_relaxed) != gen) return E_ABORT;
             continue;
         }
-        const HRESULT copy_hr = CopyToPool(sample.Get(), index);
-        if (FAILED(copy_hr)) {
-            m_pool.Release(index);
-            return copy_hr;
-        }
-        ++m_frames_copied;
-        out.nv12 = m_pool.At(index);
-        out.pool_index = index;
+        out.sample = std::move(sample);
         out.pts_us = pts;
         out.duration_us = dur;
         out.size = m_size;
@@ -240,10 +253,16 @@ HRESULT VideoDecoder::ReadFrame(DecodedFrame& out, TimeUs skip_before_us, const 
     }
 }
 
-HRESULT VideoDecoder::CopyToPool(IMFSample* sample, uint32_t index) {
+HRESULT VideoDecoder::CopyTo(const PendingFrame& f, ID3D11Texture2D* dst) {
+    if (!f.sample || !dst) return E_INVALIDARG;
+    CT_RETURN_IF_FAILED(CopySample(f.sample.Get(), dst));
+    ++m_frames_copied;
+    return S_OK;
+}
+
+HRESULT VideoDecoder::CopySample(IMFSample* sample, ID3D11Texture2D* dst) {
     ComPtr<IMFMediaBuffer> buffer;
     CT_RETURN_IF_FAILED(sample->GetBufferByIndex(0, buffer.GetAddressOf()));
-    ID3D11Texture2D* dst = m_pool.At(index);
     ComPtr<IMFDXGIBuffer> dxgi;
     if (SUCCEEDED(buffer.As(&dxgi))) {
         ComPtr<ID3D11Texture2D> tex;
