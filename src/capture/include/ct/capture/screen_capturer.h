@@ -8,6 +8,11 @@
 // The capture thread owns the duplicator and converter; it uses the immediate context under D3DDevice::Lock.
 // Lifetime: Init -> [Nv12Pool() setup] -> Start -> (Pause/Resume)* -> Stop. The destructor calls Stop().
 // No allocation on the capture thread after Start (view caches fill during the first frames).
+// Robustness (docs/03 section 10, P11 11.4): access lost (secure desktop, mode change, fullscreen game) repeats the
+// last frame and re-creates the duplication every 250 ms; a whole-display recording whose display changes resolution
+// or orientation keeps its stream size, the new desktop scaled to fit and letterboxed; a region keeps its pixel
+// rectangle (cropped / black where it left the desktop). A display that stays unplugged for display_lost_timeout_ms
+// ends the capture with FrameSink::OnError(kDisplayRemovedHr); a secure desktop never does.
 
 #include <ct/capture/color_convert.h>
 #include <ct/capture/desktop_duplicator.h>
@@ -26,6 +31,9 @@
 
 namespace ct::capture {
 
+// FrameSink::OnError code: the captured display was unplugged (or detached) and did not come back in time.
+inline constexpr HRESULT kDisplayRemovedHr = DXGI_ERROR_NOT_FOUND;
+
 struct CaptureStats {
     // new_frames: new desktop images handed to the sink (an image held for the next tick counts when delivered);
     // new_frames + repeats = frames handed to the sink.
@@ -40,6 +48,8 @@ struct CaptureStats {
     Stats::Timing present_lag;   // new images: tick time - the image's desktop present time (negative = tick before it)
     std::atomic<int64_t> first_frame_us{-1};   // t_us of the first frame delivered (tick-aligned), -1 before
     std::atomic<int64_t> last_new_frame_qpc{0};   // QPC when the last new desktop image arrived
+    std::atomic<int64_t> lost_since_qpc{0};       // QPC when access was lost, 0 while the duplication works
+    std::atomic<uint64_t> fit_frames{0};          // new images scaled into the stream after a mode change
 };
 
 class ScreenCapturer {
@@ -60,6 +70,15 @@ public:
         // was seen. The clap test (avsync_source, vsync of the source's own swapchain) puts the desktop present
         // 1-6 ms after that vsync, hence the negative default (DECISIONS, av-sync).
         int display_latency_us = -4000;
+        // Whole-display recording: after a resolution / orientation change scale the new desktop into the stream
+        // (letterboxed) instead of cropping it at the old size. Needs the zero-copy shader path.
+        bool fit_on_mode_change = true;
+        // The display is gone (unplugged, detached) for this long: end the capture (OnError(kDisplayRemovedHr)).
+        uint32_t display_lost_timeout_ms = 5000;
+        // Init releases the duplication again (format, size and rotation are known); Start re-creates it. A
+        // prepared, idle capturer then holds no duplication (DWM does no work for us) at the cost of a
+        // DuplicateOutput call (a few ms) on the start path.
+        bool release_duplication_until_start = false;
     };
 
     ScreenCapturer() = default;
@@ -80,6 +99,7 @@ public:
     SizeI OutputSize() const { return m_output_size; }
     const RectI& Region() const { return m_cfg.region; }
     bool IsRunning() const { return m_thread.IsRunning(); }
+    DesktopDuplicator& DuplicatorForTest() { return m_dup; }   // error injection (tests)
 
 private:
     void Run();

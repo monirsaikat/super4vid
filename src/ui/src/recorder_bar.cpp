@@ -1729,7 +1729,8 @@ LRESULT RecorderBar::HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
         }
         break;
     case WM_POWERBROADCAST:
-        if (wparam == PBT_APMSUSPEND && s.state == State::Recording) s.session.TogglePause();   // user resumes manually
+        // RecordingSession pauses on suspend itself (RegisterSuspendResumeNotification, also headless); toggling
+        // here as well would resume it again.
         break;
     case WM_CLOSE:
         s.ShowBar(false);   // close hides to tray; Quit is in the tray menu

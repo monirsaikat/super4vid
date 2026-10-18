@@ -23,6 +23,8 @@
 #include <ct/recorder/bundle_writer.h>
 #include <ct/version.h>
 
+#include <powrprof.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -78,6 +80,14 @@ const char* KeystrokeName(KeystrokeMode k) {
     }
 }
 
+// RegisterSuspendResumeNotification callback (a system thread): forwards to the session.
+ULONG CALLBACK PowerCallback(PVOID context, ULONG type, PVOID) {
+    auto* s = static_cast<RecordingSession*>(context);
+    if (type == PBT_APMSUSPEND) s->OnSystemSuspend();
+    else if (type == PBT_APMRESUMEAUTOMATIC || type == PBT_APMRESUMESUSPEND) s->OnSystemResume();
+    return 0;
+}
+
 std::atomic<RecordingSession*> g_armed{nullptr};
 std::atomic<bool> g_emergency_registered{false};
 
@@ -93,7 +103,7 @@ struct RecordingSession::Impl {
     SessionClock* clock = nullptr;
 
     // --- command queue (any thread -> ct-session) ---
-    enum class Cmd { Prepare, StartNow, Pause, Marker, Stop, Cancel, Quit };
+    enum class Cmd { Prepare, StartNow, Pause, Marker, Stop, Cancel, Suspend, Resume, Quit };
     struct Command {
         Cmd kind;
         int64_t qpc = 0;
@@ -155,6 +165,12 @@ struct RecordingSession::Impl {
     std::string emergency_meta;
     std::wstring emergency_meta_path;
     std::atomic<bool> emergency_done{false};
+    // Sleep / resume (docs/03 section 10).
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS power_params{};
+    HPOWERNOTIFY power_notify = nullptr;
+    bool paused_by_suspend = false;
+    Event suspend_done{true, false};   // set when a Suspend command ran (heap-free and outlives a timed-out wait)
+    bool access_warned = false;   // the current access-lost streak was reported
 
     // --- forwarding sinks (component threads) ---
     struct ScreenSink final : capture::FrameSink {
@@ -165,7 +181,15 @@ struct RecordingSession::Impl {
                 first_frame_qpc.store(Clock::QpcNow(), std::memory_order_relaxed);
             return s->writer->OnFrame(tex, index, t_us);
         }
-        void OnError(HRESULT hr) override { s->Fail(hr, "Screen capture stopped (the graphics device was lost)."); }
+        void OnError(HRESULT hr) override {
+            if (hr == capture::kDisplayRemovedHr)
+                s->Fail(hr, "The display being recorded was disconnected. The recording was saved up to that point.");
+            else if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
+                     hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR)
+                s->Fail(hr, "Screen capture stopped (the graphics device was lost).");
+            else
+                s->Fail(hr, "Screen capture stopped (" + HrToString(hr) + ").");
+        }
     } screen_sink;
     struct CamSink final : capture::FrameSink {
         Impl* s = nullptr;
@@ -309,8 +333,37 @@ struct RecordingSession::Impl {
             break;
         }
         case Cmd::Cancel: DoCancel(); break;
+        case Cmd::Suspend:
+            if (state.load() == State::Recording) {
+                CT_LOG_INFO("system suspend: pausing the recording");
+                DoTogglePause(Clock::QpcNow());
+                paused_by_suspend = true;
+            }
+            suspend_done.Set();
+            break;
+        case Cmd::Resume:
+            if (paused_by_suspend && state.load() == State::Paused) {
+                CT_LOG_INFO("system resume: the recording stays paused");
+                Warn("The computer went to sleep, so the recording was paused. Resume it when you are ready.", S_OK);
+            }
+            paused_by_suspend = false;
+            break;
         case Cmd::Quit: break;
         }
+    }
+
+    void RegisterPower() {
+        if (power_notify) return;
+        power_params.Callback = &PowerCallback;
+        power_params.Context = owner;
+        power_notify = RegisterSuspendResumeNotification(&power_params, DEVICE_NOTIFY_CALLBACK);
+        if (!power_notify) CT_LOG_WARN("RegisterSuspendResumeNotification failed (%lu); sleep will not pause", GetLastError());
+    }
+    void UnregisterPower() {
+        if (!power_notify) return;
+        UnregisterSuspendResumeNotification(power_notify);
+        power_notify = nullptr;
+        paused_by_suspend = false;
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -371,11 +424,19 @@ struct RecordingSession::Impl {
     }
 
     HRESULT BuildComponents() {
+        Stopwatch stage;
+        stage.Start();
+        double t_devices = 0, t_bundle = 0, t_audio = 0, t_screen = 0, t_capturer = 0, t_writer = 0;
+        auto lap = [&stage](double& acc) {
+            acc += stage.ElapsedMs();
+            stage.Start();
+        };
         if (!devices_ready) {
             const HRESULT hr = devices.Init();
             if (FAILED(hr)) CT_LOG_WARN("AudioDevices::Init: %s (no audio)", HrToString(hr).c_str());
             devices_ready = SUCCEEDED(hr);
         }
+        lap(t_devices);
         std::string path;
         if (!bundle.Create(output_dir, path)) {
             SetPrepareError("Cannot create a recording folder in " + output_dir + ".");
@@ -386,6 +447,7 @@ struct RecordingSession::Impl {
             bundle_path = path;
         }
 
+        lap(t_bundle);
         // Audio first: a stream that cannot be opened is left out of the MP4 instead of becoming an empty track.
         uint32_t n_audio = 0;
         if (cfg.mic && devices_ready) {
@@ -423,6 +485,7 @@ struct RecordingSession::Impl {
             }
         }
 
+        lap(t_audio);
         // Screen + writer with the fps clamp (DECISIONS P04 4.5: the writer does not change the rate itself).
         std::vector<int> rates{std::max(1, cfg.fps)};
         for (int r : {120, 60, 30})
@@ -440,6 +503,7 @@ struct RecordingSession::Impl {
                 cc.fps_den = 1;
                 cc.hdr_tonemap = cfg.hdr_tonemap;
                 HRESULT hr = capturer->Init(*dev, cc);
+                lap(t_capturer);
                 if (FAILED(hr)) {
                     capturer.reset();
                     SetPrepareError("Screen capture could not start on " +
@@ -468,6 +532,7 @@ struct RecordingSession::Impl {
                     wc.audio.push_back(ac);
                 }
                 hr = writer->Init(*dev, wc, &capturer->Nv12Pool());
+                lap(t_writer);
                 if (SUCCEEDED(hr)) {
                     fps = rate;
                     codec = cd;
@@ -494,6 +559,7 @@ struct RecordingSession::Impl {
             SetPrepareError("No video encoder accepted this recording (" + HrToString(last) + ").");
             return last;
         }
+        t_screen = t_capturer + t_writer;
 
         // Webcam (optional: failures only warn).
         if (cfg.webcam) {
@@ -534,6 +600,11 @@ struct RecordingSession::Impl {
         }
 
         if (cfg.events) events = std::make_unique<EventRecorder>();
+        double t_camera = 0;
+        lap(t_camera);
+        CT_LOG_INFO("prepare stages: audio devices %.1f ms, bundle %.1f ms, mic/system %.1f ms, screen %.1f ms "
+                    "(capturer %.1f, writer %.1f), camera/events %.1f ms",
+                    t_devices, t_bundle, t_audio, t_screen, t_capturer, t_writer, t_camera);
         return S_OK;
     }
 
@@ -583,6 +654,8 @@ struct RecordingSession::Impl {
         }
         BuildEmergencyMeta();
         g_armed.store(owner, std::memory_order_release);
+        access_warned = false;
+        RegisterPower();
         next_tick_qpc = Clock::QpcNow();
         SetState(State::Recording);
     }
@@ -640,6 +713,16 @@ struct RecordingSession::Impl {
             }
         }
         Notify([st](SessionListener* l) { l->OnTick(st); });
+
+        // Access lost for a while (secure desktop, fullscreen game, display change): frames repeat; say so once.
+        const int64_t lost_since = cs.lost_since_qpc.load(std::memory_order_relaxed);
+        if (lost_since == 0) {
+            access_warned = false;
+        } else if (!access_warned && Clock::QpcNow() - lost_since > 3 * Clock::QpcFrequency()) {
+            access_warned = true;
+            Warn("Windows blocked screen capture (secure desktop or display change). The last image repeats until it is back.",
+                 DXGI_ERROR_ACCESS_LOST);
+        }
 
         if (st.free_disk_bytes > 0 && st.free_disk_bytes < kStopFreeBytes) {
             Fail(HRESULT_FROM_WIN32(ERROR_DISK_FULL), "Disk almost full: the recording was stopped and saved.");
@@ -744,6 +827,7 @@ struct RecordingSession::Impl {
 
     void Finish(bool keep, bool notify) {
         g_armed.store(nullptr, std::memory_order_release);
+        UnregisterPower();
         SetState(State::Finalizing);
         Stopwatch sw;
         sw.Start();
@@ -787,6 +871,7 @@ struct RecordingSession::Impl {
     // Writers before the pools they reference (capturer, webcam).
     void Release() {
         g_armed.store(nullptr, std::memory_order_release);
+        UnregisterPower();
         live_mic_db.store(audio::Meter::kFloorDb);
         live_sys_db.store(audio::Meter::kFloorDb);
         if (capturer) capturer->Stop();
@@ -918,6 +1003,21 @@ void RecordingSession::EmergencyFinalize() {
     WriteFile(f, s.emergency_meta.data(), static_cast<DWORD>(s.emergency_meta.size()), &written, nullptr);
     FlushFileBuffers(f);
     CloseHandle(f);
+}
+
+void RecordingSession::OnSystemSuspend() {
+    // The capture and encode threads must be paused before the GPU powers down; the system waits for this callback.
+    m_impl->suspend_done.Reset();
+    Impl::Command c;
+    c.kind = Impl::Cmd::Suspend;
+    m_impl->Post(std::move(c));
+    if (!m_impl->suspend_done.Wait(1000)) CT_LOG_WARN("suspend: the session did not pause within 1 s");
+}
+
+void RecordingSession::OnSystemResume() {
+    Impl::Command c;
+    c.kind = Impl::Cmd::Resume;
+    m_impl->Post(std::move(c));
 }
 
 State RecordingSession::GetState() const { return m_impl->state.load(std::memory_order_acquire); }

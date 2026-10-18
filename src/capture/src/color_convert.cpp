@@ -12,6 +12,7 @@
 #include "rgba16f_to_nv12_ps_chroma.h"
 #include "rgba16f_to_nv12_ps_luma.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -81,6 +82,7 @@ struct ColorConverter::Impl {
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps_luma, ps_chroma;
     ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11SamplerState> sampler_border;   // ConvertFit: outside the content samples black
     ComPtr<ID3D11Buffer> cb;
     ConvertCb cb_data{};
     ComPtr<ID3D11RasterizerState> raster;
@@ -103,6 +105,11 @@ struct ColorConverter::Impl {
     HRESULT InitShaders(bool allow_compute);
     HRESULT InitVideoProcessor();
     HRESULT ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX* box, ID3D11Texture2D* dst);
+    // Shared by Convert/ConvertRegion/ConvertFit: uv transform already chosen; rewrites the constant buffer when it
+    // changed.
+    HRESULT Dispatch(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const float offset[2], const float scale[2],
+                     Rotation rotation, bool border, ID3D11Texture2D* dst);
+    Rotation cb_rotation = Rotation::Identity;
     HRESULT ConvertVideoProcessor(ID3D11Texture2D* src, const D3D11_BOX* box, ID3D11Texture2D* dst);
 };
 
@@ -159,6 +166,10 @@ HRESULT ColorConverter::Impl::InitShaders(bool allow_compute) {
     sd.MaxLOD = D3D11_FLOAT32_MAX;
     sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
     CT_RETURN_IF_FAILED(d->CreateSamplerState(&sd, sampler.GetAddressOf()));
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+    sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = 0.f;
+    sd.BorderColor[3] = 1.f;
+    CT_RETURN_IF_FAILED(d->CreateSamplerState(&sd, sampler_border.GetAddressOf()));
 
     D3D11_RASTERIZER_DESC rd{};
     rd.FillMode = D3D11_FILL_SOLID;
@@ -170,6 +181,7 @@ HRESULT ColorConverter::Impl::InitShaders(bool allow_compute) {
     data.src_offset[0] = data.src_offset[1] = 0.f;
     data.src_scale[0] = data.src_scale[1] = 1.f;
     RotationUvMatrix(cfg.rotation, data.rot_uv);
+    cb_rotation = cfg.rotation;
     data.hdr_scale = 80.f / (cfg.sdr_white_nits > 1.f ? cfg.sdr_white_nits : 80.f);
     data.tonemap = cfg.hdr_tonemap ? 1.f : 0.f;
     data.dst_size[0] = static_cast<float>(cfg.dst_size.w);
@@ -251,7 +263,6 @@ HRESULT ColorConverter::ConvertRegion(ID3D11DeviceContext* ctx, ID3D11Texture2D*
 
 HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX* box,
                                              ID3D11Texture2D* dst) {
-    ID3D11Device* d = dev->Device();
     // Region of the source in uv; the constant buffer is rewritten only when it changes (new source size or crop).
     float offset[2] = {0.f, 0.f}, scale[2] = {1.f, 1.f};
     if (box) {
@@ -263,12 +274,22 @@ HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Tex
         scale[0] = static_cast<float>(box->right - box->left) * iw;
         scale[1] = static_cast<float>(box->bottom - box->top) * ih;
     }
+    return Dispatch(ctx, src, offset, scale, cfg.rotation, false, dst);
+}
+
+HRESULT ColorConverter::Impl::Dispatch(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const float offset[2],
+                                       const float scale[2], Rotation rotation, bool border, ID3D11Texture2D* dst) {
+    ID3D11Device* d = dev->Device();
     if (offset[0] != cb_data.src_offset[0] || offset[1] != cb_data.src_offset[1] || scale[0] != cb_data.src_scale[0] ||
-        scale[1] != cb_data.src_scale[1]) [[unlikely]] {
+        scale[1] != cb_data.src_scale[1] || rotation != cb_rotation) [[unlikely]] {
         cb_data.src_offset[0] = offset[0];
         cb_data.src_offset[1] = offset[1];
         cb_data.src_scale[0] = scale[0];
         cb_data.src_scale[1] = scale[1];
+        if (rotation != cb_rotation) {
+            RotationUvMatrix(rotation, cb_data.rot_uv);
+            cb_rotation = rotation;
+        }
         ctx->UpdateSubresource(cb.Get(), 0, nullptr, &cb_data, 0, 0);
     }
     CachedView<ID3D11ShaderResourceView>* sv = nullptr;
@@ -276,7 +297,7 @@ HRESULT ColorConverter::Impl::ConvertShaders(ID3D11DeviceContext* ctx, ID3D11Tex
         return d->CreateShaderResourceView(src, nullptr, c.a.GetAddressOf());
     }));
     ID3D11ShaderResourceView* srv = sv->a.Get();
-    ID3D11SamplerState* smp = sampler.Get();
+    ID3D11SamplerState* smp = border ? sampler_border.Get() : sampler.Get();
     ID3D11Buffer* cbs = cb.Get();
 
     if (compute) {
@@ -381,6 +402,35 @@ HRESULT ColorConverter::Impl::ConvertVideoProcessor(ID3D11Texture2D* src, const 
     stream.Enable = TRUE;
     stream.pInputSurface = iv->a.Get();
     return dev->VideoContext()->VideoProcessorBlt(vp.Get(), ov->a.Get(), 0, 1, &stream);
+}
+
+HRESULT ColorConverter::ConvertFit(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, Rotation rotation, ID3D11Texture2D* dst_nv12) {
+    if (!m_impl || !src || !dst_nv12) return E_UNEXPECTED;
+    if (m_use_vp) return E_NOTIMPL;
+    D3D11_TEXTURE2D_DESC sd;
+    src->GetDesc(&sd);
+    const SizeI native{static_cast<int32_t>(sd.Width), static_cast<int32_t>(sd.Height)};
+    // The shader maps output uv -> rotated uv r = R(uv) (unit square, native orientation) -> source uv
+    // src_offset + r * src_scale. The letterbox is an axis-aligned rect in that rotated square, so with the content
+    // rect [c0, c0 + cs] there (normalised), source uv = (r - c0) / cs.
+    const bool swaps = rotation == Rotation::R90 || rotation == Rotation::R270;
+    const float dnw = static_cast<float>(swaps ? m_impl->cfg.dst_size.h : m_impl->cfg.dst_size.w);
+    const float dnh = static_cast<float>(swaps ? m_impl->cfg.dst_size.w : m_impl->cfg.dst_size.h);
+    const float s = std::min(dnw / static_cast<float>(native.w), dnh / static_cast<float>(native.h));
+    const float csw = static_cast<float>(native.w) * s / dnw, csh = static_cast<float>(native.h) * s / dnh;
+    const float c0x = (1.f - csw) * 0.5f, c0y = (1.f - csh) * 0.5f;
+    const float scale[2] = {1.f / csw, 1.f / csh};
+    const float offset[2] = {-c0x / csw, -c0y / csh};
+    return m_impl->Dispatch(ctx, src, offset, scale, rotation, true, dst_nv12);
+}
+
+FitRect FitContentRect(SizeI src_native, Rotation rotation, SizeI dst) {
+    const bool swaps = rotation == Rotation::R90 || rotation == Rotation::R270;
+    const float sw = static_cast<float>(swaps ? src_native.h : src_native.w);
+    const float sh = static_cast<float>(swaps ? src_native.w : src_native.h);
+    const float s = std::min(static_cast<float>(dst.w) / sw, static_cast<float>(dst.h) / sh);
+    const float w = sw * s, h = sh * s;
+    return FitRect{(static_cast<float>(dst.w) - w) * 0.5f, (static_cast<float>(dst.h) - h) * 0.5f, w, h};
 }
 
 bool ColorConverter::UsingCompute() const { return m_impl && m_impl->compute; }

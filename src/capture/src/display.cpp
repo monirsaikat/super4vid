@@ -129,8 +129,10 @@ std::vector<DisplayInfo> EnumerateDisplays(IDXGIFactory6* factory) {
         displays.push_back(std::move(d));
     }
 
-    ComPtr<IDXGIFactory6> own;
-    if (!factory && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(own.GetAddressOf())))) factory = own.Get();
+    // A factory created before a monitor was plugged in, removed or re-arranged still lists the old outputs
+    // (IsCurrent() turns false): match against a fresh one then.
+    ComPtr<IDXGIFactory6> own = CurrentDxgiFactory(factory);
+    if (own) factory = own.Get();
     if (factory) MatchDxgi(factory, displays);
     MatchDisplayConfig(displays);
 
@@ -166,6 +168,13 @@ RectI ClampRegionToDisplay(const DisplayInfo& display, RectI region) {
     if (r.Right() > dr.Right()) r.x = dr.Right() - r.w;
     if (r.Bottom() > dr.Bottom()) r.y = dr.Bottom() - r.h;
     return r;
+}
+
+ComPtr<IDXGIFactory6> CurrentDxgiFactory(IDXGIFactory6* factory) {
+    ComPtr<IDXGIFactory6> fresh;
+    if (factory && factory->IsCurrent()) return fresh;
+    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(fresh.GetAddressOf())))) fresh.Reset();
+    return fresh;
 }
 
 const char* RotationName(Rotation r) {

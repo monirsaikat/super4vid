@@ -15,6 +15,9 @@
 // (headless mode). GetState/Stats/BundlePath/Clock from any thread.
 // Lifetime: the D3DDevice and the listener must outlive the session. The destructor cancels a running recording.
 // EmergencyFinalize is registered once with platform::CrashHandler and is active between StartNow and Stop.
+// Sleep: while recording the session registers for suspend/resume notifications (RegisterSuspendResumeNotification,
+// no window needed, so headless mode is covered too): suspend pauses the recording before the machine sleeps, resume
+// leaves it paused and warns; the user resumes (docs/03 section 10).
 
 #include <ct/capture/display.h>
 #include <ct/core/types.h>
@@ -107,6 +110,10 @@ public:
     // Crash filter: writer Abort (the writer is never destroyed afterwards), events Flush, meta.json with
     // "incomplete": true. Allocation-free apart from what Abort/Flush do internally.
     void EmergencyFinalize();
+    // Power notifications (called by the session's own registration; public for tests). Suspend pauses a running
+    // recording and waits up to 1 s for that to happen; resume keeps it paused and sends OnWarning.
+    void OnSystemSuspend();
+    void OnSystemResume();
 
     State GetState() const;
     bool IsActive() const;                    // Countdown .. Finalizing

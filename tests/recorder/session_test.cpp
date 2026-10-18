@@ -30,6 +30,7 @@ struct TestListener final : SessionListener {
     std::atomic<int> states{0}, ticks{0}, finished{0}, errors{0}, prepared{0};
     std::atomic<int> last_state{0};
     std::atomic<HRESULT> prepare_hr{S_OK};
+    std::atomic<int> sleep_warnings{0};
     void OnStateChanged(State s) override {
         ++states;
         last_state.store(static_cast<int>(s));
@@ -38,6 +39,9 @@ struct TestListener final : SessionListener {
     void OnTick(const LiveStats&) override { ++ticks; }
     void OnFinished(const std::string&) override { ++finished; }
     void OnError(const std::string&, HRESULT) override { ++errors; }
+    void OnWarning(const std::string& message) override {
+        if (message.find("went to sleep") != std::string::npos) ++sleep_warnings;
+    }
     void OnPrepared(HRESULT hr) override {
         prepare_hr.store(hr);
         ++prepared;
@@ -226,4 +230,52 @@ CT_TEST_DEVICE(session_prepare_failure_reports_error) {
     s.StartNow();   // ignored
     CT_REQUIRE(s.WaitIdle(5'000));
     CT_CHECK(s.GetState() == State::Idle);
+}
+
+// Sleep / resume (docs/03 section 10, P11 11.4): the suspend notification pauses a running recording before the
+// machine sleeps, resume leaves it paused and warns once; the user resumes and the file has one gapless pause. A
+// recording the user had paused already is left alone (no warning, no toggle back to recording).
+CT_TEST_DEVICE(session_sleep_pauses_and_resume_stays_paused) {
+    platform::D3DDevice dev;
+    SessionConfig cfg;
+    if (!BaseConfig(dev, cfg)) CT_SKIP("no D3D device / display");
+    cfg.events = false;
+    TestListener l;
+    {
+        RecordingSession s;
+        CT_REQUIRE(SUCCEEDED(s.Prepare(dev, cfg, &l)));
+        s.StartNow(Clock::QpcNow());
+        WaitMediaUs(s, 500'000);
+        CT_REQUIRE(s.GetState() == State::Recording);
+        s.OnSystemSuspend();   // returns once the session paused
+        CT_CHECK(s.GetState() == State::Paused);
+        Sleep(400);
+        s.OnSystemResume();
+        Sleep(300);
+        CT_CHECK(s.GetState() == State::Paused);
+        CT_CHECK_EQ(l.sleep_warnings.load(), 1);
+        s.TogglePause();   // the user resumes
+        WaitMediaUs(s, 1'000'000);
+        CT_CHECK(s.GetState() == State::Recording);
+        // Paused by the user: a suspend keeps it paused, and resume does not warn.
+        s.TogglePause();
+        Sleep(200);
+        s.OnSystemSuspend();
+        CT_CHECK(s.GetState() == State::Paused);
+        s.OnSystemResume();
+        Sleep(200);
+        CT_CHECK(s.GetState() == State::Paused);
+        CT_CHECK_EQ(l.sleep_warnings.load(), 1);
+        s.Stop();
+        CT_REQUIRE(s.WaitIdle(30'000));
+        CT_CHECK_EQ(l.finished.load(), 1);
+        CT_CHECK_EQ(l.errors.load(), 0);
+        Json meta;
+        std::string text;
+        CT_REQUIRE(fs::ReadAll(s.BundlePath() + "\\meta.json", text) && Json::Parse(text, meta));
+        CT_CHECK_EQ(meta["pauses"].Size(), size_t{2});
+        CT_CHECK(meta["pauses"][size_t{0}]["duration_us"].AsInt64() >= 600'000);   // the sleep, until the user resumed
+        CT_CHECK_NEAR(static_cast<double>(meta["duration_us"].AsInt64()), 1.0e6, 0.25e6);
+    }
+    fs::DeleteTree(cfg.output_dir);
 }
