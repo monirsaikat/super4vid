@@ -23,6 +23,8 @@ public:
     // Draws the panel's banner at the cursor (full content width). Call first inside the panel's window.
     void Draw(BannerPanel panel);
     size_t Count(BannerPanel panel) const;
+    // The panel's visible message, or null when it shows none (the editor skips re-showing an identical error).
+    const std::string* Message(BannerPanel panel) const;
 
 private:
     static constexpr int kPanels = static_cast<int>(BannerPanel::Count);
