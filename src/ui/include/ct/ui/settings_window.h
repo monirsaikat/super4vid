@@ -36,6 +36,8 @@
 
 namespace ct::ui {
 
+class LevelMonitor;
+
 // ---- Debounce (pure; unit tested) ---------------------------------------------------------------------------------
 // Each Touch re-arms the deadline to now + delay; Due once the deadline passed without another Touch.
 class Debouncer {
@@ -188,6 +190,12 @@ public:
     // Test hooks (no ImGui needed): apply a change as the widgets do, feed a recorded chord.
     void ApplyForTest(const std::function<void(Settings&)>& edit) { Apply(edit); }
     bool AssignHotkeyForTest(HotkeyAction a, Hotkey hk, std::string* error) { return AssignHotkey(a, hk, error); }
+    // Audio > Test microphone (P11 11.6): a live meter of the selected microphone (or, for tests on machines without
+    // one, the system audio loopback). Stops on Close, on leaving the Audio section and when the device changes.
+    void StartMeterTest(bool system_audio = false);
+    void StopMeterTest();
+    bool MeterTestActive() const;
+    float MeterTestDb() const;   // raw peak dBFS of the running test (-120 while stopped / opening)
 
 private:
     struct AsyncState;   // shared with IO pool jobs (outlives the window if a job is still running)
@@ -242,6 +250,11 @@ private:
     std::string m_hotkey_error[kHotkeyActionCount];
     std::string m_capture_hint;
     double m_copied_at = -100.0;                // "Diagnostics copied" feedback
+
+    // Audio > Test microphone.
+    std::unique_ptr<LevelMonitor> m_meter;
+    std::string m_meter_device;                 // the mic id the running test opened
+    double m_meter_t = 0;
 };
 
 } // namespace ct::ui

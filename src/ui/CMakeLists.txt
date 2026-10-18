@@ -10,7 +10,7 @@ ct_add_module(ui
     src/panels/preview_panel.cpp
     src/panels/export_dialog.cpp
     src/settings_window.cpp src/settings_window_logic.cpp
-    src/error_ux.cpp
+    src/error_ux.cpp src/recorder_errors.cpp src/level_monitor.cpp
     src/first_run.cpp
     src/recorder_bar.cpp src/recorder_app.cpp
   DEPS ct_core ct_project ct_platform imgui

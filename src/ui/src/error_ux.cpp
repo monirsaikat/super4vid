@@ -14,6 +14,10 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <audioclient.h>
+#include <dxgi.h>
+#include <mferror.h>
+
 #include <cmath>
 #include <cstdio>
 
@@ -70,8 +74,53 @@ std::string ErrorMessage(ErrorKind kind, std::string_view arg) {
     case ErrorKind::AccessLost: return str::kErrAccessLost;
     case ErrorKind::MediaMissing:
         return FillPlaceholder(str::kErrMediaMissing, arg.empty() ? std::string_view(str::kErrUnknownPath) : arg);
+    case ErrorKind::DiskFullNotStarted:
+    case ErrorKind::ExportDiskFull: {
+        const std::string drive = DriveOf(arg);
+        return FillPlaceholder(kind == ErrorKind::ExportDiskFull ? str::kErrExportDiskFull : str::kErrDiskFullNotStarted,
+                               drive.empty() ? std::string_view(str::kErrUnknownDrive) : drive);
+    }
+    case ErrorKind::OutputFolder:
+    case ErrorKind::ExportFolder: {
+        std::string_view shown = arg;   // users never see the \\?\ long-path prefix
+        const bool unc = shown.size() >= 8 && shown.substr(0, 8) == "\\\\?\\UNC\\";
+        if (unc) shown.remove_prefix(8);
+        else if (shown.size() >= 4 && shown.substr(0, 4) == "\\\\?\\") shown.remove_prefix(4);
+        std::string fixed(shown);
+        if (unc) fixed.insert(0, "\\\\");   // \\?\UNC\server\share -> \\server\share
+        return FillPlaceholder(kind == ErrorKind::OutputFolder ? str::kErrOutputFolder : str::kErrExportFolder,
+                               fixed.empty() ? std::string_view(str::kErrUnknownPath) : std::string_view(fixed));
+    }
+    case ErrorKind::MicLost: return str::kErrMicLost;
+    case ErrorKind::DeviceLostNotSaved: return str::kErrDeviceLostNotSaved;
+    case ErrorKind::ExportDeviceLost: return str::kErrExportDeviceLost;
     }
     return {};
+}
+
+bool ErrorKindForHr(long hr, ErrorKind* out) {
+    ErrorKind k;
+    switch (static_cast<unsigned long>(hr)) {
+    case 0x80070070ul:   // HRESULT_FROM_WIN32(ERROR_DISK_FULL)
+    case 0x80070027ul:   // HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL)
+        k = ErrorKind::DiskFull;
+        break;
+    case static_cast<unsigned long>(DXGI_ERROR_DEVICE_REMOVED):
+    case static_cast<unsigned long>(DXGI_ERROR_DEVICE_RESET):
+    case static_cast<unsigned long>(DXGI_ERROR_DEVICE_HUNG):
+        k = ErrorKind::DeviceLost;
+        break;
+    case static_cast<unsigned long>(DXGI_ERROR_ACCESS_LOST): k = ErrorKind::AccessLost; break;
+    case static_cast<unsigned long>(AUDCLNT_E_DEVICE_IN_USE):
+    case static_cast<unsigned long>(AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED):
+        k = ErrorKind::MicBusy;
+        break;
+    case static_cast<unsigned long>(AUDCLNT_E_DEVICE_INVALIDATED): k = ErrorKind::MicLost; break;
+    case static_cast<unsigned long>(MF_E_TOPO_CODEC_NOT_FOUND): k = ErrorKind::NoEncoder; break;
+    default: return false;
+    }
+    if (out) *out = k;
+    return true;
 }
 
 std::string FormatErrorDetails(long hr, std::string_view log_dir, std::string_view extra) {
@@ -103,6 +152,22 @@ void ErrorBanner::Show(std::string message, long hr, std::string extra) {
     m_extra = std::move(extra);
     m_visible = true;
     m_details_open = false;
+    m_actions.clear();
+    m_clicked = 0;
+}
+
+void ErrorBanner::AddAction(int id, std::string label, bool primary) {
+    Action a;
+    a.id = id;
+    a.label = std::move(label);
+    a.primary = primary;
+    m_actions.push_back(std::move(a));
+}
+
+int ErrorBanner::TakeAction() {
+    const int id = m_clicked;
+    m_clicked = 0;
+    return id;
 }
 
 void ErrorBanner::Show(ErrorKind kind, std::string_view arg, long hr, std::string extra) {
@@ -115,6 +180,7 @@ void ErrorBanner::Clear() {
     m_message.clear();
     m_extra.clear();
     m_hr = 0;
+    m_actions.clear();
 }
 
 std::string ErrorBanner::DetailsText() const {
@@ -174,6 +240,17 @@ bool ErrorBanner::Draw(const char* id) {
     bool dismissed = IconButton("##dismiss", ICON_CANCEL, str::kErrDismiss, false, nullptr, ImVec2(frame_h, frame_h));
 
     float bottom = top + row_h;
+    if (!m_actions.empty()) {
+        ImGui::SetCursorScreenPos(ImVec2(text_x, bottom + Dp(8)));
+        for (size_t i = 0; i < m_actions.size(); ++i) {
+            const Action& a = m_actions[i];
+            if (i > 0) ImGui::SameLine(0, Dp(6));
+            ImGui::PushID(a.id);
+            if (Button(a.label.c_str(), a.primary ? ButtonKind::Primary : ButtonKind::Normal)) m_clicked = a.id;
+            ImGui::PopID();
+        }
+        bottom = ImGui::GetItemRectMax().y;
+    }
     if (m_details_open) {
         const std::string details = DetailsText();
         ImGui::SetCursorScreenPos(ImVec2(text_x, bottom + Dp(8)));
