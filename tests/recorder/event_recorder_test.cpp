@@ -286,3 +286,52 @@ CT_TEST_DEVICE(event_recorder_controls_and_hook_events_in_time_order) {
     CT_CHECK_EQ(out_of_order, size_t{0});
     fs::Delete(path);
 }
+
+// A TYPING "ended" record carries the last key's time but is only known a gap (1 s) later: records in between are held
+// back until the burst's fate is decided, so the file stays in time order (seen as one out-of-order TYPING record).
+CT_TEST_DEVICE(event_recorder_typing_end_stays_in_time_order) {
+    const std::string path = TempCtev("typing_order");
+    SessionClock clock;
+    clock.Start(Clock::QpcNow());
+    EventRecorder rec;
+    EventRecorder::Config cfg;
+    cfg.region = PrimaryRect();
+    cfg.keystrokes = KeystrokeMode::ShortcutsOnly;
+    cfg.focus = false;
+    cfg.test_swallow_tag = kTag;
+    Err err;
+    CT_REQUIRE(rec.Start(cfg, path, clock, &err));
+    SendKey(VK_PAUSE, true);   // not a shortcut: only opens a TYPING burst
+    SendKey(VK_PAUSE, false);
+    for (int i = 0; i < 10; ++i) {   // inside the gap: must wait for the burst's end record
+        rec.Marker("in gap");
+        rec.Flush(500);
+        Wait(30);
+    }
+    Wait(1200);   // the gap passes: the burst ends at the key's time
+    rec.Marker("after gap");
+    rec.Flush(500);
+    rec.Stop();
+
+    events::EventReader reader;
+    CT_REQUIRE(reader.Open(path, &err));
+    events::RecordView r;
+    TimeUs prev = INT64_MIN;
+    size_t out_of_order = 0, typing = 0, markers = 0;
+    while (reader.Next(r)) {
+        if (r.t_us < prev) ++out_of_order;
+        prev = std::max(prev, r.t_us);
+        if (r.type == static_cast<uint8_t>(events::RecordType::Typing)) ++typing;
+        if (r.type == static_cast<uint8_t>(events::RecordType::Marker)) ++markers;
+    }
+    CT_CHECK_EQ(out_of_order, size_t{0});
+    CT_CHECK_EQ(markers, size_t{11});
+    events::EventLog log;
+    CT_REQUIRE(log.Load(path, &err));
+    // Other processes' typing (shared desktop) can add bursts; ours is the first and ends where it started.
+    if (typing != 2 && !ct::test::StrictTiming()) std::printf("  WARN: %zu TYPING records: other input during the test\n", typing);
+    CT_REQUIRE(!log.TypingBursts().empty());
+    CT_CHECK_EQ(log.TypingBursts()[0].end_us, log.TypingBursts()[0].start_us);
+    CT_CHECK(log.Markers().back().t_us > log.TypingBursts()[0].end_us + 1'000'000);
+    fs::Delete(path);
+}

@@ -1630,3 +1630,11 @@ Done instead / interpreted:
   Delete must not act on the document behind the prompt.
 Why: event-driven loop; docs/05 status bar and error UX; separate bar process; modal prompts.
 Impact: when bar and editor share one process, replace `ShowRecorderBar` with an in-process call.
+
+## 2026-10-18 · Integration · TYPING end records stay in time order
+Decision: in the event drain, a record later than an open typing burst's last key is written only once the burst's fate
+is known: a typing key-down within the gap extends it; a pause, or the cutoff passing last key + gap (1 s), closes it
+first (the "ended" record keeps the last key's time). Until then the record and everything after it wait for the next drain.
+Why: the "ended" record was written up to 1 s after records with later times, so files were not in time order.
+Impact: while a burst is open, up to ~1 s of records are held in memory (a kill can lose up to ~2 s of events, the 5.8
+budget); Flush() no longer guarantees records after the last key are on disk during an open burst.
