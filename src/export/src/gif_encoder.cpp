@@ -1,10 +1,13 @@
 #define CT_LOG_CATEGORY "export"
 #include <ct/export/gif_encoder.h>
 
+#include "gif_internal.h"
+
 #include <ct/core/async.h>
 #include <ct/core/fs.h>
 #include <ct/core/log.h>
 #include <ct/core/sync.h>
+#include <ct/core/thread.h>
 #include <ct/core/time.h>
 #include <ct/platform/win.h>
 
@@ -19,6 +22,10 @@ namespace {
 constexpr size_t kFlushBytes = 1u << 20;
 
 
+// Row bands of the diff and canvas passes (any layout works: each band only writes its own rows and rect).
+int RowBands(int h) { return std::clamp(h / 32, 1, 64); }
+int RowBandStart(int h, int k) { return static_cast<int>(static_cast<int64_t>(h) * k / RowBands(h)); }
+
 // Smallest b in [1, 8] with (1 << b) >= entries.
 int TableBits(int entries) {
     int b = 1;
@@ -27,6 +34,105 @@ int TableBits(int entries) {
 }
 
 } // namespace
+
+// ---- Workers --------------------------------------------------------------------------------------------------------
+
+namespace gif_detail {
+
+struct Workers::State {
+    SRWLOCK lock = SRWLOCK_INIT;
+    CONDITION_VARIABLE work = CONDITION_VARIABLE_INIT, done = CONDITION_VARIABLE_INIT;
+    void (*fn)(void*, int) = nullptr;
+    void* ctx = nullptr;
+    int count = 0, next = 0, running = 0;   // items handed out / in progress; guarded by lock
+    uint64_t gen = 0;
+    bool stop = false;
+    std::vector<std::unique_ptr<Thread>> threads;
+
+    // Takes items of the current job until none is left. Called with the lock held; returns with it held.
+    void Drain() {
+        while (next < count) {
+            const int i = next++;
+            ++running;
+            void (*f)(void*, int) = fn;
+            void* c = ctx;
+            ReleaseSRWLockExclusive(&lock);
+            f(c, i);
+            AcquireSRWLockExclusive(&lock);
+            if (--running == 0 && next >= count) WakeAllConditionVariable(&done);
+        }
+    }
+    void Helper() {
+        AcquireSRWLockExclusive(&lock);
+        uint64_t seen = gen;
+        for (;;) {
+            while (!stop && (gen == seen || next >= count)) SleepConditionVariableSRW(&work, &lock, INFINITE, 0);
+            if (stop) break;
+            seen = gen;
+            Drain();
+        }
+        ReleaseSRWLockExclusive(&lock);
+    }
+};
+
+Workers::Workers() : m_s(std::make_unique<State>()) {}
+Workers::~Workers() { Stop(); }
+
+int Workers::DefaultThreads() {
+    const int n = static_cast<int>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+    return std::clamp(n / 2, 1, 8);
+}
+
+void Workers::Start(int threads) {
+    Stop();
+    m_threads = std::clamp(threads, 1, 32);
+    m_s->stop = false;
+    for (int i = 1; i < m_threads; ++i) {
+        auto t = std::make_unique<Thread>();
+        Thread::Options o;
+        o.name = "ct-gif-worker";
+        o.com_mta = false;
+        // Same priority as the thread that opens the encoder (ct-export runs below normal so the editor stays smooth).
+        const int prio = GetThreadPriority(GetCurrentThread());
+        o.priority = prio == THREAD_PRIORITY_ERROR_RETURN ? 0 : prio;
+        State* s = m_s.get();
+        if (!t->Start(o, [s] { s->Helper(); })) break;
+        m_s->threads.push_back(std::move(t));
+    }
+    m_threads = static_cast<int>(m_s->threads.size()) + 1;
+}
+
+void Workers::Stop() {
+    AcquireSRWLockExclusive(&m_s->lock);
+    m_s->stop = true;
+    WakeAllConditionVariable(&m_s->work);
+    ReleaseSRWLockExclusive(&m_s->lock);
+    for (auto& t : m_s->threads) t->Join();
+    m_s->threads.clear();
+    m_threads = 1;
+}
+
+void Workers::Run(int count, void (*fn)(void*, int), void* ctx) {
+    if (count <= 0) return;
+    if (m_s->threads.empty() || count == 1) {
+        for (int i = 0; i < count; ++i) fn(ctx, i);
+        return;
+    }
+    AcquireSRWLockExclusive(&m_s->lock);
+    m_s->fn = fn;
+    m_s->ctx = ctx;
+    m_s->count = count;
+    m_s->next = 0;
+    m_s->running = 0;
+    ++m_s->gen;
+    WakeAllConditionVariable(&m_s->work);
+    m_s->Drain();
+    while (m_s->running > 0 || m_s->next < m_s->count) SleepConditionVariableSRW(&m_s->done, &m_s->lock, INFINITE, 0);
+    m_s->count = 0;
+    ReleaseSRWLockExclusive(&m_s->lock);
+}
+
+} // namespace gif_detail
 
 struct GifEncoder::Impl {
     struct Slot {
@@ -43,12 +149,7 @@ struct GifEncoder::Impl {
         std::vector<uint32_t> local_palette;   // padded to 1 << table_bits
         int table_bits = 1;
         int min_code_size = 2;
-        std::vector<uint8_t> indices;          // w * h, input of the LZW job
         std::vector<uint8_t> lzw;
-        // LZW runs as its own Async job while the worker quantizes the next frame. 0 = queued, 1 = running,
-        // 2 = done. Whoever wins 0 -> 1 encodes (the worker itself when the job has not started yet).
-        std::atomic<int> lzw_state{2};
-        Event lzw_done{true, true};
     };
 
     // ---- producer side / shared ----
@@ -78,6 +179,9 @@ struct GifEncoder::Impl {
     int transparent_index = 0;
     int global_bits = 1;
     NearestCache cache;
+    gif_detail::Workers workers;     // started in Open; used by the worker job only
+    struct Rect { int x0, y0, x1, y1; };
+    std::vector<Rect> band_rects;    // per-band dirty rects (diff and canvas passes)
     Histogram frame_hist;
     std::vector<uint8_t> prev_src, same, skip, idx, crop;
     std::vector<uint32_t> canvas;
@@ -140,23 +244,8 @@ struct GifEncoder::Impl {
         header_written = true;
     }
 
-    void RunLzw() {
-        int expected = 0;
-        if (!pending.lzw_state.compare_exchange_strong(expected, 1)) return;
-        pending.lzw.clear();
-        LzwEncode(pending.indices.data(), pending.indices.size(), pending.min_code_size, pending.lzw);
-        pending.lzw_state = 2;
-        pending.lzw_done.Set();
-    }
-
-    void WaitLzw() {
-        RunLzw();   // inline when the job has not started (also avoids a deadlock on a 1-thread pool)
-        while (pending.lzw_state.load() != 2) pending.lzw_done.Wait();
-    }
-
     void FlushPending() {
         if (!pending.valid) return;
-        WaitLzw();
         const Frame& f = pending;
         Byte(0x21);
         Byte(0xF9);
@@ -184,6 +273,17 @@ struct GifEncoder::Impl {
         BuildPalette(hist, std::max(1, opt.max_colors - reserve), palette);
         transparent_index = static_cast<int>(palette.size());
         cache.Reset(palette.data(), static_cast<int>(palette.size()));
+        // Fill the whole nearest-colour table now (in parallel) so the quantization bands only read it.
+        workers.For(32, [this](int k) { cache.FillRange(static_cast<uint32_t>(k) * 1024u, static_cast<uint32_t>(k + 1) * 1024u); });
+    }
+
+    // QuantizeRegion with its bands spread over the workers (identical output).
+    void QuantizePar(const uint8_t* src, int w, int h, int stride, const uint8_t* skip_mask, uint8_t skip_index, uint8_t* dst) {
+        if (w <= 0 || h <= 0) return;
+        workers.For(gif_detail::QuantBands(h), [&](int k) {
+            gif_detail::QuantizeBand(src, w, h, stride, cache, opt.dither, skip_mask, skip_index, dst, gif_detail::BandStart(h, k),
+                                     gif_detail::BandStart(h, k + 1));
+        });
     }
 
     void EmitFrame(int x, int y, int w, int h, const uint8_t* indices, int delay_cs, bool transparent) {
@@ -202,14 +302,11 @@ struct GifEncoder::Impl {
         f.table_bits = opt.per_frame_palette ? TableBits(entries) : global_bits;
         if (f.local_table) f.local_palette = palette;
         f.min_code_size = std::max(2, f.table_bits);
-        f.indices.assign(indices, indices + static_cast<size_t>(w) * static_cast<size_t>(h));
-        f.lzw_done.Reset();
-        f.lzw_state = 0;   // publishes the fields above to the job
-        alive.fetch_add(1);
-        Async::Run([this] {
-            RunLzw();
-            alive.fetch_sub(1);   // last access to *this
-        });
+        // LZW in independent segments on the workers (it used to be one sequential job overlapping the next frame's
+        // quantization, and at ~20 ms per 720p frame it was the bottleneck).
+        f.lzw.clear();
+        gif_detail::LzwEncodeSegmented(indices, static_cast<size_t>(w) * static_cast<size_t>(h), f.min_code_size, f.lzw,
+                                       gif_detail::kLzwSegment, &workers);
     }
 
     void ExtendDelay(int delay_cs) {
@@ -244,7 +341,7 @@ struct GifEncoder::Impl {
                 global_bits = TableBits(static_cast<int>(palette.size()) + (opt.frame_diff ? 1 : 0));
             }
             WriteHeader();
-            QuantizeRegion(src, width, height, stride, cache, opt.dither, nullptr, 0, idx.data());
+            QuantizePar(src, width, height, stride, nullptr, 0, idx.data());
             for (size_t i = 0; i < pixels; ++i) canvas[i] = palette[idx[i]];
             EmitFrame(0, 0, width, height, idx.data(), delay_cs, false);
             return;
@@ -258,30 +355,41 @@ struct GifEncoder::Impl {
             x1 = 0;
             y1 = 0;
             same.resize(pixels);
-            for (int y = 0; y < height; ++y) {
-                const uint8_t* a = src + static_cast<size_t>(y) * stride;
-                const uint8_t* b = prev_src.data() + static_cast<size_t>(y) * stride;
-                uint8_t* mrow = same.data() + static_cast<size_t>(y) * width;
-                if (std::memcmp(a, b, static_cast<size_t>(stride)) == 0) {
-                    std::memset(mrow, 1, static_cast<size_t>(width));
-                    continue;
-                }
-                const uint32_t* pa = reinterpret_cast<const uint32_t*>(a);
-                const uint32_t* pb = reinterpret_cast<const uint32_t*>(b);
-                int first_x = width, last_x = -1;
-                for (int x = 0; x < width; ++x) {
-                    const bool eq = ((pa[x] ^ pb[x]) & 0x00FFFFFFu) == 0;
-                    mrow[x] = eq ? 1 : 0;
-                    if (!eq) {
-                        if (first_x == width) first_x = x;
-                        last_x = x;
+            const int bands = RowBands(height);
+            band_rects.assign(static_cast<size_t>(bands), Rect{width, height, 0, 0});
+            workers.For(bands, [&](int k) {
+                Rect& r = band_rects[static_cast<size_t>(k)];
+                for (int y = RowBandStart(height, k); y < RowBandStart(height, k + 1); ++y) {
+                    const uint8_t* a = src + static_cast<size_t>(y) * stride;
+                    const uint8_t* b = prev_src.data() + static_cast<size_t>(y) * stride;
+                    uint8_t* mrow = same.data() + static_cast<size_t>(y) * width;
+                    if (std::memcmp(a, b, static_cast<size_t>(stride)) == 0) {
+                        std::memset(mrow, 1, static_cast<size_t>(width));
+                        continue;
                     }
+                    const uint32_t* pa = reinterpret_cast<const uint32_t*>(a);
+                    const uint32_t* pb = reinterpret_cast<const uint32_t*>(b);
+                    int first_x = width, last_x = -1;
+                    for (int x = 0; x < width; ++x) {
+                        const bool eq = ((pa[x] ^ pb[x]) & 0x00FFFFFFu) == 0;
+                        mrow[x] = eq ? 1 : 0;
+                        if (!eq) {
+                            if (first_x == width) first_x = x;
+                            last_x = x;
+                        }
+                    }
+                    if (last_x < 0) continue;   // only alpha changed
+                    r.x0 = std::min(r.x0, first_x);
+                    r.x1 = std::max(r.x1, last_x + 1);
+                    r.y0 = std::min(r.y0, y);
+                    r.y1 = y + 1;
                 }
-                if (last_x < 0) continue;   // only alpha changed
-                x0 = std::min(x0, first_x);
-                x1 = std::max(x1, last_x + 1);
-                y0 = std::min(y0, y);
-                y1 = y + 1;
+            });
+            for (const Rect& r : band_rects) {
+                x0 = std::min(x0, r.x0);
+                x1 = std::max(x1, r.x1);
+                y0 = std::min(y0, r.y0);
+                y1 = std::max(y1, r.y1);
             }
             if (x1 <= x0) {
                 ExtendDelay(delay_cs);
@@ -310,32 +418,43 @@ struct GifEncoder::Impl {
             SetPalette(frame_hist);
         }
         const uint8_t t = static_cast<uint8_t>(transparent_index);
-        QuantizeRegion(rsrc, rw, rh, stride, cache, opt.dither, skip_ptr, t, idx.data());
+        QuantizePar(rsrc, rw, rh, stride, skip_ptr, t, idx.data());
 
         // Pixels whose new color equals what is already displayed become transparent; tighten the rect.
         int tx0 = rw, ty0 = rh, tx1 = 0, ty1 = 0;
-        for (int y = 0; y < rh; ++y) {
-            uint8_t* o = idx.data() + static_cast<size_t>(y) * rw;
-            uint32_t* c = canvas.data() + static_cast<size_t>(y0 + y) * width + x0;
-            for (int x = 0; x < rw; ++x) {
-                if (opt.frame_diff) {
-                    if (o[x] == t) continue;
-                    const uint32_t color = palette[o[x]];
-                    if (color == c[x]) {
-                        o[x] = t;
-                        continue;
+        const int cbands = RowBands(rh);
+        band_rects.assign(static_cast<size_t>(cbands), Rect{rw, rh, 0, 0});
+        workers.For(cbands, [&](int k) {
+            Rect& r = band_rects[static_cast<size_t>(k)];
+            for (int y = RowBandStart(rh, k); y < RowBandStart(rh, k + 1); ++y) {
+                uint8_t* o = idx.data() + static_cast<size_t>(y) * rw;
+                uint32_t* c = canvas.data() + static_cast<size_t>(y0 + y) * width + x0;
+                for (int x = 0; x < rw; ++x) {
+                    if (opt.frame_diff) {
+                        if (o[x] == t) continue;
+                        const uint32_t color = palette[o[x]];
+                        if (color == c[x]) {
+                            o[x] = t;
+                            continue;
+                        }
+                        c[x] = color;
+                    } else {
+                        c[x] = palette[o[x]];
                     }
-                    c[x] = color;
-                } else {
-                    c[x] = palette[o[x]];
+                    r.x0 = std::min(r.x0, x);
+                    r.x1 = std::max(r.x1, x + 1);
+                    r.y0 = std::min(r.y0, y);
+                    r.y1 = y + 1;
                 }
-                tx0 = std::min(tx0, x);
-                tx1 = std::max(tx1, x + 1);
-                ty0 = std::min(ty0, y);
-                ty1 = y + 1;
+                std::memcpy(prev_src.data() + (static_cast<size_t>(y0 + y) * width + x0) * 4, rsrc + static_cast<size_t>(y) * stride,
+                            static_cast<size_t>(rw) * 4);
             }
-            std::memcpy(prev_src.data() + (static_cast<size_t>(y0 + y) * width + x0) * 4, rsrc + static_cast<size_t>(y) * stride,
-                        static_cast<size_t>(rw) * 4);
+        });
+        for (const Rect& r : band_rects) {
+            tx0 = std::min(tx0, r.x0);
+            tx1 = std::max(tx1, r.x1);
+            ty0 = std::min(ty0, r.y0);
+            ty1 = std::max(ty1, r.y1);
         }
         if (!opt.frame_diff) {
             EmitFrame(0, 0, width, height, idx.data(), delay_cs, false);
@@ -433,6 +552,7 @@ bool GifEncoder::Open(std::string_view path, int width, int height, const Option
     }
     const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     for (auto& s : impl->slots) s.pixels.resize(bytes);
+    impl->workers.Start(gif_detail::Workers::DefaultThreads());
     m = std::move(impl);
     return true;
 }
@@ -498,6 +618,7 @@ bool GifEncoder::Close() {
         d.Flush();
     }
     const bool ok = !d.failed;
+    d.workers.Stop();
     CloseHandle(d.file);
     d.file = INVALID_HANDLE_VALUE;
     return ok;

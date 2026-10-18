@@ -166,6 +166,53 @@ Legend: `[ ]` not started · `[~]` in progress (one per agent at a time) · `[x]
     The bottlenecks are the second DXVA decoder (camera) contending on the D3D lock, and the encoder and GIF CPU stages.
     Re-measure on an idle machine before ticking. An earlier run alongside two builds and the test suites stalled.
 
+## Perf follow-ups (after P10)
+Same loaded machine (Ryzen 7 5700G iGPU, other agents' builds and tests running, CPU 40-100 % busy), Release, before =
+binaries of master b4d6553 run alternately with after; numbers are not CT_STRICT_TIMING acceptance runs.
+- [x] F1 Decode: one GPU copy per frame (decoder surface -> cache slot, no decoder pool), single-pass paused window,
+  scrub aborts keep the decoder position (`media_cache_one_copy_per_frame_single_pass_window`,
+  `media_cache_scrub_aborts_and_resumes_forward`) — 4K60 `player_demo pattern_4k60_3s.mp4 --seconds 4`, 4 alternating
+  runs: frames shown 110/79/70/69 before -> 141/97/93/91 after (+25-35 %, 0 late both; still not real time under this
+  load); seek-bench 1080p 50 seeks p95 223 -> 216 ms, 4K 30 seeks p95 481 -> 545 ms (noise): the exact-seek p95 is bound
+  by the DXVA decoder (2.1 ms per ReadSample measured, 119 frames to the end of a 2 s GOP), not by copies; window fill
+  after a seek: 2 seeks -> 1; a scrub during a fast-forward: 2-3 seeks -> 1. Seek budget (150 ms) still missed, see DECISIONS
+  - 2026-10-18 re-measure (CPU 100 % busy all day, so only rough): 4K60 `--seconds 4` frames shown 52 / 33 before ->
+    85 / 52 after (late 8 / 19 -> 0 / 13); seek-bench 1080p p50 67-307 ms before, 41-228 ms after (decoder seeks
+    31-36 -> 18-32), p95 554-1960 ms before, 306-2448 ms after: noise-dominated. Behind-window frames are now stored
+    only after the playhead frame (DECISIONS correction), so a window fill takes 2 seeks again; a scrub during a
+    fast-forward still reaches the new frame with 1 seek
+- [x] F2 Export camera contention — `export_demo --seconds 20` (screen + 1080p60 camera PIP + overlay + cursor + 2
+  annotations), 2026-10-18, alternating, CPU 30-60 % busy: before (b4d6553) RenderFrame CPU 5.59 / 5.94 ms, render
+  6.5 / 7.0 ms, 0.95x / 0.98x real time; after F1 (one copy per frame, no decoder pool) RenderFrame CPU 0.30 / 0.20 ms,
+  render 1.0 / 0.64 ms, 1.06x / 1.23x. Holding the device's multithread lock (`D3DDevice::Batch`) over the export frame
+  was measured too and made it worse (RenderFrame CPU 2-3 ms: one wait for a whole MF hold), so export does not take it.
+  The remaining limit is the encoder side, not the device lock: the writer thread needs 13-15 ms per frame with the
+  camera decoder running and 7.7 ms without it (both decoders and the H.264 encoder share the iGPU's video engine; the
+  synthetic camera is a 1080p60 copy of the pattern, a real webcam is 720p30). 1.5x not reached here; no prefetch-depth
+  change was needed (resolve 0.5-0.8 ms per frame)
+- [x] F3a Status bar "GPU 166 ms": a measurement bug, not a units error or a sum — the timestamp span included other
+  threads' context work (MF decoders use the immediate context under the multithread lock only, so they interleaved
+  with RenderFrame call by call), the end timestamp waited unflushed for the next Present, Direct2D's flush in the text
+  pass started the clock early, and the editor's and an export's compositors shared RenderContext's timers.
+  `render_gpu_timing_excludes_concurrent_context_work` (a thread copying 4K textures under the multithread lock while
+  frames render): before 3.51 ms alone / 35.0 ms busy (and 3.25 / 6.42), after 2.46 / 1.56 ms (and 4.73 / 4.60)
+- [x] F3b Status bar "cache 258/256 MB": a reservation race (Fits() before the copy, Add() after it, so two caches
+  could both pass) plus no trimming when the budget shrinks under cached frames (export gives its extra back, settings).
+  `cache_budget_reserve_is_atomic_and_extra_is_separate`, `media_cache_two_caches_stay_within_a_shrinking_budget`: max
+  used 30.0 of 30.5 frames with two caches prefetching; shrink to 10 frames -> 10.0 used after 17-20 ms (before: never
+  trimmed). Also fixed: a cache whose playhead frame found the budget held by another cache's window stalled until the
+  next hint, so `WaitForFrame`/`ResolveExact` on that frame timed out (`media_cache_playhead_frame_when_another_cache_holds_the_budget`:
+  before "no" after 5 s, after "yes", 1 over-budget store, trimmed back)
+- [x] F4 GIF encoder: banded parallel Floyd-Steinberg (bands from the height alone, so the output does not depend on the
+  thread count), nearest-colour table filled up front in parallel, parallel diff/canvas passes, LZW in 128 K-symbol
+  segments encoded in parallel and stitched with clear codes (+1.2 % size on a 720p frame); up to 8 helper threads at
+  the opener's priority (`quantize_bands_in_parallel_match_sequential`, `lzw_segmented_round_trip_and_thread_independent`).
+  Benches (Release): LZW 720p frame 7.5-20 ms -> 2.9 ms. `gif_demo` 720p20 worst case, alternating with b4d6553 at 80-100 %
+  CPU load: encoder busy 24.8 / 24.8 / 43.1 / 40.8 ms per frame -> 11.6 / 13.5 / 17.6 / 23.4 ms (encode 2.02-1.16x ->
+  4.31-2.14x real time; end to end 1.84-1.14x -> 3.44-1.39x); file 19,255,415 -> 19,268,590 bytes. `export_demo --preset
+  gif-720p --seconds 20` at 100 % load: 0.53x -> 1.02x (below-normal priority); with --normal-priority runs varied
+  0.40-0.59x both ways (decoding the 60 fps sources for 20 fps output and the device lock dominate there under this load)
+
 ## P11 Performance & polish
 - [ ] 11.1 Idle power: 0 redraws, timers coalesced, no busy waits (verify with WPR)
 - [ ] 11.2 Startup profile < 500 ms cold; lazy MF init; prewarm encoder on hover

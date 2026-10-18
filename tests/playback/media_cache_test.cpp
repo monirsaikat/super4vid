@@ -14,6 +14,7 @@
 #include <ct/platform/win.h>
 #include <ct/test/ct_test.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -139,6 +140,185 @@ CT_TEST_DEVICE(media_cache_exact_frame_after_hint) {
     CT_CHECK(st.seeks >= 2);
     CT_CHECK(st.cache_bytes <= CacheBudget::Bytes());
     cache.Close();
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+namespace {
+// Polls without re-hinting (WaitForFrame would hint the cache at t and move its window).
+bool PollExact(MediaCache& cache, TimeUs t, uint32_t timeout_ms) {
+    Stopwatch sw;
+    sw.Start();
+    for (;;) {
+        FrameRef f;
+        bool exact = false;
+        if (cache.GetVideoFrame(t, f, exact) && exact) return true;
+        if (sw.ElapsedMs() > timeout_ms) return false;
+        Sleep(1);
+    }
+}
+} // namespace
+
+// Perf follow-up (P06 seek/4K): every cached frame is copied once, from the decoder surface straight into its cache
+// slot (the decoder owns no pool). The paused window is filled playhead first, then ahead, then behind (a second
+// seek: storing the behind frames during the first fast-forward delayed the playhead frame, see DECISIONS).
+CT_TEST_DEVICE(media_cache_one_copy_per_frame_window_fill) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    MediaCache cache;
+    CT_REQUIRE(SUCCEEDED(cache.Open(*dev, path)));
+    CT_REQUIRE(cache.WaitForFrame(0, 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(29, 60, 1), 5000));   // the open-time window [0, 0.5 s) is in
+    const MediaCache::Stats s0 = cache.GetStats();
+    CT_CHECK_EQ(s0.decoder_pool_textures, 0u);
+    // Paused at 2.5 s: window [2.25 s, 3.0 s); the reader lands on the keyframe at 2.0 s.
+    cache.Hint(2'500'000, 1.0, false);
+    CT_REQUIRE(PollExact(cache, 2'500'000, 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(179, 60, 1), 5000));
+    CT_REQUIRE(PollExact(cache, FrameTimeUs(135, 60, 1), 5000));
+    FrameRef f;
+    bool exact = false;
+    CT_REQUIRE(cache.GetVideoFrame(FrameTimeUs(135, 60, 1), f, exact));
+    CT_CHECK_EQ(IndexOf(*dev, f), 135);
+    const MediaCache::Stats st = cache.GetStats();
+    std::printf("    window filled with %llu seek(s), %llu frames cached, %llu decoder copies\n",
+                static_cast<unsigned long long>(st.seeks - s0.seeks), static_cast<unsigned long long>(st.frames_decoded),
+                static_cast<unsigned long long>(st.decoder_copies));
+    CT_CHECK(st.seeks - s0.seeks <= 2u);
+    CT_CHECK_EQ(st.decoder_copies, st.frames_decoded);
+    cache.Close();
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+// A paused scrub that moves while the decoder fast-forwards aborts it and continues from where the decoder stopped
+// (the old code finished the obsolete fast-forward, then seeked back to the keyframe for the new position).
+CT_TEST_DEVICE(media_cache_scrub_aborts_and_resumes_forward) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    int best = 99;
+    for (int attempt = 0; attempt < 3 && best != 1; ++attempt) {   // a test thread descheduled for > 100 ms misses the window
+        MediaCache cache;
+        CT_REQUIRE(SUCCEEDED(cache.Open(*dev, path)));
+        CT_REQUIRE(cache.WaitForFrame(0, 5000));
+        CT_REQUIRE(PollExact(cache, FrameTimeUs(29, 60, 1), 5000));
+        const uint64_t seeks0 = cache.GetStats().seeks;
+        // 3.95 s: seek lands on the keyframe at 2.0 s and fast-forwards 117 frames.
+        cache.Hint(3'950'000, 1.0, false);
+        Stopwatch sw;
+        sw.Start();
+        while (cache.GetStats().seeks == seeks0 && sw.ElapsedMs() < 3000) Sleep(0);
+        // Scrub back to 3.6 s (window from 3.35 s) while the decoder is still before 3.35 s.
+        cache.Hint(3'600'000, 1.0, false);
+        CT_REQUIRE(PollExact(cache, 3'600'000, 5000));
+        // Seeks until the new playhead frame arrived (the window's behind part comes later, with its own seek).
+        const int seeks = static_cast<int>(cache.GetStats().seeks - seeks0);
+        CT_REQUIRE(PollExact(cache, FrameTimeUs(201, 60, 1), 5000));   // 3.35 s, behind the playhead
+        FrameRef f;
+        bool exact = false;
+        CT_REQUIRE(cache.GetVideoFrame(3'600'000, f, exact));
+        CT_CHECK_EQ(IndexOf(*dev, f), 216);
+        std::printf("    attempt %d: %d seek(s) for the abandoned and the new position\n", attempt + 1, seeks);
+        best = std::min(best, seeks);
+    }
+    CT_CHECK_EQ(best, 1);
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+// Perf follow-up (status bar "cache 258/256 MB"): two caches prefetching at once never take the process total over
+// the budget, and when the budget shrinks under cached frames (settings, end of an export) the caches trim back.
+CT_TEST_DEVICE(media_cache_two_caches_stay_within_a_shrinking_budget) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    const size_t old = CacheBudget::ConfiguredBytes();
+    const size_t frame = 1920 * 1080 * 3 / 2;
+    CacheBudget::SetBytes(frame * 30 + frame / 2);   // not a multiple of the frame size: the last frame must not fit
+    {
+        MediaCache a, b;
+        CT_REQUIRE(SUCCEEDED(a.Open(*dev, path)));
+        CT_REQUIRE(SUCCEEDED(b.Open(*dev, path)));
+        std::atomic<bool> stop{false};
+        std::atomic<size_t> max_used{0};
+        Thread sampler;
+        Thread::Options o;
+        o.name = "budget-sampler";
+        CT_REQUIRE(sampler.Start(o, [&] {
+            while (!stop.load()) {
+                const size_t u = CacheBudget::Used();
+                if (u > max_used.load()) max_used = u;
+                Sleep(0);
+            }
+        }));
+        // Both play (2.5 s windows, far more than the budget) from different places for a while.
+        for (int n = 0; n < 90; ++n) {
+            a.Hint(FrameTimeUs(n, 60, 1), 1.0, true);
+            b.Hint(2'000'000 + FrameTimeUs(n, 60, 1), 1.0, true);
+            FrameRef f;
+            bool exact = false;
+            a.GetVideoFrame(FrameTimeUs(n, 60, 1), f, exact);
+            b.GetVideoFrame(2'000'000 + FrameTimeUs(n, 60, 1), f, exact);
+            Sleep(8);
+        }
+        stop = true;
+        sampler.Join();
+        std::printf("    max used %.1f of %.1f frames\n", static_cast<double>(max_used.load()) / frame,
+                    static_cast<double>(CacheBudget::Bytes()) / frame);
+        // A playhead frame may be stored over budget when the other cache holds the rest (one frame per cache).
+        const uint64_t forced = a.GetStats().over_budget_stores + b.GetStats().over_budget_stores;
+        std::printf("    playhead frames stored over budget: %llu\n", static_cast<unsigned long long>(forced));
+        CT_CHECK(max_used.load() <= CacheBudget::Bytes() + (forced ? 2 * frame : 0));
+        CT_CHECK(CacheBudget::Used() > frame * 20);   // they did fill it
+        // Shrink to 10 frames: the next lookups wake the prefetch threads, which trim their caches.
+        CacheBudget::SetBytes(frame * 10);
+        Stopwatch sw;
+        sw.Start();
+        while (CacheBudget::Used() > CacheBudget::Bytes() && sw.ElapsedMs() < 3000) {
+            FrameRef f;
+            bool exact = false;
+            a.GetVideoFrame(FrameTimeUs(89, 60, 1), f, exact);
+            b.GetVideoFrame(2'000'000 + FrameTimeUs(89, 60, 1), f, exact);
+            Sleep(5);
+        }
+        std::printf("    after shrinking to 10 frames: %.1f frames used (%.0f ms)\n",
+                    static_cast<double>(CacheBudget::Used()) / frame, sw.ElapsedMs());
+        CT_CHECK(CacheBudget::Used() <= CacheBudget::Bytes());
+    }
+    CacheBudget::SetBytes(old);
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+}
+
+// A cache whose playhead frame finds the whole budget held by another cache's window still gets that frame (it used
+// to stall until the next hint, so a paused preview or ResolveExact asking for the same frame waited forever).
+CT_TEST_DEVICE(media_cache_playhead_frame_when_another_cache_holds_the_budget) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
+    const size_t old = CacheBudget::ConfiguredBytes();
+    const size_t frame = 1920 * 1080 * 3 / 2;
+    CacheBudget::SetBytes(frame * 30);
+    {
+        MediaCache a, b;
+        CT_REQUIRE(SUCCEEDED(a.Open(*dev, path)));
+        // A plays from 0 and fills the budget with its read-ahead (frames ahead of its playhead are never evicted).
+        a.Hint(0, 1.0, true);
+        Stopwatch sw;
+        sw.Start();
+        while (CacheBudget::Used() < frame * 29 && sw.ElapsedMs() < 5000) Sleep(5);
+        CT_REQUIRE(CacheBudget::Used() >= frame * 29);
+        CT_REQUIRE(SUCCEEDED(b.Open(*dev, path)));
+        const bool got = b.WaitForFrame(3'000'000, 5000);
+        std::printf("    B's exact frame: %s, over-budget stores %llu, used %.1f frames\n", got ? "yes" : "no",
+                    static_cast<unsigned long long>(b.GetStats().over_budget_stores), static_cast<double>(CacheBudget::Used()) / frame);
+        CT_CHECK(got);
+        // A trims back under the budget on its next lookup.
+        Stopwatch tw;
+        tw.Start();
+        while (CacheBudget::Used() > CacheBudget::Bytes() && tw.ElapsedMs() < 3000) {
+            FrameRef f;
+            bool exact = false;
+            a.GetVideoFrame(0, f, exact);
+            Sleep(5);
+        }
+        CT_CHECK(CacheBudget::Used() <= CacheBudget::Bytes());
+    }
+    CacheBudget::SetBytes(old);
     CT_CHECK_EQ(CacheBudget::Used(), 0u);
 }
 

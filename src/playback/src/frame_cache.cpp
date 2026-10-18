@@ -9,10 +9,23 @@ namespace ct::playback {
 namespace {
 std::atomic<size_t> g_budget{CacheBudget::kDefaultBytes};
 std::atomic<int64_t> g_used{0};
+std::atomic<int64_t> g_extra{0};
 } // namespace
 
 void CacheBudget::SetBytes(size_t b) { g_budget.store(b, std::memory_order_relaxed); }
-size_t CacheBudget::Bytes() { return g_budget.load(std::memory_order_relaxed); }
+size_t CacheBudget::ConfiguredBytes() { return g_budget.load(std::memory_order_relaxed); }
+size_t CacheBudget::Bytes() {
+    const int64_t total = static_cast<int64_t>(g_budget.load(std::memory_order_relaxed)) + g_extra.load(std::memory_order_relaxed);
+    return total > 0 ? static_cast<size_t>(total) : 0;
+}
+void CacheBudget::AddExtra(int64_t delta) { g_extra.fetch_add(delta, std::memory_order_relaxed); }
+bool CacheBudget::TryReserve(size_t bytes) {
+    int64_t used = g_used.load(std::memory_order_relaxed);
+    for (;;) {
+        if (static_cast<size_t>(std::max<int64_t>(used, 0)) + bytes > Bytes()) return false;
+        if (g_used.compare_exchange_weak(used, used + static_cast<int64_t>(bytes), std::memory_order_relaxed)) return true;
+    }
+}
 size_t CacheBudget::Used() {
     const int64_t u = g_used.load(std::memory_order_relaxed);
     return u > 0 ? static_cast<size_t>(u) : 0;

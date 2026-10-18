@@ -2,6 +2,8 @@
 #include <ct/export/gif_encoder.h>
 #include <ct/test/ct_test.h>
 
+#include "../../src/export/src/gif_internal.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -196,6 +198,34 @@ CT_TEST(quantize_region_skip_mask) {
         if (!skip[i] && out[i] >= 8) ok = false;
     }
     CT_CHECK(ok);
+}
+
+// Perf follow-up (GIF): the encoder quantizes the bands of a region on several threads; the result equals the
+// sequential QuantizeRegion exactly (bands are laid out from the height alone), with and without a skip mask.
+CT_TEST(quantize_bands_in_parallel_match_sequential) {
+    const Image img = Gradient(1280, 720);
+    std::vector<uint32_t> pal;
+    GifEncoder::BuildPalette(img.px.data(), img.w, img.h, img.Stride(), 255, pal);
+    std::vector<uint8_t> skip(static_cast<size_t>(img.w) * img.h, 0);
+    for (size_t i = 0; i < skip.size(); i += 7) skip[i] = 1;
+    ct::exportng::gif_detail::Workers w;
+    w.Start(4);
+    for (const uint8_t* mask : {static_cast<const uint8_t*>(nullptr), static_cast<const uint8_t*>(skip.data())}) {
+        GifEncoder::NearestCache seq_cache, par_cache;
+        seq_cache.Reset(pal.data(), static_cast<int>(pal.size()));
+        par_cache.Reset(pal.data(), static_cast<int>(pal.size()));
+        par_cache.FillAll();
+        std::vector<uint8_t> seq(skip.size()), par(skip.size());
+        GifEncoder::QuantizeRegion(img.px.data(), img.w, img.h, img.Stride(), seq_cache, true, mask, 255, seq.data());
+        const int bands = ct::exportng::gif_detail::QuantBands(img.h);
+        CT_CHECK(bands > 1);
+        w.For(bands, [&](int k) {
+            ct::exportng::gif_detail::QuantizeBand(img.px.data(), img.w, img.h, img.Stride(), par_cache, true, mask, 255, par.data(),
+                                                   ct::exportng::gif_detail::BandStart(img.h, k),
+                                                   ct::exportng::gif_detail::BandStart(img.h, k + 1));
+        });
+        CT_CHECK(seq == par);
+    }
 }
 
 CT_BENCH(quantize_dither_720p, 10) {

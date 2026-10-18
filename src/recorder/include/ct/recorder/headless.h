@@ -26,6 +26,7 @@ struct BundleExpect {
     double seconds = 0;          // > 0: expected media duration (+- tolerance_s)
     double tolerance_s = 0.25;
     bool require_cursor = true;  // events.ctev has at least one CURSOR_SHAPE record
+    double max_drop_fraction = 0.03;   // frames that may be missing vs fps x duration (at least 2)
 };
 struct BundleReport {
     bool ok = false;

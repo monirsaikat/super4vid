@@ -1,7 +1,10 @@
 #include <ct/playback/cache_budget.h>
 #include <ct/playback/frame_cache.h>
 
+#include <ct/core/thread.h>
 #include <ct/test/ct_test.h>
+
+#include <atomic>
 
 using namespace ct;
 using namespace ct::playback;
@@ -126,5 +129,44 @@ CT_TEST(cache_budget_accounting) {
     CT_CHECK(!CacheBudget::Fits(1000 - used - 600 + 1));
     CacheBudget::Add(-600);
     CT_CHECK_EQ(CacheBudget::Used(), used);
+    CacheBudget::SetBytes(old);
+}
+
+// Perf follow-up (status bar "cache 258/256 MB"): reservations are atomic, so concurrent caches cannot overshoot, and
+// an export's temporary extra is kept apart from the configured budget (a settings change during the export stays).
+CT_TEST(cache_budget_reserve_is_atomic_and_extra_is_separate) {
+    const size_t old = CacheBudget::ConfiguredBytes();
+    CT_REQUIRE(CacheBudget::Used() == 0u);
+    CacheBudget::SetBytes(1000);
+    std::atomic<bool> over{false};
+    std::atomic<int> reserved{0};
+    Thread threads[6];
+    for (Thread& t : threads) {
+        Thread::Options o;
+        o.name = "budget";
+        CT_REQUIRE(t.Start(o, [&] {
+            for (int i = 0; i < 20000; ++i) {
+                if (!CacheBudget::TryReserve(70)) continue;
+                reserved.fetch_add(1, std::memory_order_relaxed);
+                if (CacheBudget::Used() > CacheBudget::Bytes()) over = true;
+                CacheBudget::Add(-70);
+            }
+        }));
+    }
+    for (Thread& t : threads) t.Join();
+    CT_CHECK(!over.load());
+    CT_CHECK(reserved.load() > 0);
+    CT_CHECK_EQ(CacheBudget::Used(), 0u);
+    CT_CHECK(CacheBudget::TryReserve(1000));
+    CT_CHECK(!CacheBudget::TryReserve(1));
+    CacheBudget::Add(-1000);
+    // Extra: export adds 500, the user changes the setting to 2000 meanwhile, the export gives its 500 back.
+    CacheBudget::AddExtra(500);
+    CT_CHECK_EQ(CacheBudget::Bytes(), 1500u);
+    CacheBudget::SetBytes(2000);
+    CT_CHECK_EQ(CacheBudget::Bytes(), 2500u);
+    CacheBudget::AddExtra(-500);
+    CT_CHECK_EQ(CacheBudget::Bytes(), 2000u);
+    CT_CHECK_EQ(CacheBudget::ConfiguredBytes(), 2000u);
     CacheBudget::SetBytes(old);
 }

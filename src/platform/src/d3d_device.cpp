@@ -116,8 +116,13 @@ HRESULT D3DDevice::Init(bool enable_debug_layer) {
     CT_RETURN_IF_FAILED(context.As(&m_context));
 
     // The context may be touched from several threads in later phases (always under Lock); belt and braces.
-    ComPtr<ID3D10Multithread> mt;
-    if (SUCCEEDED(m_context.As(&mt))) mt->SetMultithreadProtected(TRUE);
+    // ID3D11Multithread is the same lock as ID3D10Multithread (Windows 10 1607+); Batch enters it for long spans.
+    if (SUCCEEDED(m_context.As(&m_multithread))) {
+        m_multithread->SetMultithreadProtected(TRUE);
+    } else {
+        ComPtr<ID3D10Multithread> mt;
+        if (SUCCEEDED(m_context.As(&mt))) mt->SetMultithreadProtected(TRUE);
+    }
 
     if (m_debug_layer) {
         CT_LOG_IF_FAILED(m_device.As(&m_debug));
@@ -188,6 +193,7 @@ void D3DDevice::Shutdown() {
     m_mf_token = 0;
     m_video_context.Reset();
     m_video_device.Reset();
+    m_multithread.Reset();
     m_context.Reset();
     m_adapter.Reset();
     m_device.Reset();   // m_debug / m_info_queue keep the device alive for ReportLiveObjects()
@@ -228,6 +234,14 @@ D3DDevice::Lock::Lock(D3DDevice& dev) : m_dev(dev) {
 
 D3DDevice::Lock::~Lock() {
     LeaveCriticalSection(&m_dev.m_context_cs);
+}
+
+D3DDevice::Batch::Batch(D3DDevice& dev) : m_mt(dev.m_multithread.Get()) {
+    if (m_mt) m_mt->Enter();
+}
+
+D3DDevice::Batch::~Batch() {
+    if (m_mt) m_mt->Leave();
 }
 
 // ---------------------------------------------------------------- SwapChain

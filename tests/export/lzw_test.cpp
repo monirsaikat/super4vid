@@ -1,6 +1,8 @@
 // GifEncoder::LzwEncode against the independent decoder in tests/common/gif_reader.h.
 #include "gif_reader.h"
 
+#include "../../src/export/src/gif_internal.h"
+
 #include <ct/core/time.h>
 #include <ct/export/gif_encoder.h>
 #include <ct/test/ct_test.h>
@@ -140,6 +142,54 @@ CT_TEST(lzw_masks_out_of_range_indices) {
     GifEncoder::LzwEncode(in, sizeof(in), 2, enc);
     CT_REQUIRE(ct::test::gif::LzwDecode(enc.data(), enc.size(), 2, dec));
     CT_CHECK_EQ(dec.size(), sizeof(in));
+}
+
+// Perf follow-up (GIF 31 ms/frame): segmented LZW decodes with the same independent decoder, for any segment split,
+// and its bytes do not depend on the number of worker threads.
+CT_TEST(lzw_segmented_round_trip_and_thread_independent) {
+    ct::exportng::gif_detail::Workers four;
+    four.Start(4);
+    Rng r{7};
+    const size_t sizes[] = {1, 1023, 1024, 1025, 5000, 70000, 300001};
+    for (size_t n : sizes) {
+        for (int mcs : {2, 5, 8}) {
+            for (Pattern pat : {Pattern::Uniform, Pattern::Runs, Pattern::Constant}) {
+                const std::vector<uint8_t> in = MakeStream(r, n, mcs, pat);
+                std::vector<uint8_t> a, b, dec;
+                ct::exportng::gif_detail::LzwEncodeSegmented(in.data(), in.size(), mcs, a, 1024, nullptr);
+                ct::exportng::gif_detail::LzwEncodeSegmented(in.data(), in.size(), mcs, b, 1024, &four);
+                CT_CHECK(a == b);
+                ct::test::gif::LzwStats st;
+                CT_CHECK(ct::test::gif::LzwDecode(a.data(), a.size(), mcs, dec, &st));
+                CT_CHECK(dec == in);
+                CT_CHECK_EQ(st.consumed, a.size());
+                CT_CHECK(ValidSubBlocks(a));
+            }
+        }
+    }
+    // A 720p frame with the encoder's segment size costs little compression.
+    const std::vector<uint8_t> in = MakeStream(r, 1280 * 720, 8, Pattern::Runs);
+    std::vector<uint8_t> whole, seg, dec;
+    GifEncoder::LzwEncode(in.data(), in.size(), 8, whole);
+    ct::exportng::gif_detail::LzwEncodeSegmented(in.data(), in.size(), 8, seg, ct::exportng::gif_detail::kLzwSegment, &four);
+    CT_CHECK(ct::test::gif::LzwDecode(seg.data(), seg.size(), 8, dec));
+    CT_CHECK(dec == in);
+    std::printf("    720p runs: whole %zu bytes, %zu segments %zu bytes (%+.2f %%)\n", whole.size(),
+                (in.size() + ct::exportng::gif_detail::kLzwSegment - 1) / ct::exportng::gif_detail::kLzwSegment, seg.size(),
+                100.0 * (static_cast<double>(seg.size()) / static_cast<double>(whole.size()) - 1.0));
+    CT_CHECK(seg.size() < whole.size() * 102 / 100);
+}
+
+CT_BENCH(lzw_encode_720p_frame_segmented_parallel, 20) {
+    ct::exportng::gif_detail::Workers w;
+    w.Start(ct::exportng::gif_detail::Workers::DefaultThreads());
+    Rng r{1};
+    std::vector<uint8_t> in = MakeStream(r, 1280 * 720, 8, Pattern::Runs);
+    std::vector<uint8_t> enc;
+    for (int64_t i = 0; i < CT_BENCH_N; ++i) {
+        enc.clear();
+        ct::exportng::gif_detail::LzwEncodeSegmented(in.data(), in.size(), 8, enc, ct::exportng::gif_detail::kLzwSegment, &w);
+    }
 }
 
 CT_BENCH(lzw_encode_720p_frame, 20) {
