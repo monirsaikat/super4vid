@@ -43,6 +43,25 @@ bool ForwardIsCheaper(const media::VideoDecoder& dec, TimeUs pos, TimeUs target)
 }
 
 double QpcMs(int64_t from, int64_t to) { return static_cast<double>(to - from) * 1000.0 / static_cast<double>(Clock::QpcFrequency()); }
+
+// Victim for the playhead frame when PickVictim protects everything: the unpinned frame farthest from the playhead
+// (prefetched-ahead frames are cheap to decode again). -1 when every frame is pinned.
+int FarthestUnpinned(const FrameCache& cache, TimeUs playhead, const uint32_t (&pinned)[MediaCache::kPinned]) {
+    int best = -1;
+    TimeUs best_d = -1;
+    for (size_t i = 0; i < cache.Count(); ++i) {
+        const FrameCache::Entry& e = cache.At(static_cast<int>(i));
+        bool is_pinned = false;
+        for (uint32_t p : pinned) is_pinned |= p == e.slot;
+        if (is_pinned) continue;
+        const TimeUs d = e.pts_us > playhead ? e.pts_us - playhead : playhead - e.pts_us;
+        if (d > best_d) {
+            best_d = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
 } // namespace
 
 MediaCache::MediaCache() = default;
@@ -213,6 +232,11 @@ int MediaCache::AcquireSlot(SizeI size) {
 
 bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
     const size_t bytes = static_cast<size_t>(f.size.w) * f.size.h * 3 / 2;
+    // The frame shown at the playhead is never refused (DECISIONS P09 9.7): the global budget is shared, so the other
+    // caches' windows can fill it while every frame of this one is pinned or prefetched ahead; refusing it here left
+    // the paused preview inexact forever (nothing re-hints a paused playhead).
+    const bool playhead_frame = f.pts_us <= w.playhead + FrameCache::kContiguousUs && w.playhead < f.pts_us + f.duration_us;
+    bool over_budget = false;
     int slot = -1;
     {
         ExclusiveGuard g(m_lock);
@@ -222,11 +246,16 @@ bool MediaCache::StoreFrame(const media::DecodedFrame& f, const Window& w) {
             return true;
         }
         for (;;) {
-            if (CacheBudget::Fits(bytes)) {
+            if (over_budget || CacheBudget::Fits(bytes)) {
                 slot = AcquireSlot(f.size);
                 if (slot >= 0) break;
             }
-            const int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned);
+            int v = m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned);
+            if (v < 0 && playhead_frame) v = FarthestUnpinned(m_cache, w.playhead, m_pinned);
+            if (v < 0 && playhead_frame && !over_budget) {
+                over_budget = true;   // only pinned frames left: exceed the budget by this one frame
+                continue;
+            }
             if (v < 0) return false;
             const FrameCache::Entry e = m_cache.Erase(v);
             m_free.push_back(e.slot);
@@ -307,11 +336,15 @@ void MediaCache::PrefetchMain() {
         const uint64_t jump_gen = m_jump_gen.load(std::memory_order_relaxed);
         for (;;) {
             if (m_stop.load()) break;
-            // Room for one more frame? Otherwise wait for the playhead to move (a new hint).
+            // Room for one more frame? Otherwise wait for the playhead to move (a new hint). The playhead frame itself
+            // always gets room (StoreFrame evicts this cache's frames ahead, or exceeds the budget by one frame).
             {
                 SharedGuard g(m_lock);
                 const size_t bytes = static_cast<size_t>(m_dec.Size().w) * m_dec.Size().h * 3 / 2;
-                const bool room = (CacheBudget::Fits(bytes) && (m_slots_used < m_slots.size() || !m_free.empty())) ||
+                bool playhead_exact = false;
+                const bool playhead_missing = m_cache.Find(w.playhead, playhead_exact) < 0 || !playhead_exact;
+                const bool room = playhead_missing ||
+                                  (CacheBudget::Fits(bytes) && (m_slots_used < m_slots.size() || !m_free.empty())) ||
                                   m_cache.PickVictim(w.start, w.end, w.playhead, w.forward, m_pinned, kPinned) >= 0;
                 if (!room) {
                     stalled_gen = h.gen;

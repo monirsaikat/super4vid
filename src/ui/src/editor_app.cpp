@@ -109,6 +109,8 @@ struct App {
     int scrub_i = 0;
     bool scrub_waiting = false;
     int64_t scrub_settle_until = 0;
+    int64_t scrub_seek_qpc = 0;      // when the pending seek was issued
+    int scrub_timeouts = 0;          // seeks not exact within 10 s
     std::mt19937 rng{12345};
     int64_t bench_start_qpc = 0;
     bool bench_done = false;
@@ -299,7 +301,16 @@ void BenchInput(App& app) {
             if (app.bench_frame > 120 && st.pending_opens == 0 && dur > 0) app.scrub_phase = 1;
             return;
         }
-        if (app.scrub_waiting) return;   // the latency callback clears it
+        if (app.scrub_waiting) {   // the latency callback clears it
+            // A seek whose exact frame never lands is reported, not waited for forever (the 9.7 hang).
+            if (static_cast<double>(QpcNow() - app.scrub_seek_qpc) / app.qpc_freq > 10.0) {
+                ++app.scrub_timeouts;
+                app.scrub_waiting = false;
+                ++app.scrub_i;
+                std::printf("bench-scrub: seek %d to %.3f s not exact after 10 s\n", app.scrub_i, static_cast<double>(s.Playhead()) / 1e6);
+            }
+            return;
+        }
         if (QpcNow() < app.scrub_settle_until) return;
         const int n = std::max(5, L.bench_count);
         const TimeUs frame = s.FrameUs();
@@ -309,14 +320,17 @@ void BenchInput(App& app) {
                 app.scrub_i = 0;
                 return;
             }
-            // Cold: a random time at least 3 s away from the current playhead (outside every prefetch window).
+            // Cold: a random time away from the current playhead, outside its paused prefetch window
+            // ([t - 0.25 s, t + 0.5 s]): 3 s, or a third of a short project.
+            const TimeUs away = std::min<TimeUs>(3'000'000, dur / 3);
             TimeUs t = 0;
             for (int tries = 0; tries < 50; ++tries) {
                 t = static_cast<TimeUs>(std::uniform_real_distribution<double>(0, static_cast<double>(dur - frame))(app.rng));
-                if (std::llabs(t - s.Playhead()) > 3'000'000 || dur < 6'000'000) break;
+                if (std::llabs(t - s.Playhead()) > away) break;
             }
             s.playback->Seek(t);
             app.scrub_waiting = true;
+            app.scrub_seek_qpc = QpcNow();
         } else if (app.scrub_phase == 2) {
             if (app.scrub_i >= n) {
                 app.scrub_phase = 3;
@@ -324,9 +338,11 @@ void BenchInput(App& app) {
                 return;
             }
             // Cached: one frame forward / back from a playhead whose neighbourhood the paused prefetch filled.
-            const TimeUs t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? -frame : frame), 0, dur - frame);
+            TimeUs t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? -frame : frame), 0, dur - frame);
+            if (t == s.Playhead()) t = std::clamp<TimeUs>(s.Playhead() + ((app.scrub_i % 2) ? frame : -frame), 0, dur - frame);   // at an end
             s.playback->Seek(t);
             app.scrub_waiting = true;
+            app.scrub_seek_qpc = QpcNow();
         }
     }
 }
@@ -394,6 +410,7 @@ void ReportBench(App& app) {
         const Percentiles a = Stats(app.scrub_cold), b = Stats(app.scrub_cached);
         std::printf("bench-scrub: cold %zu seeks p50 %.1f p95 %.1f max %.1f ms; cached %zu seeks p50 %.1f p95 %.1f max %.1f ms\n",
                     app.scrub_cold.size(), a.p50, a.p95, a.max, app.scrub_cached.size(), b.p50, b.p95, b.max);
+        std::printf("  seeks not exact within 10 s: %d\n", app.scrub_timeouts);
     }
     CT_LOG_INFO("bench %s done", L.bench.c_str());
 }
