@@ -22,6 +22,8 @@ struct Log {
     static void Flush();                               // synchronous: drains the ring and FlushFileBuffers (bounded wait)
     static void Shutdown();
     static const char* FilePathUtf8();                 // empty string before Init()
+    // Warn + Error lines written since process start (passing the level filter; the editor's status-bar count).
+    static uint64_t WarningCount();
 };
 
 } // namespace ct

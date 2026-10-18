@@ -26,6 +26,15 @@ class AudioDevices;
 
 namespace ct::ui {
 
+// Ctrl+R / the Record button: the recorder bar runs in its own process (DECISIONS "P09b/P05 integration"). The bar is
+// a top-level window of class platform::SingleInstance::MainWindowClass() with WS_EX_TOOLWINDOW (editor windows of the
+// same class have none); `exclude` (the caller's own window) is skipped. Null when no bar runs.
+void* FindRecorderBarWindow(void* exclude);
+// Shows the running bar (WM_COPYDATA with a plain command line, which the bar answers by showing itself) or starts
+// Camtesia.exe as a bar (as a separate instance when another process holds the single-instance mutex, else it would
+// forward to the editor). False when neither worked.
+bool ShowRecorderBar(void* owner);
+
 class EditorWindow {
 public:
     EditorWindow();
