@@ -1003,7 +1003,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     I.Install(I.NewProject(), false);
     I.LoadRecent();
     // Crash recovery scan (blocking IO on the pool).
-    Async::Run([this, a = std::weak_ptr<int>(I.alive)] {
+    if (scan_recovery) Async::Run([this, a = std::weak_ptr<int>(I.alive)] {
         std::vector<Autosave::Recoverable> list = Autosave::FindRecoverable();
         Async::PostToUi([this, a, list] {
             if (!a.lock()) return;

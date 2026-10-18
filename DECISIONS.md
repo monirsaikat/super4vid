@@ -1776,5 +1776,9 @@ frames). The drag re-asserts the button every frame and reports the frames in wh
 did not move in most of them). `--bench-scrub` reports a seek that is not exact after 10 s instead of waiting forever,
 keeps cold seeks a third of a short project away from the playhead, and steps the other way at either end. Drag and
 play reports add the preview renders, their compositor GPU time and the swapchain frame-latency waits.
+A press that has not started a drag 10 frames later is released and retried (at most 5 times), printing the hovered
+window. Benches and screenshots skip the crash-recovery scan (`EditorWindow::scan_recovery`), and a bench discards its
+own autosave when it closes: a bench closes without the unsaved prompt, so its dirty project's autosave survived, the
+next launch opened the modal "Recover unsaved project?" and the modal took the synthetic mouse (2 of 3 drag runs).
 Why: a bench number is only useful when the bench did what it claims.
 Impact: none outside the bench modes.

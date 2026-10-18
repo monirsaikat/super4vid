@@ -19,6 +19,7 @@
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
+#include <imgui_internal.h>   // bench-drag diagnostics (hovered window, active id)
 
 #include <shellapi.h>
 
@@ -122,6 +123,8 @@ struct App {
     TimeUs drag_clip_start = -1;
     int drag_active_frames = 0;
     int drag_moves = 0;              // frames in which the dragged clip's start changed
+    int drag_base = 0;               // bench frame offset of the latest press attempt
+    int drag_retries = 0;
     TimeUs drag_last_start = -1;
 };
 
@@ -260,9 +263,14 @@ void BenchInput(App& app) {
             io.AddMousePosEvent(start.x, start.y);
             return;
         }
-        if (f == 2) {
+        // g counts from the (latest) press attempt: a press that did not start a drag is retried.
+        const int g = f - app.drag_base;
+        if (g == 2) {
             io.AddMousePosEvent(start.x, start.y);
             io.AddMouseButtonEvent(0, true);
+            app.drag_active_frames = 0;
+            app.drag_moves = 0;
+            app.drag_last_start = -1;
             app.drag_clip = clip;
             if (const project::Clip* c = s.project.FindClip(clip)) app.drag_clip_start = c->start_us;
             app.frame_ms.clear();
@@ -278,9 +286,23 @@ void BenchInput(App& app) {
             if (app.drag_last_start >= 0 && c->start_us != app.drag_last_start) ++app.drag_moves;
             app.drag_last_start = c->start_us;
         }
-        if (f < n + 3) {
+        if (g == 12 && app.drag_active_frames == 0) {
+            // 10 frames and 27 px after the press without a drag: something took the press (a window over the
+            // timeline, a lost button). Release, report what was hovered, press again (at most 5 times).
+            ImGuiContext& ctx = *ImGui::GetCurrentContext();
+            std::printf("bench-drag: press %d did not start a drag (hovered window %s, active id %08x, mouse %.0f,%.0f)\n", app.drag_retries + 1,
+                        ctx.HoveredWindow ? ctx.HoveredWindow->Name : "none", ctx.ActiveId, io.MousePos.x, io.MousePos.y);
+            io.AddMouseButtonEvent(0, false);
+            if (++app.drag_retries > 5) {
+                app.bench_done = true;
+                return;
+            }
+            app.drag_base = f - 1;   // the next frame is g == 2 again
+            return;
+        }
+        if (g < n + 3) {
             // Triangle wave 0..+300 px (into the free time after the clip), 3 px per frame.
-            const int k = (f - 3) % 200;
+            const int k = (g - 3) % 200;
             const float dx = static_cast<float>(k < 100 ? k * 3 : (200 - k) * 3);
             io.AddMousePosEvent(start.x + dx, start.y);
             io.AddMouseButtonEvent(0, true);   // re-assert (ignored while already down): nothing else may release it
@@ -487,6 +509,9 @@ int Loop(App& app) {
             if (!L.bench.empty() && app.bench_done) {
                 ReportBench(app);
                 app.launch.bench.clear();
+                // The bench's edits are throwaway: without this the next launch offers to recover them, and that
+                // modal prompt swallows the next bench's synthetic mouse.
+                app.editor.State().autosave.Clear();
                 app.closing = true;
                 PostMessageW(app.win.Hwnd(), WM_CLOSE, 0, 0);
             }
@@ -597,6 +622,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
             app.closing = true;
             PostMessageW(app.win.Hwnd(), WM_CLOSE, 0, 0);
         };
+        app.editor.scan_recovery = launch.bench.empty() && launch.screenshot.empty();
         app.editor.Create(app.win.Hwnd(), app.dev, app.devices_ok ? &app.devices : nullptr);
         app.editor.on_scrub_latency = [&app](double ms) {
             if (!app.scrub_waiting) return;

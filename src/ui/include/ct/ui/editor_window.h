@@ -82,6 +82,9 @@ public:
     const Stats& GetStats() const { return m_stats; }
     void SetRedrawsPerSecond(uint32_t r) { m_redraws_per_s = r; }
     std::function<void(double ms)> on_scrub_latency;   // bench hook: every completed scrub measurement
+    // Set before Create: false skips the crash-recovery scan (benches/screenshots: its modal prompt would take the
+    // synthetic input, and another session's autosave is not theirs to offer).
+    bool scan_recovery = true;
 
 private:
     struct Impl;
