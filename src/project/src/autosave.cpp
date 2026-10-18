@@ -123,6 +123,13 @@ void Autosave::SetTestWriteHook(TestWriteHook hook, void* ctx) {
 
 void Autosave::Tick(const Project& p) { Tick(p, Clock::NowUs()); }
 
+bool Autosave::NeedsTick() const {
+    if (m_id.empty()) return false;
+    if (m_edits > 0 || m_shared->failed.load(std::memory_order_acquire)) return true;
+    SharedGuard g(m_shared->lock);
+    return m_shared->queued != m_shared->written;
+}
+
 void Autosave::Tick(const Project& p, int64_t now_us) {
     if (m_id.empty()) return;
     if (m_shared->failed.exchange(false, std::memory_order_acq_rel) && m_edits == 0)

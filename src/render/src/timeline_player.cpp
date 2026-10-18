@@ -101,6 +101,8 @@ HRESULT TimelinePlayer::Init(RenderContext& rc, audio::AudioDevices* devices, co
                 m_feed_thread.Join();
                 m_engine_ok = false;
             }
+            // Started once to prove the device works; the mixer thread stops it again after kEngineIdleStopMs paused.
+            m_engine_running = m_engine_ok;
         }
         if (!m_engine_ok) CT_LOG_WARN("TimelinePlayer: no audio output; the clock runs on QPC");
     }
@@ -111,10 +113,15 @@ HRESULT TimelinePlayer::Init(RenderContext& rc, audio::AudioDevices* devices, co
 }
 
 void TimelinePlayer::Shutdown() {
-    m_engine.Stop();
     m_feed_stop = true;
     m_feed_wake.Set();
     m_feed_thread.Join();
+    {
+        ExclusiveGuard g(m_engine_lock);
+        m_engine.Stop();
+        m_engine_running = false;
+    }
+    m_feed_active = false;
     m_engine_ok = false;
     while (m_open_jobs.load() > 0) m_open_idle.Wait(100);
     m_held.clear();
@@ -137,6 +144,7 @@ void TimelinePlayer::Shutdown() {
 
 void TimelinePlayer::SetProject(const project::Project* p) {
     if (m_clock.Playing()) m_clock.Pause();
+    FeedIdle();
     m_held.clear();
     m_project = p;
     PurgeSlots();
@@ -520,6 +528,7 @@ TimeUs TimelinePlayer::Tick() {
     TimeUs now = m_clock.Now();
     if (m_clock.Playing() && ((m_clock.Rate() > 0 && now >= end) || (m_clock.Rate() < 0 && now <= 0))) {
         m_clock.Pause();
+        FeedIdle();
         m_clock.Seek(m_clock.Rate() > 0 ? end : 0);
         now = m_clock.Now();
     }
@@ -531,6 +540,7 @@ void TimelinePlayer::Play() {
     RebuildPlanIfChanged(false);
     TimeUs from = Now();
     if (m_clock.Rate() > 0 && from >= Duration()) from = 0;
+    EnsureEngine();   // before the clock asks the engine whether the device is usable
     RestartFeed(from);
     m_clock.Play(from, m_clock.Rate());
     HintAll(from, m_clock.Rate(), true);
@@ -539,6 +549,7 @@ void TimelinePlayer::Play() {
 void TimelinePlayer::Pause() {
     if (!m_clock.Playing()) return;
     m_clock.Pause();
+    FeedIdle();
     HintAll(Now(), m_clock.Rate(), false);
 }
 
@@ -556,7 +567,10 @@ void TimelinePlayer::SetRate(double rate) {
 }
 
 void TimelinePlayer::StepFrames(int delta) {
-    if (m_clock.Playing()) m_clock.Pause();
+    if (m_clock.Playing()) {
+        m_clock.Pause();
+        FeedIdle();
+    }
     const int num = m_project && m_project->canvas.fps_num > 0 ? m_project->canvas.fps_num : 60;
     const int den = m_project && m_project->canvas.fps_den > 0 ? m_project->canvas.fps_den : 1;
     const int64_t idx = FrameIndexAt(Now(), num, den);
@@ -657,6 +671,25 @@ void TimelinePlayer::RebuildPlanIfChanged(bool force) {
     m_plan = std::move(plan);
 }
 
+void TimelinePlayer::EnsureEngine() {
+    if (!m_engine_ok) return;
+    ExclusiveGuard g(m_engine_lock);
+    m_feed_active.store(true, std::memory_order_release);
+    if (m_engine_running.load(std::memory_order_relaxed)) return;
+    const int64_t t0 = Clock::QpcNow();
+    // WasapiRender keeps its IAudioClient between Stop and Start: no device activation, only prefill + Start.
+    if (m_engine.Start(*this)) m_engine_running.store(true, std::memory_order_release);
+    else CT_LOG_WARN("TimelinePlayer: audio output did not restart; the clock runs on QPC");
+    CT_LOG_DEBUG("TimelinePlayer: audio output restarted in %.2f ms",
+                 static_cast<double>(Clock::QpcNow() - t0) * 1000.0 / static_cast<double>(Clock::QpcFrequency()));
+}
+
+void TimelinePlayer::FeedIdle() {
+    if (!m_engine_ok) return;
+    m_feed_active.store(false, std::memory_order_release);
+    m_feed_wake.Set();   // the mixer thread starts its idle countdown
+}
+
 void TimelinePlayer::RestartFeed(TimeUs from_us) {
     if (!m_engine_ok) return;
     m_feed.req_from.store(from_us, std::memory_order_relaxed);
@@ -732,6 +765,22 @@ void TimelinePlayer::FeedMain() {
             wrote = true;
         }
         if (m_feed.req_gen.load(std::memory_order_acquire) != gen) continue;
+        if (!m_feed_active.load(std::memory_order_acquire)) {
+            // Paused: nothing pulls from the ring. Stop the render stream once the engine's 5 ms fade-out has played,
+            // then sleep until Play/Seek wakes us (no periodic wake-ups while the editor idles).
+            if (m_engine_running.load(std::memory_order_acquire)) {
+                if (!m_feed_wake.Wait(kEngineIdleStopMs)) {
+                    ExclusiveGuard g(m_engine_lock);
+                    if (!m_feed_active.load(std::memory_order_acquire) && m_engine_running.load(std::memory_order_relaxed)) {
+                        m_engine.Stop();
+                        m_engine_running.store(false, std::memory_order_release);
+                    }
+                }
+            } else {
+                m_feed_wake.Wait(INFINITE);
+            }
+            continue;
+        }
         m_feed_wake.Wait(wrote ? 5 : 10);
     }
 }

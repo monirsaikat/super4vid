@@ -13,6 +13,7 @@
 #include <ct/core/time.h>
 #include <ct/media/encoder_caps.h>
 #include <ct/platform/hotkeys.h>
+#include <ct/platform/mf_runtime.h>
 #include <ct/platform/nv12_blit.h>
 #include <ct/platform/paths.h>
 #include <ct/platform/tray_icon.h>
@@ -481,7 +482,6 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         std::weak_ptr<bool> weak = alive;
         platform::D3DDevice* d = dev;
         auto devices = audio_devices;
-        const bool synthetic = opt.synthetic_camera;
         Impl* self = this;
         Async::Run([weak, d, devices, self]() {
             auto disp = capture::EnumerateDisplays(d->Factory());
@@ -502,6 +502,16 @@ struct RecorderBar::Impl final : recorder::SessionListener {
                 self->Animate();
             });
         });
+    }
+    // Encoder caps (activates every encoder MFT once, MFStartup/MFShutdown around it) and camera modes (opens each
+    // camera): up to a few hundred ms of CPU on the IO pool. Started after the first frame (P11 11.2) so it does not
+    // compete with the window's first present; a recording started earlier waits on the caps cache lock.
+    void DiscoverCapsAsync() {
+        if (caps_started) return;
+        caps_started = true;
+        std::weak_ptr<bool> weak = alive;
+        const bool synthetic = opt.synthetic_camera;
+        Impl* self = this;
         Async::Run([weak, synthetic, self]() {
             const bool hevc = media::EncoderCaps::HasHardware(media::VideoCodec::Hevc);
             media::EncoderCaps::HasHardware(media::VideoCodec::H264);   // warm the cache for the first recording
@@ -523,6 +533,23 @@ struct RecorderBar::Impl final : recorder::SessionListener {
                 CT_LOG_INFO("bar: %zu cameras, HEVC hardware encoder %s", self->cameras.size(), self->hevc_hw ? "yes" : "no");
                 self->Animate();
             });
+        });
+    }
+
+    // Hovering REC (P11 11.2 "prewarm"): MF stays started for the process and the DXGI device manager exists before
+    // the click, so the session prepare skips MFStartup and MFCreateDXGIDeviceManager. Not the audio devices: the
+    // microphone LED stays off until recording. Once per process; cheap no-op afterwards.
+    void PrewarmEncoder() {
+        if (prewarmed || state != State::Idle) return;
+        prewarmed = true;
+        DiscoverCapsAsync();
+        platform::D3DDevice* d = dev;
+        Async::Run([d]() {
+            const int64_t t0 = Clock::QpcNow();
+            CT_LOG_IF_FAILED(platform::MfRuntime::EnsureForProcess());
+            CT_LOG_IF_FAILED(d->InitMfManager());
+            media::EncoderCaps::HasHardware(media::VideoCodec::H264);
+            CT_LOG_INFO("bar: encoder prewarm %.1f ms", static_cast<double>(Clock::QpcNow() - t0) * 1000.0 / Clock::QpcFrequency());
         });
     }
 
@@ -1019,6 +1046,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
             const ImU32 fill = busy ? WithAlpha(col::record, 0.5f) : hovered_rec ? Mix(col::record, Rgb(0xFFFFFF), 0.12f) : col::record;
             const bool pressed = Chip("##rec", ImVec2(w, rh), false, &hovered, fill);
             hovered_rec = hovered;
+            if (hovered) PrewarmEncoder();
             dl->AddRectFilled(ImVec2(rx, ry), ImVec2(rx + w, ry + rh), fill, Dp(rh * 0.5f));
             const ImVec2 dot(rx + Dp(14) + Dp(4), ry + rh * 0.5f);
             dl->AddCircleFilled(dot, Dp(5), Rgb(0xFFFFFF), 20);
@@ -1197,6 +1225,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     float monitor_anchor_x = 0, fps_anchor_x = 0, mic_anchor_x = 0, sys_anchor_x = 0, cam_anchor_x = 0;
     ImVec2 cam_chip_min{}, cam_chip_max{};
     bool camera_hovered = false, hovered_rec = false, close_popups = false, settings_focus = false;
+    bool caps_started = false, prewarmed = false;
     bool open_fps = false, open_mic = false, open_sys = false, open_cam = false;
 
     static const char* PopupId(Popup p) {
@@ -1677,6 +1706,7 @@ void RecorderBar::Shutdown() {
 }
 
 void RecorderBar::Frame() { m->Frame(); }
+void RecorderBar::AfterFirstFrame() { m->DiscoverCapsAsync(); }
 void RecorderBar::RenderGpu(ID3D11DeviceContext* ctx) { m->RenderGpu(ctx); }
 int RecorderBar::RedrawIntervalMs() const { return m->RedrawIntervalMs(); }
 

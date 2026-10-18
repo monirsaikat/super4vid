@@ -45,6 +45,9 @@ public:
     void SetTestWriteHook(TestWriteHook hook, void* ctx);
 
     bool Dirty() const { return m_edits > 0; }
+    // The UI's 1 Hz timer has work to do: unsaved edits, or a background write in flight or failed (retried by
+    // Tick). False lets an idle editor disarm the timer (P11 11.1: no periodic wake-ups while nothing changes).
+    bool NeedsTick() const;
     uint64_t Saves() const;    // completed writes
     std::string AutosavePath() const;
     std::string LockPath() const;
