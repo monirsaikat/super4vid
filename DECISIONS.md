@@ -1638,3 +1638,28 @@ first (the "ended" record keeps the last key's time). Until then the record and 
 Why: the "ended" record was written up to 1 s after records with later times, so files were not in time order.
 Impact: while a burst is open, up to ~1 s of records are held in memory (a kill can lose up to ~2 s of events, the 5.8
 budget); Flush() no longer guarantees records after the last key are on disk during an open burst.
+
+## 2026-10-18 · P12 tasks 12.4/12.5 · Uninstall ends only {app}'s processes; scripted release smoke test
+Spec said: (P12 12.2) `[UninstallRun] taskkill /im Camtesia.exe /f` covers a tray-only instance at uninstall; 12.5 is a
+manual checklist (`tools/release_checklist.md`) run on clean machines.
+Done instead:
+- The `[UninstallRun]` taskkill is gone: it ended every Camtesia.exe on the machine (portable copies, dev builds,
+  other agents' instances). A `[Code]` `CurUninstallStepChanged(usUninstall)` queries WMI `Win32_Process` for
+  `Camtesia.exe` and terminates only processes whose `ExecutablePath` equals `{app}\Camtesia.exe` (case-insensitive),
+  then waits 1 s; a WMI failure is logged and the uninstall continues.
+- `tools/release_smoke.ps1` automates the installable part of the checklist: refuses to run when Camtesia is already
+  installed/registered; per-user silent install into `%TEMP%\camtesia-smoke-*\app` with both tasks; checks files,
+  HKCU uninstall entry (and no HKLM one), `.ctproj` association, open command, Run value, shortcuts, exe version;
+  installed exe `--record --seconds 5 --verify --synthetic-camera --out <temp>`; `export_demo --recording <bundle>
+  --save-project` (new flag: imports the bundle like the editor's Import recording, saves + reloads the .ctproj, exports);
+  runs the registered open command with `--screenshot`; starts the installed exe `--tray` and a build-tree decoy
+  `--tray` (own CT_INSTANCE_SUFFIX); uninstalls in `finally`; checks the tray instance ended, the decoy survived, and
+  lists leftovers. Every child has a timeout and is killed with its tree when it runs over.
+- Inno's uninstaller self-copy `%TEMP%\is-XXXX-uninstall.tmp\{_unins.tmp,_unins-done.tmp}` is not counted as a
+  product leftover: Inno 6.3+ cannot delete its running copy and cleans these on the next Inno uninstall. The script
+  removes the one its own run created.
+- The installed app has no headless export mode, so export uses the build tree's `export_demo` (same ExportJob code).
+Why: a developer/CI machine runs many Camtesia.exe; the uninstaller must not kill unrelated ones. Clean VMs are not
+available to the agents, so as much of 12.5 as possible is scripted and repeatable.
+Impact: interactive editing and the clean Windows 10 / Windows 11 runs stay human checks (checklist section 6). CI
+could run `release_smoke.ps1 -TrayCheck $false` after `build.cmd package` (not wired up).
