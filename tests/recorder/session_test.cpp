@@ -1,5 +1,6 @@
 // RecordingSession + BundleWriter + meta.json (P05 tasks 5.1/5.2): bundle naming, meta layout, and real recordings
 // (device tests) through the whole state machine: prepare, start, pause/resume, stop, cancel, prepare failure.
+#include "../common/timing.h"
 #include <ct/capture/display.h>
 #include <ct/core/fs.h>
 #include <ct/core/json.h>
@@ -170,7 +171,10 @@ CT_TEST_DEVICE(session_records_pauses_and_stops) {
         CT_CHECK_EQ(l.errors.load(), 0);
         CT_CHECK(l.ticks.load() >= 3);
         CT_CHECK(s.LastStartLatencyMs() > 0 && s.LastStartLatencyMs() < 1000);
-        const BundleReport rep = VerifyBundle(s.BundlePath(), BundleExpect{1.6, 0.25, false});
+        // A loaded machine (parallel builds) drops capture ticks; the frame budget is enforced in strict runs only.
+        BundleExpect expect{1.6, 0.25, false};
+        expect.max_drop_fraction = ct::test::StrictTiming() ? 0.03 : 0.2;
+        const BundleReport rep = VerifyBundle(s.BundlePath(), expect);
         std::printf("%s", rep.text.c_str());
         CT_CHECK(rep.ok);
         CT_CHECK_EQ(rep.fps, 30);
