@@ -304,7 +304,10 @@ struct HotkeyBench {
         const double since_ms = static_cast<double>(now - phase_qpc) * 1000.0 / Clock::QpcFrequency();
         switch (phase) {
         case 0:
-            if (app.bar.IsIdle() && since_ms > 1500) {
+            // Countdown 0 arms the session while idle: wait for that (up to 10 s), as a user pressing the hotkey a
+            // moment after the previous recording would find it.
+            if (app.bar.IsIdle() && since_ms > 1500 && (app.bar.IsArmed() || since_ms > 10000)) {
+                std::printf("hotkey bench: session %s\n", app.bar.IsArmed() ? "armed" : "not armed");
                 send_qpc = Clock::QpcNow();
                 SendChord(VK_F22);
                 phase = 1;

@@ -257,6 +257,40 @@ CT_TEST_DEVICE(capture_mode_change_keeps_size_letterboxed) {
     }
 }
 
+// An armed (prepared, idle) capturer holds no duplication; Start re-creates it and the first frame still comes within a
+// few ticks on a static desktop.
+CT_TEST_DEVICE(capture_released_duplication_comes_back_at_start) {
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(false)));
+    DisplayInfo disp;
+    CT_REQUIRE(PrimaryDisplay(dev, disp));
+    ScreenCapturer cap;
+    ScreenCapturer::Config cfg;
+    cfg.display = disp;
+    cfg.fps_num = 60;
+    cfg.release_duplication_until_start = true;
+    CT_REQUIRE(SUCCEEDED(cap.Init(dev, cfg)));
+    CT_CHECK(!cap.DuplicatorForTest().HasDuplication());
+    Sink sink;
+    sink.pool = &cap.Nv12Pool();
+    sink.times.reserve(100);
+    const int64_t start = Clock::QpcNow();
+    CT_REQUIRE(cap.Start(start, sink));
+    int64_t first_qpc = 0;
+    while (Clock::QpcNow() - start < Clock::QpcFrequency()) {
+        if (!sink.times.empty() && !first_qpc) first_qpc = Clock::QpcNow();
+        if (first_qpc) break;
+        Sleep(1);
+    }
+    cap.Stop();
+    CT_REQUIRE(first_qpc != 0);
+    const double ms = static_cast<double>(first_qpc - start) * 1000.0 / Clock::QpcFrequency();
+    std::printf("  first frame %.1f ms after Start (duplication re-created at start), reinits %llu\n", ms,
+                static_cast<unsigned long long>(cap.Stats().reinits.load()));
+    CT_CHECK(ms < 500);
+    CT_CHECK_EQ(sink.errors.load(), 0);
+}
+
 // Multi-monitor / mixed DPI: display rects are physical pixels and match DXGI's desktop coordinates for every display
 // (a DPI-virtualized rect on a scaled monitor would not), and a current DXGI factory is used as is.
 CT_TEST_DEVICE(display_rects_are_physical_and_factory_current) {
