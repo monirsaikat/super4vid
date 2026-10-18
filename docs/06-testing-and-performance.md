@@ -104,6 +104,16 @@ Diagnostics never forward anyway: `--screenshot`, `--time-to-window`, `--bench-*
 editors started from the bar (`CAMTESIA_SEPARATE_INSTANCE=1`) skip the single-instance check. `--stats` does not,
 so use the suffix for idle measurements next to another running instance.
 
+### Idle wake-ups without admin rights, leak and crash checks
+
+- `idle_probe [--seconds 30] [--warmup 10] -- Camtesia.exe --tray` (or `--pid N`): per-thread wake-ups (context
+  switches) and CPU time over the window, then process totals and memory; ends the app with WM_QUIT so Debug exit
+  checks still run. Use it when WPR is not available (WPR needs admin). Budget: no thread of ours above 0 wakes/s while
+  idle; OS thread-pool workers (ntdll) wake a few times a minute.
+- `ctest -R camtesia_` runs `camtesia_exit_leak_check` (8 app modes; Debug: no CRT leak report, no debug-layer line on
+  stderr) and `camtesia_crash_dump` (`--crash-test` dump whose stack `dump_check` resolves to main.cpp).
+- `dump_check crash.dmp [--symbols dir]` prints the exception and the faulting thread's stack (WinDbg `.ecxr; kn`).
+
 ## 6. Profiling workflow (P11, and any time a budget fails)
 
 1. **ETW first.** `wpr -start GeneralProfile -start Power` (admin) -> reproduce for 30 s -> `wpr -stop trace.etl`. Open in WPA: CPU Usage (Sampled) by process/thread/stack, and the `Camtesia` TraceLogging provider events (our `CT_TRACE_SCOPE` spans show up under Generic Events). Our provider GUID is in `src/core/src/trace.cpp`; it must be enabled: `wpr -start camtesia.wprp` with a profile that lists the provider name `Camtesia`.
