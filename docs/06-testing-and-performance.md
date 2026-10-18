@@ -100,9 +100,41 @@ set CT_INSTANCE_SUFFIX=wt-a256
 out\build\ninja-release\bin\Camtesia.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt
 ```
 
-Diagnostics never forward anyway: `--screenshot`, `--time-to-window`, `--bench-*`, `--record`, `--selftest` and
+Diagnostics never forward anyway: `--screenshot`, `--time-to-window`, `--bench-*`, `--fault-test`, `--bar-keys`,
+`--record`, `--selftest` and
 editors started from the bar (`CAMTESIA_SEPARATE_INSTANCE=1`) skip the single-instance check. `--stats` does not,
 so use the suffix for idle measurements next to another running instance.
+
+### Error paths and keyboard (P11 11.5/11.6)
+
+Each recorder error path is forced without the real condition through `recorder::SessionFaults`
+(`SessionConfig::faults`) and each export error path through `exportng::ExportFaults` (`ExportRequest::faults`):
+an injected writer HRESULT after n samples (`ERROR_DISK_FULL`, `DXGI_ERROR_DEVICE_REMOVED`), a capture error after
+n ms (TDR), a failing hardware encoder (software fallback) or no encoder at all, a microphone that cannot be opened
+(`AUDCLNT_E_DEVICE_IN_USE`), an audio stream error after n ms (`AUDCLNT_E_DEVICE_INVALIDATED`), and a fake free-disk
+value (the 1 GB warning / 200 MB auto-stop). Unit tests: `ct_recorder_tests --filter fault_`,
+`ct_export_tests --filter export_fault`, `ct_ui_tests` (views, banner, export dialog). End to end through the real
+recorder bar (error panel text, recovery actions, device recreation, a clean second recording; exit 0 = PASS):
+
+```
+set CT_INSTANCE_SUFFIX=wt-a256
+for %k in (disk-full low-disk device-lost no-encoder sw-encoder mic-busy mic-lost bad-folder) do (
+  out\build\ninja-debug\bin\Camtesia.exe --fault-test %k > fault-%k.txt )
+Camtesia.exe --fault-test disk-full --no-exclude --fault-shot panel.png      (screenshot of the error panel)
+Camtesia.exe --bar-keys "tab,tab,tab,tab,enter,esc,tab" > keys.txt           (prints the focused control per key)
+```
+
+A real TDR (`dxcap -forcetdr`, admin) and a real full volume (a small VHD) remain manual checks (PROGRESS 11.5).
+
+### Idle wake-ups without admin rights, leak and crash checks
+
+- `idle_probe [--seconds 30] [--warmup 10] -- Camtesia.exe --tray` (or `--pid N`): per-thread wake-ups (context
+  switches) and CPU time over the window, then process totals and memory; ends the app with WM_QUIT so Debug exit
+  checks still run. Use it when WPR is not available (WPR needs admin). Budget: no thread of ours above 0 wakes/s while
+  idle; OS thread-pool workers (ntdll) wake a few times a minute.
+- `ctest -R camtesia_` runs `camtesia_exit_leak_check` (8 app modes; Debug: no CRT leak report, no debug-layer line on
+  stderr) and `camtesia_crash_dump` (`--crash-test` dump whose stack `dump_check` resolves to main.cpp).
+- `dump_check crash.dmp [--symbols dir]` prints the exception and the faulting thread's stack (WinDbg `.ecxr; kn`).
 
 ## 6. Profiling workflow (P11, and any time a budget fails)
 

@@ -17,6 +17,7 @@
 #include <ct/platform/d3d_device.h>
 #include <ct/platform/win.h>
 #include <ct/platform/window.h>
+#include <ct/recorder/recording_session.h>
 
 #include <functional>
 #include <memory>
@@ -32,12 +33,16 @@ public:
         std::function<void(const std::string& bundle_path)> open_editor;   // empty path = the editor without a file
         std::function<void()> open_settings;                              // empty: the built-in ui::SettingsWindow
         std::function<void()> quit;                                       // leave the message loop
+        // P11 11.5: the recording failed because the graphics device was lost (TDR). The session is idle; the app
+        // recreates its D3D device (and swapchain, ImGui renderer) before the next frame, after ReleaseDeviceObjects.
+        std::function<void()> recreate_device;
     };
     struct Options {
         bool start_hidden = false;      // --tray
         bool exclude_from_capture = true;   // false for screenshots of the bar
         bool synthetic_camera = false;  // lists a generated "Synthetic camera" (tests without hardware)
         int countdown_override = -1;    // >= 0 replaces settings.recording.countdown_s
+        recorder::SessionFaults faults; // P11 11.5 fault injection for every recording (--fault, tests)
     };
 
     RecorderBar();
@@ -51,6 +56,8 @@ public:
 
     // Builds the ImGui frame (bar window, popovers, toasts). Between NewFrame and Render.
     void Frame();
+    // Call once after the first present: starts the slow discovery (encoder caps, camera modes) on the IO pool.
+    void AfterFirstFrame();
     // GPU work before ImGui renders (camera preview NV12 -> RGBA), with D3DDevice::Lock held by the caller.
     void RenderGpu(ID3D11DeviceContext* ctx);
     // 0 = event driven (no redraw until input); otherwise the bar wants a frame every `interval_ms` (recording timer,
@@ -74,11 +81,32 @@ public:
     void ShowSavedToast(const std::string& bundle_path);   // also what OnFinished calls
     bool IsRecording() const;                              // countdown .. finalizing
     bool IsIdle() const;
+    // The session is armed (prepared ahead for the current setup; countdown 0, see RecorderBar::Impl::ArmIfIdle).
+    bool IsArmed() const;
     double LastStartLatencyMs() const;
     int64_t LastTriggerQpc() const;                        // QPC of the last REC / hotkey trigger
     void ShowBar(bool show);
     void PushToast(const std::string& text, float seconds = 6);   // info toast (first run)
     void OpenSettings();   // hooks.open_settings, else the built-in SettingsWindow
+
+    // P11 11.5 error UX. The red error panel (bottom-right, above the toasts) shows a recording failure or a
+    // microphone problem with its recovery actions (ui::ErrorView).
+    bool ErrorVisible() const;
+    std::string ErrorText() const;
+    int ErrorAction(int index) const;          // the kAction* of the n-th button, 0 past the end
+    void RunErrorAction(int action);           // as if the button were clicked
+    void ClearError();
+    int LastFailureCause() const;              // recorder::FailureCause of the last failure, -1 = none
+    // "Choose another folder..." after the folder picker returned `folder`: saves it as the output folder and
+    // clears the panel.
+    void ChooseOutputFolder(const std::string& folder);
+    std::string LastBundle() const;            // the last kept recording ("" = none yet)
+    // Device loss: release the bar's own GPU objects (camera preview) before the app recreates the device.
+    void ReleaseDeviceObjects();
+    // Diagnostics: change the faults of the next recordings.
+    void SetFaults(const recorder::SessionFaults& faults);
+    // Keyboard navigation diagnostics: the label of the item ImGui's nav cursor is on ("" when none).
+    std::string NavItemForTest() const;
 
 private:
     struct Impl;

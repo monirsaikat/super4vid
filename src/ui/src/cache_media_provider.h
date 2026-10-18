@@ -1,7 +1,7 @@
 #pragma once
 // src/ui/src/cache_media_provider.h (private to ct_ui)
 // TimelineMediaProvider backed by playback::MediaCache (P09 9.2/9.4): 160x90 thumbnails from the cache's IO-pool
-// thumbnail decoder and waveform peaks (100/s, disk-cached) interleaved into min/max pairs. Never blocks.
+// thumbnail decoder (the camera file's cache for Source::Camera clips) and waveform peaks (100/s, disk-cached) interleaved into min/max pairs. Never blocks.
 // SRVs handed to ImGui this frame are pinned (AddRef) until BeginFrame() of the next frame, so a cache eviction can
 // never free a texture the draw list still references (P09 pitfalls).
 // Thread model: UI thread.
@@ -24,9 +24,12 @@ class CacheMediaProvider final : public TimelineMediaProvider {
 public:
     // Returns the media's cache, or nullptr while it opens (*failed = false) or when it cannot be opened (*failed = true).
     using CacheFn = std::function<playback::MediaCache*(const project::Id&, bool* failed)>;
-    CacheMediaProvider(const project::Project* p, CacheFn fn) : m_project(p), m_cache(std::move(fn)) {}
+    // camera_fn: the camera file's cache of a recording (same contract; *failed = true when it has none).
+    CacheMediaProvider(const project::Project* p, CacheFn fn, CacheFn camera_fn = {})
+        : m_project(p), m_cache(std::move(fn)), m_camera(std::move(camera_fn)) {}
 
     MediaStatus Thumbnail(const project::Id& media, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) override;
+    MediaStatus ClipThumbnail(const project::Clip& clip, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1) override;
     const float* PeaksMinMax(const project::Id& media, int stream, size_t* pair_count, int* per_second,
                              MediaStatus* status) override;
     void BeginFrame() { m_pinned.clear(); }
@@ -40,8 +43,11 @@ private:
         bool unavailable = false;
         int per_second = 100;
     };
+    MediaStatus FromCache(playback::MediaCache* c, bool failed, TimeUs t, ImTextureID& tex, ImVec2& uv0, ImVec2& uv1);
+
     const project::Project* m_project;
     CacheFn m_cache;
+    CacheFn m_camera;
     std::vector<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_pinned;
     std::map<std::string, PeakEntry> m_peaks;   // "<path>#<stream>"
     std::string m_key;                          // scratch

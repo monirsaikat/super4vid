@@ -85,3 +85,6 @@ add_subdirectory(tools/events_demo)
 add_subdirectory(tools/player_demo)
 add_subdirectory(tools/gif_demo)
 add_subdirectory(tools/export_demo)
+add_subdirectory(tools/idle_probe)
+add_subdirectory(tools/dump_check)
+add_subdirectory(tests/app)   # after tools/: uses dump_check

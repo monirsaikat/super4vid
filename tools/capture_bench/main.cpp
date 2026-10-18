@@ -17,6 +17,7 @@
 //   --encode out.mp4   the frames go to ct::media::Mp4Writer (hardware H.264) instead of the checksum sink
 //   --mic / --system   record the default microphone / system audio (loopback) as AAC streams 1.. in that order
 //   --rc quality|vbr|cbr  --bitrate bps   rate control (default quality 70 with the table bitrate as peak cap)
+//   --quality N  --bframes  --low-latency   encoder settings (A/B profiling of the video-engine load)
 // After the run the file is probed: frame count vs ticks, duration, size vs bitrate * seconds, first/last timestamps.
 
 #include <ct/capture/cursor_tracker.h>
@@ -76,6 +77,9 @@ struct Args {
     bool mic = false, system = false;
     media::RateControl rc = media::RateControl::Quality;
     uint32_t bitrate = 0;
+    int quality = 70;
+    bool bframes = false;
+    bool low_latency = false;
     int display_latency_us = INT32_MIN;   // INT32_MIN: ScreenCapturer::Config default
     int animator_monitor = -1;   // internal: run as the animation window
     int animator_seconds = 0;
@@ -111,6 +115,9 @@ bool ParseArgs(int argc, char** argv, Args& a) {
         else if (s == "--mic") a.mic = true;
         else if (s == "--system") a.system = true;
         else if (s == "--bitrate" && next(v)) a.bitrate = static_cast<uint32_t>(std::atoll(v));
+        else if (s == "--quality" && next(v)) a.quality = std::atoi(v);
+        else if (s == "--bframes") a.bframes = true;
+        else if (s == "--low-latency") a.low_latency = true;
         else if (s == "--rc" && next(v)) {
             const std::string m = v;
             if (m == "quality") a.rc = media::RateControl::Quality;
@@ -343,6 +350,9 @@ struct EncodeRun {
         cfg.video.fps_num = a.fps;
         cfg.video.rc = a.rc;
         cfg.video.bitrate_bps = a.bitrate;
+        cfg.video.quality = a.quality;
+        cfg.video.bframes = a.bframes;
+        cfg.video.low_latency = a.low_latency;
         uint32_t n = 0;
         if (use_mic) {
             mic_stream = n++;
@@ -361,9 +371,10 @@ struct EncodeRun {
             std::fprintf(stderr, "Mp4Writer::Init: %s\n", writer.ErrorMessage().c_str());
             return hr;
         }
-        std::printf("encoder %s (%s), %s, mean %.2f Mbps, peak %.2f Mbps, %zu audio stream(s)\n", writer.EncoderName().c_str(),
-                    writer.IsHardware() ? "hardware" : "software",
-                    a.rc == media::RateControl::Quality ? "quality 70" : a.rc == media::RateControl::Vbr ? "VBR" : "CBR",
+        std::printf("encoder %s (%s), %s (quality %d, bframes %d, low latency %d), mean %.2f Mbps, peak %.2f Mbps, %zu audio stream(s)\n",
+                    writer.EncoderName().c_str(), writer.IsHardware() ? "hardware" : "software",
+                    a.rc == media::RateControl::Quality ? "quality" : a.rc == media::RateControl::Vbr ? "VBR" : "CBR", a.quality,
+                    a.bframes ? 1 : 0, a.low_latency ? 1 : 0,
                     media::EffectiveBitrate(cfg.video) / 1e6, media::EffectiveMaxBitrate(cfg.video) / 1e6, cfg.audio.size());
         audio::CaptureConfig cc;
         if (use_mic) {

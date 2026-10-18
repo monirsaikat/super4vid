@@ -30,6 +30,18 @@ public:
     std::string MetaPath() const;
     bool WriteMeta(const Json& meta);   // pretty-printed (2 spaces), atomic replace
     bool Delete();                      // the whole folder
+    // An armed session's bundle (RecordingSession::Arm) is hidden until the recording starts, so an idle bar shows no
+    // half-made recording in the folder.
+    bool SetHidden(bool hidden);
+    // Renames the folder to "<stem>.ctrec" next to it (collision suffixes as in Create); every file inside must be
+    // closed. Used when the bundle was created long before its recording started (armed), so the name tells when the
+    // recording was made. false (old name kept) when the rename fails.
+    bool Rename(std::string_view stem);
+    // The "<stem>" part of the current folder name.
+    std::string Stem() const;
+    // Deletes armed bundles a killed or crashed process left behind in output_dir: hidden "*.ctrec" folders with no
+    // meta.json and no events.ctev (a started recording has both or is visible). Returns how many were removed.
+    static int DeleteStaleArmed(std::string_view output_dir);
 
 private:
     std::string m_path;

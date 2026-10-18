@@ -290,6 +290,56 @@ struct Mp4Writer::Impl {
         return hr;
     }
 
+    // The values the video encoder actually runs with (what it accepted, or its defaults), for the log: rate control
+    // and speed settings decide the video-engine load (P05 5.8).
+    bool began = false;
+    // IMFSinkWriter::BeginWriting, then the encoder name and its settings (they are only final once writing began).
+    HRESULT BeginWriting() {
+        const HRESULT hr = writer->BeginWriting();
+        if (FAILED(hr)) {
+            CT_LOG_ERROR("IMFSinkWriter::BeginWriting failed: %s", HrToString(hr).c_str());
+            writer.Reset();
+            return hr;
+        }
+        began = true;
+        if (cfg.has_video && (encoder_name.empty() || encoder_name == "unknown encoder")) IdentifyEncoder(cfg.video.prefer_hardware);
+        if (cfg.has_video) LogCodecApiValues();
+        return S_OK;
+    }
+
+    void LogCodecApiValues() {
+        ComPtr<ICodecAPI> api;
+        if (FAILED(writer->GetServiceForStream(video_index, GUID_NULL, IID_PPV_ARGS(api.GetAddressOf()))) || !api) return;
+        struct P { const GUID* id; const char* name; };
+        const P params[] = {
+            {&CODECAPI_AVEncCommonRateControlMode, "rc"}, {&CODECAPI_AVEncCommonQuality, "quality"},
+            {&CODECAPI_AVEncCommonQualityVsSpeed, "qvs"}, {&CODECAPI_AVEncCommonLowLatency, "low_latency"},
+            {&CODECAPI_AVEncMPVDefaultBPictureCount, "bframes"}, {&CODECAPI_AVEncMPVGOPSize, "gop"},
+            {&CODECAPI_AVEncCommonMeanBitRate, "mean_bps"}, {&CODECAPI_AVEncCommonMaxBitRate, "max_bps"},
+            {&CODECAPI_AVEncVideoMaxNumRefFrame, "refs"}, {&CODECAPI_AVEncVideoUsage, "usage"},
+            {&CODECAPI_AVEncH264CABACEnable, "cabac"}, {&CODECAPI_AVEncVideoEncodeQP, "qp"},
+        };
+        char line[512];
+        int at = std::snprintf(line, sizeof(line), "Mp4Writer: encoder settings:");
+        for (const P& p : params) {
+            VARIANT var;
+            VariantInit(&var);
+            const HRESULT hr = api->IsSupported(p.id) == S_OK ? api->GetValue(p.id, &var) : E_NOTIMPL;
+            long long value = -1;
+            if (SUCCEEDED(hr)) {
+                if (var.vt == VT_UI4) value = var.ulVal;
+                else if (var.vt == VT_BOOL) value = var.boolVal ? 1 : 0;
+                else if (var.vt == VT_UI8) value = static_cast<long long>(var.ullVal);
+                else if (var.vt == VT_I4) value = var.lVal;
+            }
+            VariantClear(&var);
+            if (at > 0 && at < static_cast<int>(sizeof(line)))
+                at += SUCCEEDED(hr) ? std::snprintf(line + at, sizeof(line) - at, " %s=%lld", p.name, value)
+                                    : std::snprintf(line + at, sizeof(line) - at, " %s=n/a", p.name);
+        }
+        CT_LOG_INFO("%s", line);
+    }
+
     void IdentifyEncoder(bool hardware_allowed) {
         encoder_name.clear();
         self->m_hardware = false;
@@ -799,13 +849,10 @@ HRESULT Mp4Writer::Init(platform::D3DDevice& dev, const Config& cfg, platform::T
             return fail(hr);
         }
     }
-    hr = m.writer->BeginWriting();
-    if (FAILED(hr)) {
-        CT_LOG_ERROR("IMFSinkWriter::BeginWriting failed: %s", HrToString(hr).c_str());
-        m.writer.Reset();
-        return fail(hr);
+    if (!cfg.defer_begin_writing) {
+        hr = m.BeginWriting();
+        if (FAILED(hr)) return fail(hr);
     }
-    if (cfg.has_video && (m.encoder_name.empty() || m.encoder_name == "unknown encoder")) m.IdentifyEncoder(v.prefer_hardware);
     m.init_ok = true;
     if (cfg.has_video)
         CT_LOG_INFO("Mp4Writer: %s %dx%d @ %d/%d %s, %s %u kbps (max %u), encoder %s (%s), %zu audio stream(s)", cfg.path.c_str(),
@@ -821,6 +868,15 @@ HRESULT Mp4Writer::Init(platform::D3DDevice& dev, const Config& cfg, platform::T
 bool Mp4Writer::Start() {
     Impl& m = *m_impl;
     if (!m.init_ok || m.started) return false;
+    if (m.cfg.defer_begin_writing && !m.began) {
+        const int64_t t0 = Clock::QpcNow();
+        const HRESULT hr = m.BeginWriting();
+        if (FAILED(hr)) {
+            m_impl->last_error.store(hr, std::memory_order_release);
+            return false;
+        }
+        CT_LOG_INFO("Mp4Writer: deferred BeginWriting took %.1f ms", static_cast<double>(Clock::QpcNow() - t0) * 1000.0 / static_cast<double>(Clock::QpcFrequency()));
+    }
     m.start_qpc = Clock::QpcNow();
     m_impl->accepting.store(true, std::memory_order_seq_cst);
     Thread::Options opt;

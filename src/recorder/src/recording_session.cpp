@@ -18,10 +18,14 @@
 #include <ct/core/time.h>
 #include <ct/media/encoder_caps.h>
 #include <ct/media/mp4_writer.h>
+#include <ct/media/probe.h>
 #include <ct/platform/crash_handler.h>
 #include <ct/platform/paths.h>
 #include <ct/recorder/bundle_writer.h>
 #include <ct/version.h>
+
+#include <audioclient.h>
+#include <powrprof.h>
 
 #include <algorithm>
 #include <atomic>
@@ -45,6 +49,19 @@ const char* StateName(State s) {
     return "?";
 }
 
+const char* FailureCauseName(FailureCause c) {
+    switch (c) {
+    case FailureCause::Other: return "other";
+    case FailureCause::DiskFull: return "disk-full";
+    case FailureCause::OutputFolder: return "output-folder";
+    case FailureCause::DeviceLost: return "device-lost";
+    case FailureCause::NoEncoder: return "no-encoder";
+    case FailureCause::CaptureFailed: return "capture-failed";
+    case FailureCause::AccessLost: return "access-lost";
+    }
+    return "?";
+}
+
 namespace {
 
 constexpr int64_t kTickMs = 250;   // LiveStats at 4 Hz
@@ -63,6 +80,28 @@ bool IsFileError(HRESULT hr) {
            hr == HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 }
 
+bool IsDiskFull(HRESULT hr) { return hr == HRESULT_FROM_WIN32(ERROR_DISK_FULL) || hr == HRESULT_FROM_WIN32(ERROR_HANDLE_DISK_FULL); }
+
+bool IsDeviceLost(HRESULT hr) {
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
+           hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+// Writer errors (screen.mp4) by HRESULT.
+FailureCause WriterCause(HRESULT hr) {
+    if (IsDiskFull(hr)) return FailureCause::DiskFull;
+    if (IsDeviceLost(hr)) return FailureCause::DeviceLost;
+    if (IsFileError(hr)) return FailureCause::OutputFolder;
+    return FailureCause::Other;
+}
+
+bool IsMicBusy(HRESULT hr) {
+    return hr == AUDCLNT_E_DEVICE_IN_USE || hr == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED ||
+           hr == AUDCLNT_E_EXCLUSIVE_MODE_ONLY;
+}
+
+int64_t MsToQpc(int ms) { return static_cast<int64_t>(ms) * Clock::QpcFrequency() / 1000; }
+
 float PeakDb(const audio::Meter& m) {
     float peak = audio::Meter::kFloorDb;
     const int n = std::max(1, m.Channels());
@@ -76,6 +115,14 @@ const char* KeystrokeName(KeystrokeMode k) {
     case KeystrokeMode::All: return "all";
     default: return "shortcuts";
     }
+}
+
+// RegisterSuspendResumeNotification callback (a system thread): forwards to the session.
+ULONG CALLBACK PowerCallback(PVOID context, ULONG type, PVOID) {
+    auto* s = static_cast<RecordingSession*>(context);
+    if (type == PBT_APMSUSPEND) s->OnSystemSuspend();
+    else if (type == PBT_APMRESUMEAUTOMATIC || type == PBT_APMRESUMESUSPEND) s->OnSystemResume();
+    return 0;
 }
 
 std::atomic<RecordingSession*> g_armed{nullptr};
@@ -93,7 +140,7 @@ struct RecordingSession::Impl {
     SessionClock* clock = nullptr;
 
     // --- command queue (any thread -> ct-session) ---
-    enum class Cmd { Prepare, StartNow, Pause, Marker, Stop, Cancel, Quit };
+    enum class Cmd { Prepare, StartNow, Pause, Marker, Stop, Cancel, Disarm, Suspend, Resume, Quit };
     struct Command {
         Cmd kind;
         int64_t qpc = 0;
@@ -101,6 +148,8 @@ struct RecordingSession::Impl {
         platform::D3DDevice* dev = nullptr;
         SessionConfig cfg;
         SessionListener* listener = nullptr;
+        bool arm = false;   // Prepare: arm (RecordingSession::Arm)
+        uint32_t arm_gen = 0;
         HRESULT* result = nullptr;
         Event* done = nullptr;
     };
@@ -113,7 +162,14 @@ struct RecordingSession::Impl {
     // --- shared state ---
     std::atomic<State> state{State::Idle};
     std::atomic<bool> prepared{false};
+    // Arm requests: arm_state is the UI's view (1 = the latest request is an Arm with arm_cfg, not yet started or
+    // released); arm_gen counts Arm/Disarm/Cancel calls, so ct-session builds only the latest Arm.
+    std::atomic<int> arm_state{0};
+    std::atomic<uint32_t> arm_gen{0};
+    mutable SrwLock arm_lock;
+    SessionConfig arm_cfg;
     std::atomic<bool> preparing{false};
+    std::atomic<bool> quiet{false};   // arming (ct-session): Warn only logs
     std::atomic<int> countdown_s{3};
     mutable SrwLock stats_lock;
     LiveStats stats;
@@ -127,11 +183,19 @@ struct RecordingSession::Impl {
     std::atomic<bool> error_pending{false};
     HRESULT error_hr = S_OK;
     std::string error_message;
+    FailureCause error_cause = FailureCause::Other;
+    // Fault injection deadlines (ct-session; 0 = not armed / already fired).
+    int64_t fault_capture_qpc = 0, fault_audio_qpc = 0;
 
     // --- owned by ct-session ---
     platform::D3DDevice* dev = nullptr;
     SessionConfig cfg;
     bool devices_ready = false;
+    // Armed (ct-session): the screen part is built; audio streams declared by device presence, opened at StartNow.
+    bool armed = false;
+    bool arm_mic = false, arm_sys = false;
+    bool arm_failed = false;   // the last arm failed; dev/cfg/listener still describe it
+    std::string rename_to;   // a started armed bundle: the stem it gets when the recording finishes
     audio::AudioDevices devices;
     BundleWriter bundle;
     std::unique_ptr<capture::ScreenCapturer> capturer;
@@ -155,6 +219,12 @@ struct RecordingSession::Impl {
     std::string emergency_meta;
     std::wstring emergency_meta_path;
     std::atomic<bool> emergency_done{false};
+    // Sleep / resume (docs/03 section 10).
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS power_params{};
+    HPOWERNOTIFY power_notify = nullptr;
+    bool paused_by_suspend = false;
+    Event suspend_done{true, false};   // set when a Suspend command ran (heap-free and outlives a timed-out wait)
+    bool access_warned = false;   // the current access-lost streak was reported
 
     // --- forwarding sinks (component threads) ---
     struct ScreenSink final : capture::FrameSink {
@@ -165,21 +235,33 @@ struct RecordingSession::Impl {
                 first_frame_qpc.store(Clock::QpcNow(), std::memory_order_relaxed);
             return s->writer->OnFrame(tex, index, t_us);
         }
-        void OnError(HRESULT hr) override { s->Fail(hr, "Screen capture stopped (the graphics device was lost)."); }
+        void OnError(HRESULT hr) override {
+            if (hr == capture::kDisplayRemovedHr)
+                s->Fail(hr, "The display being recorded was disconnected. The recording was saved up to that point.",
+                        FailureCause::CaptureFailed);
+            else if (IsDeviceLost(hr)) s->Fail(hr, "Screen capture stopped (the graphics device was lost).", FailureCause::DeviceLost);
+            else if (hr == DXGI_ERROR_ACCESS_LOST) s->Fail(hr, "Screen capture lost access to the display.", FailureCause::AccessLost);
+            else s->Fail(hr, "Screen capture stopped (" + HrToString(hr) + ").", FailureCause::CaptureFailed);
+        }
     } screen_sink;
     struct CamSink final : capture::FrameSink {
         Impl* s = nullptr;
         bool OnFrame(ID3D11Texture2D* tex, uint32_t index, TimeUs t_us) override {
             return s->cam_writer->OnFrame(tex, index, t_us);
         }
-        void OnError(HRESULT hr) override { s->Warn("The camera stopped; the screen keeps recording.", hr); }
+        void OnError(HRESULT hr) override { s->Warn("The camera stopped; the screen keeps recording.", hr, WarningCause::Camera); }
     } cam_sink;
     struct AudioFwd final : audio::AudioSink {
         Impl* s = nullptr;
         std::atomic<bool> reported{false};
         bool OnAudio(uint32_t stream, const audio::AudioPacket& p) override { return s->writer->OnAudio(stream, p); }
-        void OnAudioError(uint32_t, HRESULT hr) override {
-            if (!reported.exchange(true)) s->Warn("An audio device stopped; recording silence until it is back.", hr);
+        // The capture engine keeps the stream going with silence and reopens the device (P03); report once.
+        void OnAudioError(uint32_t stream, HRESULT hr) override {
+            if (reported.exchange(true)) return;
+            const bool is_mic = s->mic && stream == s->mic_stream;
+            s->Warn(is_mic ? "The microphone stopped; recording silence until it is back."
+                           : "System audio stopped; recording silence until it is back.",
+                    hr, is_mic ? WarningCause::AudioDeviceLost : WarningCause::SystemAudio);
         }
     } audio_fwd;
     struct WriterListener final : media::Mp4Writer::Listener {
@@ -188,8 +270,8 @@ struct RecordingSession::Impl {
         void OnWriterError(HRESULT hr) override {
             media::Mp4Writer* w = cam ? s->cam_writer.get() : s->writer.get();
             const std::string msg = w ? w->ErrorMessage() : std::string("Writing the recording failed.");
-            if (cam) s->Warn("Writing the camera file failed: " + msg, hr);
-            else s->Fail(hr, msg);
+            if (cam) s->Warn("Writing the camera file failed: " + msg, hr, WarningCause::Camera);
+            else s->Fail(hr, msg, WriterCause(hr));
         }
     } writer_listener, cam_writer_listener;
 
@@ -229,20 +311,54 @@ struct RecordingSession::Impl {
         Notify([s](SessionListener* l) { l->OnStateChanged(s); });
     }
 
-    void Fail(HRESULT hr, std::string message) {
+    void Fail(HRESULT hr, std::string message, FailureCause cause) {
         {
             ExclusiveGuard g(error_lock);
             if (error_pending.load()) return;
             error_hr = hr;
             error_message = std::move(message);
+            error_cause = cause;
             error_pending.store(true, std::memory_order_release);
         }
         wake.Set();
     }
 
-    void Warn(std::string message, HRESULT hr) {
+    void Warn(std::string message, HRESULT hr, WarningCause cause = WarningCause::Other) {
         CT_LOG_WARN("%s (%s)", message.c_str(), HrToString(hr).c_str());
-        Notify([message = std::move(message)](SessionListener* l) { l->OnWarning(message); });
+        if (quiet) return;   // arming: nobody asked yet
+        SessionWarning w;
+        w.cause = cause;
+        w.message = std::move(message);
+        w.hr = hr;
+        Notify([w = std::move(w)](SessionListener* l) { l->OnWarningInfo(w); });
+    }
+
+    SessionFailure MakeFailure(FailureCause cause, std::string message, HRESULT hr) {
+        SessionFailure f;
+        f.cause = cause;
+        f.message = std::move(message);
+        f.hr = hr;
+        f.output_dir = output_dir;
+        {
+            SharedGuard g(stats_lock);
+            f.bundle_path = bundle_path;
+        }
+        return f;
+    }
+
+    // Fault injection (ct-session, while recording): fire the armed capture / audio errors when their time came.
+    void PollFaults() {
+        const int64_t now = Clock::QpcNow();
+        if (fault_capture_qpc && now >= fault_capture_qpc) {
+            fault_capture_qpc = 0;
+            CT_LOG_WARN("fault injection: capture error %s", HrToString(cfg.faults.capture_error_hr).c_str());
+            screen_sink.OnError(cfg.faults.capture_error_hr);
+        }
+        if (fault_audio_qpc && now >= fault_audio_qpc) {
+            fault_audio_qpc = 0;
+            CT_LOG_WARN("fault injection: audio error %s", HrToString(cfg.faults.audio_error_hr).c_str());
+            audio_fwd.OnAudioError(mic ? mic_stream : sys_stream, cfg.faults.audio_error_hr);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -257,6 +373,7 @@ struct RecordingSession::Impl {
             }
             WaitForSingleObject(wake.Handle(), timeout);
 
+            if (st == State::Recording) PollFaults();
             if (error_pending.load(std::memory_order_acquire)) HandleError();
 
             std::vector<Command> cmds;
@@ -290,7 +407,15 @@ struct RecordingSession::Impl {
     void Execute(Command& c) {
         switch (c.kind) {
         case Cmd::Prepare: {
-            const HRESULT hr = DoPrepare(*c.dev, c.cfg, c.listener);
+            if (c.arm) {
+                // Quiet: the user did not ask for anything yet. A real start re-prepares and reports problems.
+                if (c.arm_gen != arm_gen.load()) break;   // disarmed or re-armed while queued
+                DoDisarm();                               // an older arm
+                const HRESULT hr = DoPrepare(*c.dev, c.cfg, c.listener, true);
+                arm_failed = FAILED(hr);   // a StartNow that relied on it prepares normally (and reports why)
+                break;
+            }
+            const HRESULT hr = DoPrepare(*c.dev, c.cfg, c.listener, false);
             preparing.store(false, std::memory_order_release);
             if (c.result) *c.result = hr;
             if (c.done) c.done->Set();
@@ -309,12 +434,42 @@ struct RecordingSession::Impl {
             break;
         }
         case Cmd::Cancel: DoCancel(); break;
+        case Cmd::Disarm: DoDisarm(); break;
+        case Cmd::Suspend:
+            if (state.load() == State::Recording) {
+                CT_LOG_INFO("system suspend: pausing the recording");
+                DoTogglePause(Clock::QpcNow());
+                paused_by_suspend = true;
+            }
+            suspend_done.Set();
+            break;
+        case Cmd::Resume:
+            if (paused_by_suspend && state.load() == State::Paused) {
+                CT_LOG_INFO("system resume: the recording stays paused");
+                Warn("The computer went to sleep, so the recording was paused. Resume it when you are ready.", S_OK);
+            }
+            paused_by_suspend = false;
+            break;
         case Cmd::Quit: break;
         }
     }
 
+    void RegisterPower() {
+        if (power_notify) return;
+        power_params.Callback = &PowerCallback;
+        power_params.Context = owner;
+        power_notify = RegisterSuspendResumeNotification(&power_params, DEVICE_NOTIFY_CALLBACK);
+        if (!power_notify) CT_LOG_WARN("RegisterSuspendResumeNotification failed (%lu); sleep will not pause", GetLastError());
+    }
+    void UnregisterPower() {
+        if (!power_notify) return;
+        UnregisterSuspendResumeNotification(power_notify);
+        power_notify = nullptr;
+        paused_by_suspend = false;
+    }
+
     // ---------------------------------------------------------------------------------------------------------
-    HRESULT DoPrepare(platform::D3DDevice& d, const SessionConfig& c, SessionListener* l) {
+    HRESULT DoPrepare(platform::D3DDevice& d, const SessionConfig& c, SessionListener* l, bool arm) {
         if (prepared.load() || (state.load() != State::Idle && state.load() != State::Countdown)) return E_ILLEGAL_METHOD_CALL;
         Stopwatch sw;
         sw.Start();
@@ -328,22 +483,34 @@ struct RecordingSession::Impl {
         audio_fwd.reported.store(false);
         output_dir = cfg.output_dir.empty() ? platform::Paths::DefaultRecordingsDir() : cfg.output_dir;
 
-        const HRESULT hr = BuildComponents();
+        quiet = arm;
+        const HRESULT hr = BuildComponents(arm);
+        quiet = false;
         if (FAILED(hr)) {
             std::string msg;
+            FailureCause cause;
             {
                 ExclusiveGuard g(error_lock);
                 msg = error_message.empty() ? "Could not start the recording: " + HrToString(hr) : error_message;
+                cause = error_cause;
                 error_message.clear();
+                error_cause = FailureCause::Other;
                 error_pending.store(false);
             }
-            CT_LOG_ERROR("prepare failed: %s", msg.c_str());
+            SessionFailure f = MakeFailure(cause, msg, hr);
+            f.during_prepare = true;
             Release();
             bundle.Delete();
+            if (arm) {
+                CT_LOG_WARN("arming failed (the start will prepare again): %s", msg.c_str());
+                return hr;
+            }
+            CT_LOG_ERROR("prepare failed (%s): %s", FailureCauseName(cause), msg.c_str());
             if (state.load() == State::Countdown) SetState(State::Idle);
-            Notify([msg, hr](SessionListener* li) { li->OnError(msg, hr); });
+            Notify([f = std::move(f)](SessionListener* li) { li->OnFailure(f); });
             return hr;
         }
+        armed = arm;
         prepared.store(true, std::memory_order_release);
         {
             ExclusiveGuard g(stats_lock);
@@ -358,55 +525,126 @@ struct RecordingSession::Impl {
         }
         const double ms = sw.ElapsedMs();
         ct::Stats::T("session.prepare").AddUs(static_cast<int64_t>(ms * 1000));
-        CT_LOG_INFO("prepared in %.1f ms: %dx%d @ %d fps %s via %s (%s), mic %s, system %s, camera %s -> %s", ms,
-                    capturer->OutputSize().w, capturer->OutputSize().h, fps, media::CodecName(codec),
-                    writer->EncoderName().c_str(), writer->IsHardware() ? "hardware" : "software", mic ? "on" : "off",
-                    sys ? "on" : "off", cam_writer ? "on" : "off", bundle.Path().c_str());
+        CT_LOG_INFO("%s in %.1f ms: %dx%d @ %d fps %s via %s (%s), mic %s, system %s, camera %s -> %s", arm ? "armed" : "prepared",
+                    ms, capturer->OutputSize().w, capturer->OutputSize().h, fps, media::CodecName(codec),
+                    writer->EncoderName().c_str(), writer->IsHardware() ? "hardware" : "software",
+                    mic || arm_mic ? "on" : "off", sys || arm_sys ? "on" : "off",
+                    cam_writer ? "on" : (arm && cfg.webcam ? "at start" : "off"), bundle.Path().c_str());
         return S_OK;
     }
 
-    void SetPrepareError(std::string msg) {
+    void SetPrepareError(std::string msg, FailureCause cause) {
         ExclusiveGuard g(error_lock);
         error_message = std::move(msg);
+        error_cause = cause;
     }
 
-    HRESULT BuildComponents() {
+    // One Mp4Writer::Init attempt, with the P11 fault injection in front of it.
+    HRESULT InitWriter(media::Mp4Writer& w, media::Mp4Writer::Config& wc) {
+        if (FAILED(cfg.faults.encoder_init_hr)) return cfg.faults.encoder_init_hr;
+        if (wc.video.prefer_hardware && FAILED(cfg.faults.hw_encoder_init_hr)) return cfg.faults.hw_encoder_init_hr;
+        return w.Init(*dev, wc, &capturer->Nv12Pool());
+    }
+
+    // Microphone / system audio wanted and an endpoint exists (no device is opened to find out).
+    bool WantMic() { return cfg.mic && devices_ready && (!cfg.mic_device.empty() || !devices.DefaultId(true).empty()); }
+    bool WantSys() { return cfg.system_audio && devices_ready && (!cfg.system_device.empty() || !devices.DefaultId(false).empty()); }
+
+    // Opens and (epoch != 0) starts the declared audio streams of an armed session; a stream that cannot be opened
+    // stays in the file as silence (the writer fills it).
+    void OpenArmedAudio(int64_t epoch) {
+        if (arm_mic) {
+            auto mc = std::make_unique<audio::WasapiCapture>();
+            audio::CaptureConfig cc;
+            cc.device_id = cfg.mic_device;
+            cc.stream_id = mic_stream;
+            const HRESULT hr = mc->Init(cc, devices);
+            if (SUCCEEDED(hr)) {
+                mic = std::move(mc);
+                if (!mic->Start(epoch, audio_fwd)) Warn("The microphone did not start.", E_FAIL, WarningCause::MicMissing);
+            } else if (IsMicBusy(hr)) {
+                Warn("The microphone is in use by another app; its track stays silent.", hr, WarningCause::MicBusy);
+            } else {
+                Warn("The microphone could not be opened; its track stays silent.", hr, WarningCause::MicMissing);
+            }
+        } else if (cfg.mic) {
+            Warn("No microphone found; recording without it.", S_OK, WarningCause::MicMissing);
+        }
+        if (arm_sys) {
+            auto s = std::make_unique<audio::WasapiLoopback>();
+            audio::CaptureConfig cc;
+            cc.device_id = cfg.system_device;
+            cc.stream_id = sys_stream;
+            const HRESULT hr = s->Init(cc, devices);
+            if (SUCCEEDED(hr)) {
+                sys = std::move(s);
+                if (!sys->Start(epoch, audio_fwd)) Warn("System audio did not start.", E_FAIL, WarningCause::SystemAudio);
+            } else {
+                Warn("System audio could not be opened; its track stays silent.", hr, WarningCause::SystemAudio);
+            }
+        }
+    }
+
+    HRESULT BuildComponents(bool arm) {
+        Stopwatch stage;
+        stage.Start();
+        double t_devices = 0, t_bundle = 0, t_audio = 0, t_screen = 0, t_capturer = 0, t_writer = 0;
+        auto lap = [&stage](double& acc) {
+            acc += stage.ElapsedMs();
+            stage.Start();
+        };
         if (!devices_ready) {
             const HRESULT hr = devices.Init();
             if (FAILED(hr)) CT_LOG_WARN("AudioDevices::Init: %s (no audio)", HrToString(hr).c_str());
             devices_ready = SUCCEEDED(hr);
         }
+        lap(t_devices);
+        if (arm) BundleWriter::DeleteStaleArmed(output_dir);   // a killed process may have left its arm behind
         std::string path;
         if (!bundle.Create(output_dir, path)) {
-            SetPrepareError("Cannot create a recording folder in " + output_dir + ".");
+            SetPrepareError("Cannot create a recording folder in " + output_dir + ".", FailureCause::OutputFolder);
             return HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
         }
         {
             ExclusiveGuard g(stats_lock);
             bundle_path = path;
         }
+        if (arm) bundle.SetHidden(true);
 
+        lap(t_bundle);
         // Audio first: a stream that cannot be opened is left out of the MP4 instead of becoming an empty track.
+        // Armed: the streams are declared by endpoint presence and opened at StartNow (no device open while idle).
         uint32_t n_audio = 0;
-        if (cfg.mic && devices_ready) {
-            const bool exists = !cfg.mic_device.empty() || !devices.DefaultId(true).empty();
+        arm_mic = arm_sys = false;
+        if (arm) {
+            arm_mic = WantMic();
+            arm_sys = WantSys();
+            if (arm_mic) mic_stream = n_audio++;
+            if (arm_sys) sys_stream = n_audio++;
+        }
+        if (!arm && cfg.mic && (devices_ready || FAILED(cfg.faults.mic_open_hr))) {
+            const bool injected = FAILED(cfg.faults.mic_open_hr);
+            const bool exists = injected || !cfg.mic_device.empty() || !devices.DefaultId(true).empty();
             if (exists) {
                 auto mc = std::make_unique<audio::WasapiCapture>();
                 audio::CaptureConfig cc;
                 cc.device_id = cfg.mic_device;
                 cc.stream_id = n_audio;
-                const HRESULT hr = mc->Init(cc, devices);
+                const HRESULT hr = injected ? cfg.faults.mic_open_hr : mc->Init(cc, devices);
                 if (SUCCEEDED(hr)) {
                     mic = std::move(mc);
                     mic_stream = n_audio++;
+                } else if (IsMicBusy(hr)) {
+                    // Left out of the file (no empty track); the recording goes on (P11 11.5, DECISIONS).
+                    Warn("The microphone is in use by another app; recording without it.", hr, WarningCause::MicBusy);
                 } else {
-                    Warn("The microphone could not be opened; recording without it.", hr);
+                    Warn("The microphone could not be opened; recording without it.", hr, WarningCause::MicMissing);
                 }
             } else {
-                Warn("No microphone found; recording without it.", S_OK);
+                Warn("No microphone found; recording without it.", S_OK, WarningCause::MicMissing);
             }
         }
-        if (cfg.system_audio && devices_ready) {
+        if (!arm && cfg.system_audio && devices_ready) {
             const bool exists = !cfg.system_device.empty() || !devices.DefaultId(false).empty();
             if (exists) {
                 auto s = std::make_unique<audio::WasapiLoopback>();
@@ -418,19 +656,26 @@ struct RecordingSession::Impl {
                     sys = std::move(s);
                     sys_stream = n_audio++;
                 } else {
-                    Warn("System audio could not be opened; recording without it.", hr);
+                    Warn("System audio could not be opened; recording without it.", hr, WarningCause::SystemAudio);
                 }
             }
         }
 
+        lap(t_audio);
         // Screen + writer with the fps clamp (DECISIONS P04 4.5: the writer does not change the rate itself).
         std::vector<int> rates{std::max(1, cfg.fps)};
         for (int r : {120, 60, 30})
             if (r < rates.front()) rates.push_back(r);
-        std::vector<media::VideoCodec> codecs{cfg.codec};
-        if (cfg.codec != media::VideoCodec::H264) codecs.push_back(media::VideoCodec::H264);
+        // Attempts: the wanted codec, then H.264, each at the clamped rates, preferring a hardware encoder (Mp4Writer
+        // itself retries its sink setup with the software MFT); finally an explicit software-only H.264 pass, for
+        // hardware encoders that fail after the sink setup (P11 11.5: "encoder missing -> software MF").
+        struct Attempt { media::VideoCodec codec; bool hw; };
+        std::vector<Attempt> attempts{{cfg.codec, true}};
+        if (cfg.codec != media::VideoCodec::H264) attempts.push_back({media::VideoCodec::H264, true});
+        attempts.push_back({media::VideoCodec::H264, false});
         HRESULT last = E_FAIL;
-        for (media::VideoCodec cd : codecs) {
+        for (const Attempt& at : attempts) {
+            const media::VideoCodec cd = at.codec;
             for (int rate : rates) {
                 capturer = std::make_unique<capture::ScreenCapturer>();
                 capture::ScreenCapturer::Config cc;
@@ -439,12 +684,15 @@ struct RecordingSession::Impl {
                 cc.fps_num = rate;
                 cc.fps_den = 1;
                 cc.hdr_tonemap = cfg.hdr_tonemap;
+                cc.release_duplication_until_start = arm;   // no duplication held while idle
                 HRESULT hr = capturer->Init(*dev, cc);
+                lap(t_capturer);
                 if (FAILED(hr)) {
                     capturer.reset();
                     SetPrepareError("Screen capture could not start on " +
                                     (cfg.display.friendly_name.empty() ? std::string("this display") : cfg.display.friendly_name) +
-                                    " (" + HrToString(hr) + ").");
+                                    " (" + HrToString(hr) + ").",
+                                    IsDeviceLost(hr) ? FailureCause::DeviceLost : FailureCause::CaptureFailed);
                     return hr;
                 }
                 writer = std::make_unique<media::Mp4Writer>();
@@ -456,18 +704,21 @@ struct RecordingSession::Impl {
                 wc.video.fps_den = 1;
                 wc.video.rc = media::RateControl::Quality;
                 wc.video.quality = std::clamp(cfg.quality, 1, 100);
+                wc.video.prefer_hardware = at.hw;
                 wc.listener = &writer_listener;
-                if (mic) {
+                wc.defer_begin_writing = arm;   // an armed writer that began keeps the AMD MFT thread polling
+                if (mic || arm_mic) {
                     media::AudioEncodeConfig ac;
                     ac.label = "mic";
                     wc.audio.push_back(ac);
                 }
-                if (sys) {
+                if (sys || arm_sys) {
                     media::AudioEncodeConfig ac;
                     ac.label = "system";
                     wc.audio.push_back(ac);
                 }
-                hr = writer->Init(*dev, wc, &capturer->Nv12Pool());
+                hr = InitWriter(*writer, wc);
+                lap(t_writer);
                 if (SUCCEEDED(hr)) {
                     fps = rate;
                     codec = cd;
@@ -478,24 +729,42 @@ struct RecordingSession::Impl {
                     break;
                 }
                 last = hr;
-                const std::string msg = writer->ErrorMessage();
-                CT_LOG_WARN("Mp4Writer::Init(%s, %d fps): %s", media::CodecName(cd), rate, msg.c_str());
+                const std::string msg = writer->ErrorMessage().empty() ? HrToString(hr) : writer->ErrorMessage();
+                CT_LOG_WARN("Mp4Writer::Init(%s, %d fps, %s): %s", media::CodecName(cd), rate, at.hw ? "hardware first" : "software",
+                            msg.c_str());
                 writer.reset();
                 capturer.reset();
                 fs::Delete(bundle.ScreenPath());
                 if (IsFileError(hr)) {
-                    SetPrepareError(msg);
+                    SetPrepareError(msg, WriterCause(hr));
                     return hr;
                 }
             }
             if (SUCCEEDED(last)) break;
         }
         if (FAILED(last)) {
-            SetPrepareError("No video encoder accepted this recording (" + HrToString(last) + ").");
+            SetPrepareError("No video encoder accepted this recording (" + HrToString(last) + ").", FailureCause::NoEncoder);
             return last;
         }
+        t_screen = t_capturer + t_writer;
+        if (!writer->IsHardware())
+            Warn("No hardware video encoder is available; recording with the software encoder (higher CPU use).", S_OK,
+                 WarningCause::SoftwareEncoder);
+        if (FAILED(cfg.faults.writer_error_hr))
+            writer->InjectWriteErrorForTest(cfg.faults.writer_error_after_samples, cfg.faults.writer_error_hr);
 
-        // Webcam (optional: failures only warn).
+        if (!arm) BuildCamera();
+        if (cfg.events) events = std::make_unique<EventRecorder>();
+        double t_camera = 0;
+        lap(t_camera);
+        CT_LOG_INFO("prepare stages: audio devices %.1f ms, bundle %.1f ms, mic/system %.1f ms, screen %.1f ms "
+                    "(capturer %.1f, writer %.1f), camera/events %.1f ms",
+                    t_devices, t_bundle, t_audio, t_screen, t_capturer, t_writer, t_camera);
+        return S_OK;
+    }
+
+    // Webcam + cam.mp4 writer (optional: failures only warn).
+    void BuildCamera() {
         if (cfg.webcam) {
             auto cam = std::make_unique<capture::WebcamSource>();
             HRESULT hr;
@@ -526,25 +795,38 @@ struct RecordingSession::Impl {
                 } else {
                     cw.reset();
                     fs::Delete(bundle.CamPath());
-                    Warn("The camera file could not be created; recording without the camera.", hr);
+                    Warn("The camera file could not be created; recording without the camera.", hr, WarningCause::Camera);
                 }
             } else {
-                Warn("The camera could not be opened; recording without it.", hr);
+                Warn("The camera could not be opened; recording without it.", hr, WarningCause::Camera);
             }
         }
-
-        if (cfg.events) events = std::make_unique<EventRecorder>();
-        return S_OK;
     }
 
     // ---------------------------------------------------------------------------------------------------------
     void DoStartNow(int64_t trig) {
+        if (!prepared.load() && arm_failed && dev) {
+            arm_failed = false;
+            if (FAILED(DoPrepare(*dev, cfg, listener, false))) return;
+        }
         if (!prepared.load()) {
             CT_LOG_WARN("StartNow without a prepared session ignored");
             if (state.load() == State::Countdown) SetState(State::Idle);
             return;
         }
         if (state.load() != State::Idle && state.load() != State::Countdown) return;
+        arm_state.store(0);
+        const bool from_arm = armed;
+        armed = false;
+        if (from_arm && (WantMic() != arm_mic || WantSys() != arm_sys)) {
+            // A microphone / output appeared or went away since arming: the file's track layout would be wrong.
+            CT_LOG_INFO("audio endpoints changed since arming; preparing again");
+            Release();
+            bundle.Delete();
+            if (FAILED(DoPrepare(*dev, cfg, listener, false))) return;
+            DoStartNow(trig);
+            return;
+        }
         SetState(State::Starting);
         trigger_qpc = trig ? trig : Clock::QpcNow();
         screen_sink.first_frame_qpc.store(0);
@@ -554,16 +836,30 @@ struct RecordingSession::Impl {
         clock->Start(epoch);
         clock_source.clock = clock;
         start_qpc = epoch;
+        // Screen first (hotkey -> first frame), then audio: audio timestamps come from the device positions, so the
+        // order does not move anything in time; the writer pads the few ms before the first packet with silence.
         bool ok = writer->Start();
+        if (ok) ok = capturer->Start(epoch, screen_sink);
+        if (from_arm) {
+            bundle.SetHidden(false);
+            rename_to = UtcTime::LocalFileStamp();
+            if (ok) OpenArmedAudio(epoch);
+            if (ok) BuildCamera();
+            ExclusiveGuard g(stats_lock);
+            stats.has_mic = mic != nullptr;
+            stats.has_system = sys != nullptr;
+            stats.has_camera = cam_writer != nullptr;
+        } else {
+            rename_to.clear();
+            if (ok && mic && !mic->Start(epoch, audio_fwd)) Warn("The microphone did not start.", E_FAIL, WarningCause::MicMissing);
+            if (ok && sys && !sys->Start(epoch, audio_fwd)) Warn("System audio did not start.", E_FAIL, WarningCause::SystemAudio);
+        }
         if (ok && cam_writer && !cam_writer->Start()) {
-            Warn("The camera writer did not start; recording without the camera.", E_FAIL);
+            Warn("The camera writer did not start; recording without the camera.", E_FAIL, WarningCause::Camera);
             cam_writer.reset();
             webcam.reset();
         }
-        if (ok && mic && !mic->Start(epoch, audio_fwd)) Warn("The microphone did not start.", E_FAIL);
-        if (ok && sys && !sys->Start(epoch, audio_fwd)) Warn("System audio did not start.", E_FAIL);
-        if (ok) ok = capturer->Start(epoch, screen_sink);
-        if (ok && webcam && !webcam->Start(clock_source, cam_sink)) Warn("The camera did not start.", E_FAIL);
+        if (ok && webcam && !webcam->Start(clock_source, cam_sink)) Warn("The camera did not start.", E_FAIL, WarningCause::Camera);
         if (ok && events) {
             EventRecorder::Config ec;
             ec.region = capturer->Region();
@@ -571,19 +867,25 @@ struct RecordingSession::Impl {
             ec.cursor_hz = cfg.cursor_hz;
             Err err;
             if (!events->Start(ec, bundle.EventsPath(), *clock, &err)) {
-                Warn("Cursor and keyboard events are not recorded: " + err.message, E_FAIL);
+                Warn("Cursor and keyboard events are not recorded: " + err.message, E_FAIL, WarningCause::Events);
                 events.reset();
             }
         }
         if (!ok) {
-            Fail(E_FAIL, "The recording could not start.");
+            Fail(E_FAIL, "The recording could not start.", FailureCause::CaptureFailed);
             SetState(State::Recording);   // HandleError finishes from a recording state
             HandleError();
             return;
         }
         BuildEmergencyMeta();
         g_armed.store(owner, std::memory_order_release);
+        access_warned = false;
+        RegisterPower();
         next_tick_qpc = Clock::QpcNow();
+        const SessionFaults& fl = cfg.faults;
+        fault_capture_qpc = FAILED(fl.capture_error_hr) ? Clock::QpcNow() + MsToQpc(std::max(0, fl.capture_error_after_ms)) : 0;
+        fault_audio_qpc = FAILED(fl.audio_error_hr) ? Clock::QpcNow() + MsToQpc(std::max(0, fl.audio_error_after_ms)) : 0;
+        if (fl.Any()) CT_LOG_WARN("fault injection armed for this recording");
         SetState(State::Recording);
     }
 
@@ -623,7 +925,8 @@ struct RecordingSession::Impl {
                            writer->GetStats().video_rejected.load();
         st.mic_peak_db = mic ? PeakDb(mic->Levels()) : audio::Meter::kFloorDb;
         st.sys_peak_db = sys ? PeakDb(sys->Levels()) : audio::Meter::kFloorDb;
-        st.free_disk_bytes = fs::FreeSpaceBytes(bundle.Path());
+        const bool fake_disk = cfg.faults.free_disk_bytes && Clock::QpcNow() - start_qpc >= MsToQpc(cfg.faults.free_disk_after_ms);
+        st.free_disk_bytes = fake_disk ? cfg.faults.free_disk_bytes : fs::FreeSpaceBytes(bundle.Path());
         {
             ExclusiveGuard g(stats_lock);
             stats = st;
@@ -641,30 +944,50 @@ struct RecordingSession::Impl {
         }
         Notify([st](SessionListener* l) { l->OnTick(st); });
 
+        // Access lost for a while (secure desktop, fullscreen game, display change): frames repeat; say so once.
+        const int64_t lost_since = cs.lost_since_qpc.load(std::memory_order_relaxed);
+        if (lost_since == 0) {
+            access_warned = false;
+        } else if (!access_warned && Clock::QpcNow() - lost_since > 3 * Clock::QpcFrequency()) {
+            access_warned = true;
+            Warn("Windows blocked screen capture (secure desktop or display change). The last image repeats until it is back.",
+                 DXGI_ERROR_ACCESS_LOST);
+        }
+
         if (st.free_disk_bytes > 0 && st.free_disk_bytes < kStopFreeBytes) {
-            Fail(HRESULT_FROM_WIN32(ERROR_DISK_FULL), "Disk almost full: the recording was stopped and saved.");
+            Fail(HRESULT_FROM_WIN32(ERROR_DISK_FULL), "Disk almost full: the recording was stopped and saved.", FailureCause::DiskFull);
         } else if (st.free_disk_bytes > 0 && st.free_disk_bytes < kWarnFreeBytes && !disk_warned) {
             disk_warned = true;
-            Warn("Less than 1 GB of disk space left for recordings.", S_OK);
+            Warn("Less than 1 GB of disk space left for recordings.", S_OK, WarningCause::LowDisk);
         }
     }
 
     void HandleError() {
         HRESULT hr;
         std::string msg;
+        FailureCause cause;
         {
             ExclusiveGuard g(error_lock);
             hr = error_hr;
             msg = error_message;
+            cause = error_cause;
             error_pending.store(false);
             error_message.clear();
+            error_cause = FailureCause::Other;
         }
         const State s = state.load();
         if (s != State::Recording && s != State::Paused && s != State::Starting) return;
-        CT_LOG_ERROR("recording error: %s (%s)", msg.c_str(), HrToString(hr).c_str());
+        CT_LOG_ERROR("recording error (%s): %s (%s)", FailureCauseName(cause), msg.c_str(), HrToString(hr).c_str());
         SetState(State::Error);
-        Notify([msg, hr](SessionListener* l) { l->OnError(msg, hr); });
-        Finish(/*keep=*/true, /*notify=*/true);
+        SessionFailure f = MakeFailure(cause, std::move(msg), hr);
+        f.during_prepare = s == State::Starting;
+        // Stop cleanly and keep what was written (P11 11.5): the writer already finalized what it had on a write
+        // error; Finish probes screen.mp4 and marks meta.json "incomplete" when the file is not readable.
+        FinishResult r;
+        Finish(/*keep=*/true, /*notify=*/true, &r);
+        f.saved = r.frames > 0;
+        f.finalized = r.playable;
+        Notify([f = std::move(f)](SessionListener* l) { l->OnFailure(f); });
     }
 
     // Stop order (P05 5.1): capture -> webcam -> audio -> writers -> events -> meta.
@@ -742,8 +1065,14 @@ struct RecordingSession::Impl {
         emergency_done.store(false);
     }
 
-    void Finish(bool keep, bool notify) {
+    struct FinishResult {
+        uint64_t frames = 0;
+        bool playable = true;
+    };
+
+    void Finish(bool keep, bool notify, FinishResult* result = nullptr) {
         g_armed.store(nullptr, std::memory_order_release);
+        UnregisterPower();
         SetState(State::Finalizing);
         Stopwatch sw;
         sw.Start();
@@ -754,10 +1083,20 @@ struct RecordingSession::Impl {
             frames = writer->GetStats().video_written.load();
             if (frames > 0) duration = writer->GetStats().last_video_us.load() + FrameTimeUs(1, fps, 1);
         }
+        // After a failure (result != null) check that the file is readable: a writer error or a lost device may
+        // have left it without an index.
+        bool playable = true;
+        if (result && keep && frames > 0) {
+            media::ProbeResult pr;
+            const HRESULT ph = media::Probe(bundle.ScreenPath(), pr);
+            playable = SUCCEEDED(ph) && pr.video_streams == 1;
+            if (!playable) CT_LOG_WARN("screen.mp4 is not readable after the failure: %s", HrToString(ph).c_str());
+        }
         std::string path = bundle.Path();
         if (keep) {
             BundleMeta m = MakeMeta();
             m.duration_us = duration;
+            m.incomplete = !playable;
             if (!bundle.WriteMeta(BuildMetaJson(m))) Warn("meta.json could not be written.", E_FAIL);
         }
         const double ms = sw.ElapsedMs();
@@ -766,9 +1105,30 @@ struct RecordingSession::Impl {
                     static_cast<unsigned long long>(fs::FileSize(bundle.ScreenPath())), path.c_str());
         Release();
         if (!keep) bundle.Delete();
+        if (keep && !rename_to.empty() && rename_to != bundle.Stem()) {
+            // Armed long before the start: name the bundle after the start time (every file is closed now).
+            if (bundle.Rename(rename_to)) {
+                path = bundle.Path();
+                ExclusiveGuard g(stats_lock);
+                bundle_path = path;
+            }
+        }
+        rename_to.clear();
         prepared.store(false);
         SetState(State::Idle);
+        if (result) {
+            result->frames = frames;
+            result->playable = playable;
+        }
         if (keep && notify && frames > 0) Notify([path](SessionListener* l) { l->OnFinished(path); });
+    }
+
+    void DoDisarm() {
+        arm_failed = false;
+        const State s = state.load();
+        if (!armed || !prepared.load() || (s != State::Idle && s != State::Countdown)) return;
+        Release();
+        bundle.Delete();
     }
 
     void DoCancel() {
@@ -787,6 +1147,7 @@ struct RecordingSession::Impl {
     // Writers before the pools they reference (capturer, webcam).
     void Release() {
         g_armed.store(nullptr, std::memory_order_release);
+        UnregisterPower();
         live_mic_db.store(audio::Meter::kFloorDb);
         live_sys_db.store(audio::Meter::kFloorDb);
         if (capturer) capturer->Stop();
@@ -801,6 +1162,8 @@ struct RecordingSession::Impl {
         mic.reset();
         sys.reset();
         events.reset();
+        armed = false;
+        arm_mic = arm_sys = false;
         prepared.store(false);
     }
 };
@@ -857,6 +1220,50 @@ void RecordingSession::PrepareAsync(platform::D3DDevice& dev, const SessionConfi
 
 bool RecordingSession::IsPrepared() const { return m_impl->prepared.load(std::memory_order_acquire); }
 
+void RecordingSession::Arm(platform::D3DDevice& dev, const SessionConfig& cfg, SessionListener* listener) {
+    {
+        ExclusiveGuard g(m_impl->arm_lock);
+        m_impl->arm_cfg = cfg;
+    }
+    m_impl->arm_state.store(1);
+    Impl::Command c;
+    c.kind = Impl::Cmd::Prepare;
+    c.arm = true;
+    c.arm_gen = m_impl->arm_gen.fetch_add(1) + 1;
+    c.dev = &dev;
+    c.cfg = cfg;
+    c.listener = listener;
+    m_impl->Post(std::move(c));
+}
+
+void RecordingSession::Disarm() {
+    m_impl->arm_state.store(0);
+    m_impl->arm_gen.fetch_add(1);
+    Impl::Command c;
+    c.kind = Impl::Cmd::Disarm;
+    m_impl->Post(std::move(c));
+}
+
+bool RecordingSession::IsArmed() const { return m_impl->arm_state.load() != 0; }
+
+bool RecordingSession::IsArmedFor(const SessionConfig& cfg) const {
+    if (m_impl->arm_state.load() == 0) return false;
+    SharedGuard g(m_impl->arm_lock);
+    return SameSetup(m_impl->arm_cfg, cfg);
+}
+
+bool RecordingSession::SameSetup(const SessionConfig& a, const SessionConfig& b) {
+    const RectI &ra = a.display.rect, &rb = b.display.rect, &ga = a.region, &gb = b.region;
+    return a.display.device_name == b.display.device_name && ra.x == rb.x && ra.y == rb.y && ra.w == rb.w && ra.h == rb.h &&
+           a.display.rotation == b.display.rotation && a.display.hdr == b.display.hdr && ga.x == gb.x && ga.y == gb.y &&
+           ga.w == gb.w && ga.h == gb.h && a.fps == b.fps && a.codec == b.codec && a.quality == b.quality &&
+           a.hdr_tonemap == b.hdr_tonemap && a.mic == b.mic && a.mic_device == b.mic_device &&
+           a.system_audio == b.system_audio && a.system_device == b.system_device && a.webcam == b.webcam &&
+           a.webcam_device == b.webcam_device && a.webcam_size.w == b.webcam_size.w && a.webcam_size.h == b.webcam_size.h &&
+           a.webcam_synthetic == b.webcam_synthetic && a.output_dir == b.output_dir && a.keystrokes == b.keystrokes &&
+           a.cursor_hz == b.cursor_hz && a.events == b.events && !a.faults.Any() && !b.faults.Any();
+}
+
 void RecordingSession::StartCountdown() {
     State expected = State::Idle;   // the prepare may still be queued (PrepareAsync posted from another thread)
     if (!m_impl->state.compare_exchange_strong(expected, State::Countdown)) return;
@@ -898,6 +1305,8 @@ void RecordingSession::Stop() {
 }
 
 void RecordingSession::Cancel() {
+    m_impl->arm_state.store(0);
+    m_impl->arm_gen.fetch_add(1);
     Impl::Command c;
     c.kind = Impl::Cmd::Cancel;
     m_impl->Post(std::move(c));
@@ -918,6 +1327,21 @@ void RecordingSession::EmergencyFinalize() {
     WriteFile(f, s.emergency_meta.data(), static_cast<DWORD>(s.emergency_meta.size()), &written, nullptr);
     FlushFileBuffers(f);
     CloseHandle(f);
+}
+
+void RecordingSession::OnSystemSuspend() {
+    // The capture and encode threads must be paused before the GPU powers down; the system waits for this callback.
+    m_impl->suspend_done.Reset();
+    Impl::Command c;
+    c.kind = Impl::Cmd::Suspend;
+    m_impl->Post(std::move(c));
+    if (!m_impl->suspend_done.Wait(1000)) CT_LOG_WARN("suspend: the session did not pause within 1 s");
+}
+
+void RecordingSession::OnSystemResume() {
+    Impl::Command c;
+    c.kind = Impl::Cmd::Resume;
+    m_impl->Post(std::move(c));
 }
 
 State RecordingSession::GetState() const { return m_impl->state.load(std::memory_order_acquire); }

@@ -487,3 +487,46 @@ CT_TEST_DEVICE(timeline_player_playback_feed_with_audio_device) {
     tp.Pause();
     tp.Shutdown();
 }
+
+// P11 11.1: paused, the render stream stops after TimelinePlayer::kEngineIdleStopMs (no 100 Hz silence rendering);
+// Play restarts it and the clock follows the device again.
+CT_TEST_DEVICE(timeline_player_audio_output_stops_while_paused) {
+    CT_REQUIRE_DEVICE(dev);
+    CT_REQUIRE_MEDIA(pat, "pattern_1080p60_5s.mp4");
+    Env env;
+    CT_REQUIRE(env.Init(dev, pat));
+    audio::AudioDevices devices;
+    CT_REQUIRE(SUCCEEDED(devices.Init()));
+    project::Project p = AudioProject(env.bundle);
+    TimelinePlayer tp;
+    CT_REQUIRE(SUCCEEDED(tp.Init(env.rc, devices)));
+    if (!tp.HasAudioOutput()) CT_SKIP("no audio render endpoint");
+    tp.SetProject(&p);
+    const auto wait_for = [&](bool running, int max_ms) {
+        for (int i = 0; i < max_ms / 10 && tp.AudioOutputRunning() != running; ++i) Sleep(10);
+        return tp.AudioOutputRunning() == running;
+    };
+    CT_CHECK(wait_for(false, 3000));   // never played: stopped after the idle delay
+    for (int round = 0; round < 2; ++round) {
+        tp.Play();
+        CT_CHECK(tp.AudioOutputRunning());   // restarted synchronously by Play
+        float peak = 0;
+        for (int i = 0; i < 40; ++i) {
+            Sleep(10);
+            peak = std::max(peak, tp.Audio().PeakLevel());
+        }
+        tp.Tick();
+        CT_CHECK(tp.Clock().UsingAudio());
+        CT_CHECK(peak > 0.1f);
+        tp.Pause();
+        CT_CHECK(wait_for(false, 3000));
+    }
+    // A quick pause/play inside the idle delay keeps the stream running.
+    tp.Play();
+    tp.Pause();
+    tp.Play();
+    CT_CHECK(tp.AudioOutputRunning());
+    tp.Pause();
+    tp.Shutdown();
+    CT_CHECK(!tp.AudioOutputRunning());
+}

@@ -12,6 +12,7 @@
 
 #include <windows.h>
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -77,6 +78,24 @@ CT_TEST(log_line_format_and_warn_wakeup) {
     CT_CHECK(line.find(" [I] [logtest ] log_test.cpp:") == 23);
     CT_CHECK(text.find("[W] [logtest ]") != std::string::npos);
     ct::Log::Tick();   // still exists, does nothing
+}
+
+// P11 11.1: with an empty ring the ct-log thread waits without a timeout; an Info line written after an idle
+// period still reaches the file through the 500 ms drain (no Warn, no Flush), every time.
+CT_TEST(log_info_after_idle_reaches_file) {
+    LogSession session(ct::LogLevel::Info);
+    for (int round = 0; round < 3; ++round) {
+        Sleep(700);   // let the writer drain and go idle
+        char marker[32];
+        std::snprintf(marker, sizeof(marker), "idle-line-%d", round);
+        CT_LOG_INFO("%s", marker);
+        const int64_t start = ct::Clock::NowUs();
+        while (CountLines(session.dir, marker) == 0 && ct::Clock::NowUs() - start < 3'000'000) Sleep(10);
+        CT_CHECK_EQ(CountLines(session.dir, marker), static_cast<size_t>(1));
+        const int64_t waited_ms = (ct::Clock::NowUs() - start) / 1000;
+        CT_CHECK(waited_ms >= 300);    // batched, not written per line
+        CT_CHECK(waited_ms < 2500);    // gross: the drain period is 500 ms
+    }
 }
 
 CT_TEST(log_100k_lines_from_time_critical_thread) {

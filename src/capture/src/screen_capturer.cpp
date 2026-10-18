@@ -45,6 +45,9 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
     dc.display = m_cfg.display;
     dc.region = m_cfg.region;
     dc.prefer_fp16_when_hdr = m_cfg.hdr_tonemap;
+    const RectI whole = ClampRegionToDisplay(m_cfg.display, RectI{});
+    dc.fit_full_display = m_cfg.fit_on_mode_change && m_cfg.region.x == whole.x && m_cfg.region.y == whole.y &&
+                          m_cfg.region.w == whole.w && m_cfg.region.h == whole.h;
     CT_RETURN_IF_FAILED(m_dup.Init(dev, dc));
     m_ran_before = false;
 
@@ -65,6 +68,11 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
     nv12.BindFlags = m_conv.DstBindFlags();
     CT_RETURN_IF_FAILED(m_nv12_pool.Init(dev, nv12, m_cfg.nv12_pool_size, "capture.nv12"));
     CT_LOG_IF_FAILED(m_gpu_timer.Init(dev));
+    if (m_cfg.release_duplication_until_start) {
+        platform::D3DDevice::Lock lock(dev);
+        m_dup.ReleaseDuplication();
+        m_ran_before = true;   // Run re-creates it
+    }
     CT_LOG_INFO("ScreenCapturer: %dx%d @ %d/%d fps, NV12 pool %u", m_output_size.w, m_output_size.h, m_cfg.fps_num,
                 m_cfg.fps_den, m_cfg.nv12_pool_size);
     return S_OK;
@@ -72,14 +80,14 @@ HRESULT ScreenCapturer::Init(platform::D3DDevice& dev, const Config& cfg) {
 
 void ScreenCapturer::ResetStats() {
     for (auto* c : {&m_stats.ticks, &m_stats.new_frames, &m_stats.repeats, &m_stats.dropped_pool_empty, &m_stats.dropped_sink,
-                    &m_stats.late_ticks, &m_stats.access_lost, &m_stats.reinits})
+                    &m_stats.late_ticks, &m_stats.access_lost, &m_stats.reinits, &m_stats.late_images, &m_stats.fit_frames})
         c->store(0, std::memory_order_relaxed);
     m_stats.acquire.Reset();
     m_stats.convert.Reset();
     m_stats.gpu.Reset();
     m_stats.present_lag.Reset();
-    m_stats.late_images.store(0, std::memory_order_relaxed);
     m_stats.first_frame_us.store(-1, std::memory_order_relaxed);
+    m_stats.lost_since_qpc.store(0, std::memory_order_relaxed);
     m_stats.last_new_frame_qpc.store(0, std::memory_order_relaxed);
 }
 
@@ -133,12 +141,20 @@ void ScreenCapturer::Run() {
     int64_t n = 0;
     bool lost = false;
     int64_t next_reinit_qpc = 0;
+    int64_t lost_since_qpc = 0;   // start of the current access-lost streak
+    const int64_t display_lost_qpc = static_cast<int64_t>(m_cfg.display_lost_timeout_ms) * freq / 1000;
+    auto set_lost = [&](bool on, int64_t now) {
+        if (on == lost) return;
+        lost = on;
+        lost_since_qpc = on ? now : 0;
+        m_stats.lost_since_qpc.store(on ? std::max<int64_t>(now, 1) : 0, std::memory_order_relaxed);
+    };
     if (m_ran_before) {
         // A duplication that already delivered images returns the next one only when the desktop changes, so a
         // restarted capture of a static desktop would never get its first image (and deliver no frame at all). A
         // fresh duplication starts with the current desktop image. A failure takes the access-lost retry path.
         platform::D3DDevice::Lock lock(*m_dev);
-        if (FAILED(m_dup.Reinit())) lost = true;
+        if (FAILED(m_dup.Reinit())) set_lost(true, Clock::QpcNow());
     }
     m_ran_before = true;
     uint32_t cur = 0;               // copy path: BGRA pool slot holding the newest desktop image
@@ -209,10 +225,16 @@ void ScreenCapturer::Run() {
             if (lost && now >= next_reinit_qpc) {
                 const HRESULT hr = m_dup.Reinit();
                 if (SUCCEEDED(hr)) {
-                    lost = false;
+                    set_lost(false, now);
                     m_stats.reinits.fetch_add(1, std::memory_order_relaxed);
                 } else if (IsDeviceLost(hr)) {
                     fatal = hr;
+                } else if (hr == DXGI_ERROR_NOT_FOUND && now - lost_since_qpc >= display_lost_qpc) {
+                    // Unplugged and not back: end the recording (the file keeps everything so far). A secure desktop
+                    // (E_ACCESSDENIED) or a fullscreen game never gets here; those repeat frames until access returns.
+                    CT_LOG_ERROR("ScreenCapturer: %ls is gone for %u ms; stopping", m_cfg.display.device_name.c_str(),
+                                 m_cfg.display_lost_timeout_ms);
+                    fatal = kDisplayRemovedHr;
                 } else {
                     next_reinit_qpc = now + reinit_interval_qpc;
                 }
@@ -253,7 +275,7 @@ void ScreenCapturer::Run() {
                     // The direct path stopped being possible (mode change, no SRV binding); AcquireInto from now on.
                 } else if (hr == DXGI_ERROR_ACCESS_LOST) [[unlikely]] {
                     m_stats.access_lost.fetch_add(1, std::memory_order_relaxed);
-                    lost = true;
+                    set_lost(true, Clock::QpcNow());
                     next_reinit_qpc = Clock::QpcNow();
                 } else if (FAILED(hr)) [[unlikely]] {
                     fatal = hr;
@@ -275,12 +297,19 @@ void ScreenCapturer::Run() {
                 uint32_t idx = 0;
                 ID3D11Texture2D* nv12 = m_nv12_pool.Acquire(idx);
                 if (!nv12) [[unlikely]] {
+                    // Every texture is still with the encoder (it fell behind): this image is lost, but the tick
+                    // still gets the previous frame so the file keeps one frame per tick (a repeat, not a hole).
                     m_stats.dropped_pool_empty.fetch_add(1, std::memory_order_relaxed);
+                    if (has_last && !repeat_ref) repeat(t_us, false);
                 } else {
                     const int64_t c0 = Clock::QpcNow();
                     m_gpu_timer.Begin(ctx);
-                    const HRESULT hr = direct_src ? m_conv.ConvertRegion(ctx, direct_src, direct_box, nv12)
-                                                  : m_conv.Convert(ctx, m_bgra_pool.At(cur), nv12);
+                    // After a mode change of a whole-display recording the whole new desktop is scaled in.
+                    const bool fit = direct_src && m_dup.NeedsFit();
+                    if (fit) [[unlikely]] m_stats.fit_frames.fetch_add(1, std::memory_order_relaxed);
+                    const HRESULT hr = fit ? m_conv.ConvertFit(ctx, direct_src, m_dup.CurrentRotation(), nv12)
+                                       : direct_src ? m_conv.ConvertRegion(ctx, direct_src, direct_box, nv12)
+                                                    : m_conv.Convert(ctx, m_bgra_pool.At(cur), nv12);
                     m_gpu_timer.End(ctx);
                     m_stats.convert.AddUs(Clock::QpcToUs(Clock::QpcNow(), c0));
                     if (FAILED(hr)) [[unlikely]] {

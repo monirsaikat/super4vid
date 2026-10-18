@@ -1752,6 +1752,193 @@ locks in front of the frame a scrub waits for; on the loaded machine the seek-be
 than not (260 -> 306 / 421 ms, 554 -> 923 ms in A/B runs), while the p50 gain came from the scrub abort/resume.
 Why: seek latency of the playhead frame comes first.
 Impact: none outside MediaCache; the test is now `media_cache_one_copy_per_frame_window_fill` (<= 2 seeks).
+
+## 2026-10-18 · P09 tasks 9.4/9.5 · Media provider, scrub/auto-scroll, Regenerate with undo
+Spec said: filmstrips from `MediaCache::Thumbnail(media_t)` and peaks at 100/s, never blocking; scrubbing calls
+`player.HintScrub`; playback auto-scrolls (page by 80 %); Camera section: auto parameters with live regeneration
+(debounced 300 ms) and "Regenerate"; every mutation is one undo entry through `state.Edit`.
+Done instead / interpreted:
+- `TimelineMediaProvider` gained `ClipThumbnail(clip, t, ...)` (default: `Thumbnail(clip.media, ...)`); the editor's
+  `CacheMediaProvider` takes a second cache function and serves `Source::Camera` clips of a recording from
+  `TimelinePlayer::CameraCache`, so the camera lane shows the webcam instead of the screen.
+- Auto-scroll in reverse (J) pages left when the playhead reaches the left 5 %; a far jump puts the playhead 90 % in
+  (10 % going forward), so it is not immediately off-screen again.
+- "Regenerate" covers everything generated from events.ctev: click/typing zooms and the Auto-Follow cursor pans (the
+  cursor's look, click ripples and keystrokes are drawn live from the log by the compositor and need no regeneration).
+  The logic moved from the editor window to `AutoZoom::ForProject/Regenerate(project, log lookup)` (ct_project) so it
+  is tested without a window; screen clips are processed in timeline order and the earlier clip wins at equal times.
+  It runs on the UI thread: a 30 min recording takes 0.5-2.6 ms (the IO pool is only used to load the logs).
+- Undo: an explicit Regenerate is its own entry ("Regenerate Auto-Zoom") and none when the keys did not change. The live
+  regeneration amends the parameter edit's entry (`UndoStack::Amend`, `EditorState::EditAmend(label, revision, fn)`)
+  when `EditorState::revision` still equals the value right after that edit; any edit, undo or redo in between makes
+  it a separate entry. Otherwise one undo would revert only the keys and leave the new parameters (or the reverse).
+  `PropertiesPanel::on_live_regenerate(state, amend_revision)` carries the revision; `on_regenerate` is unchanged.
+- Test-only finding: `MediaCache::Thumbnail` calls `Async::Run` while holding its aux lock, so after
+  `Async::Shutdown()` (inline jobs) it deadlocks. Never happens in the app (the pool lives until exit); ct_ui_tests
+  restart the pool around MediaCache tests. Left for the playback owner.
+Why: undo must restore what the user saw; camera clips showed the wrong video; reverse playback lost the playhead.
+Impact: providers other than CacheMediaProvider are unaffected (default ClipThumbnail).
+
+## 2026-10-18 · P11 tasks 11.5/11.6 · Error UX wiring, fault injection, device recreation, meter test, keyboard
+Spec said: every OnError path shows a banner/toast with what happened, what to do and Details; each message tested by
+forcing the condition (invalid output dir, mic held by another process, `dxcap -forcetdr`); disk full -> warning at
+1 GB, auto-stop at 200 MB; settings Audio "meters test"; keyboard: bar actions reachable with Tab/Enter.
+Done instead:
+- Structured reports: `SessionListener::OnFailure(SessionFailure)` / `OnWarningInfo(SessionWarning)` (defaults forward
+  to OnError/OnWarning, so headless and older listeners keep working). A failure while recording is reported after
+  Finalizing (and after OnFinished when frames were kept), so it can say whether the bundle was saved. After a failure
+  the session probes screen.mp4 and writes meta.json with `"incomplete": true` when it does not open.
+- Fault injection instead of real conditions for the automated tests: `recorder::SessionFaults` (SessionConfig) and
+  `exportng::ExportFaults` (ExportRequest) inject an Mp4Writer write HRESULT (existing `InjectWriteErrorForTest`), a
+  capture error, hardware/all encoder setup failures, a mic open failure, an audio stream error and a fake free-disk
+  value. A VHD needs admin rights and `dxcap -forcetdr` needs the Graphics Tools + admin; both stay HUMAN checks.
+- Mic busy: the stream is left out of the file (no empty mic track) and the recording continues; the banner says
+  "Recording continues without it". Mic unplugged mid-recording: the P03 capture engine already writes silence and
+  reopens; the session reports it once as a warning (banner).
+- Encoder: Mp4Writer already retries its sink setup with the software MFT; the session and the export add a final
+  software-only attempt with a fresh writer when the hardware-first setup fails for a non-path reason. No encoder at
+  all = `FailureCause::NoEncoder` / kErrNoEncoder.
+- Device lost: the recorder app recreates the D3D device, the swapchain and both ImGui backends (the DX11 backend's
+  shutdown destroys every platform window including the main viewport's Win32 data, so Win32 is re-initialized too,
+  and the viewport-window hook re-installed) once the session is idle, on a DeviceLost failure or a failed Present
+  (it used to quit). The editor's device loss handling is unchanged (editor shell area of another task).
+- Recorder bar UI: no banner fits in the 260x44 bar, so the ErrorBanner is drawn in its own capture-excluded viewport at
+  the bottom-right of the work area (where the toasts go, toasts stack above it) and stays until dismissed or
+  resolved. Recovery actions: Choose another folder... (folder picker posted out of the ImGui frame; sets
+  `recording.output_dir`, saves, refreshes an open settings window), Open in editor, Show in folder. The "Saved"
+  toast is not shown for a failed recording (the panel carries the same actions).
+- Export dialog: a failed export reopens the dialog with the banner (Choose another folder... = the save dialog,
+  Try again); the error toast stays (shorter). Without a UI poster (headless tests) ExportRequest::on_finished runs on
+  ct-export and would destroy the job from its own thread; tests install a poster.
+- ErrorBanner gained action buttons (AddAction/TakeAction); new ErrorKinds for the recorder/export variants;
+  `ErrorKindForHr`; long-path prefixes are stripped from folder messages.
+- Settings > Audio > Test microphone uses a new `ui::LevelMonitor` (WASAPI capture/loopback with a null sink opened on
+  the IO pool). The live meter test uses the loopback of a rendered tone (no microphone on the reference machine).
+- Keyboard: the bar window is no longer NoNav, the app enables NavEnableKeyboard, custom chips draw the nav cursor,
+  the right-hand buttons are submitted left to right so Tab follows the visual order; tray Enter / tray menu Show
+  activates the bar and focuses its first control. Diagnostics `--fault-test KIND [--no-exclude --fault-shot png]`
+  and `--bar-keys "tab,enter,..."` (skip the single-instance check like the other diagnostics).
+Why: the conditions cannot be produced on demand on a shared machine without admin; the bar is too small for an
+inline banner; a TDR used to end the app.
+Impact: P12 smoke tests can call `--fault-test`; the editor could reuse `DescribeExportFailure` and the device
+recreation sequence for its own device loss.
+
+## 2026-10-18 · P11 task 11.1 · Idle power measured by thread sampling; audio output stops while paused
+Spec said: `wpr -start GeneralProfile -start Power`, 60 s idle, WPA context switches < 20/s; fixes listed in P11 11.1.
+Done instead: WPR's kernel providers need admin rights, which the agents' account does not have, so
+`tools/idle_probe` samples NtQuerySystemInformation(SystemProcessInformation) twice: per-thread context switches
+(= wake-ups) and kernel+user time, threads named by GetThreadDescription or their Win32 start module. It launches the
+app (or attaches with `--pid`), and ends it with WM_QUIT so Debug exit checks still run. Fixes: the ct-log thread
+waits without a timeout while its ring is empty (a producer wakes it once, then the 500 ms batching applies); the
+editor's 1 Hz timer is armed only while `Autosave::NeedsTick()` (unsaved edits, a write in flight or failed) or with
+`--stats`, and redraws/s is bucketed by QPC instead of by that timer; `TimelinePlayer` parks its mixer thread while
+paused and stops the WASAPI render stream after `kEngineIdleStopMs` = 250 ms (after the engine's 5 ms fade), Play
+restarts it synchronously (`WasapiRender` keeps its IAudioClient, so only prefill + Start). Start/Stop are serialized
+by a lock; the mixer thread does the stop.
+Why: an idle editor woke 170 times a second (silence rendering at 100 Hz plus a 10 ms ring poll), every mode woke
+twice a second for the log. Measured: all modes 0.1-0.5 wakes/s, 0 redraws/s, 0.0 ms CPU over 30 s.
+Impact: the first Play after a pause longer than 250 ms pays the stream start (a few ms); the clock asks
+`DeviceOk()` after the restart, so it still follows the device. Test: `timeline_player_audio_output_stops_while_paused`.
+
+## 2026-10-18 · P11 task 11.2 · Device on a helper thread, delay-loaded MF/D2D/DWrite, caps after the first frame
+Spec said: `wWinMain` presents the first frame before anything heavy; MfRuntime, EncoderCaps, AudioDevices, webcam
+enumeration and D2D/DWrite on the IO pool after the first frame; prewarm (MfRuntime + InitMfManager + EncoderCaps)
+on hovering REC.
+Done instead: the bar creates the D3D11 device on a "ct-device-init" thread while the UI thread loads settings,
+creates the window and sets up ImGui, the fonts and the Win32 backend (no message is pumped before the join, so the
+window cannot see input without a device); the DX11 backend and swapchain follow the join. Camtesia.exe delay-loads
+mfplat, mf, mfreadwrite, d2d1, dwrite and propsys (`/DELAYLOAD` + delayimp): the loader no longer maps and initializes
+them before wWinMain. `MfRuntime::Ensure` loads mfplat.dll explicitly first and returns its error, so an N edition
+without the Media Feature Pack gets an HRESULT instead of a delay-load exception (every MF call is behind Ensure).
+Not delay-loaded: d3d11/dxgi/d3dcompiler (first frame) and dbghelp (the crash filter must not run the loader). The bar
+keeps listing displays and audio endpoints at Init on the IO pool (popovers need them; MMDevice enumeration does not
+open a stream, so the mic LED stays off); encoder caps and camera modes start in `RecorderBar::AfterFirstFrame`. The
+hover prewarm uses `EnsureForProcess` (MF then stays up for the process, so the first recording skips MFStartup).
+`--time-to-window` prints each step's ms since process creation and the process CPU time.
+Why: the device is the largest step (47-110 ms of a 130-250 ms start) and is independent of the window; the static MF
+imports cost loader time on every start, and the recorder bar does not need them until a recording.
+Impact: measured warm median 282 -> 248 ms on a loaded machine (noisy; cold not measured, needs a reboot). The editor
+still initializes its WASAPI stream (~170 ms) before its first frame (TimelinePlayer::Init on the UI thread): moving it
+needs the clock to attach to the engine later; left for the editor owner.
+
+## 2026-10-18 · P11 task 11.3 / P00 0.7 · Exit leak check and crash-dump stack check run under ctest
+Spec said: Debug exit prints nothing from the CRT and `ReportLiveDeviceObjects` lists only the device and swapchain;
+the crash test's dump opens in WinDbg/VS and shows the faulting line.
+Done instead: `D3DDevice::ReportLiveObjects` drains the run's own info-queue messages first and returns a
+`DebugReport` (corruption/errors/warnings/live objects besides the device, discarded); it logs the summary and prints
+`d3d11 debug: ...` to stderr when not clean. ctest `camtesia_exit_leak_check` (tests/app) starts 8 self-ending app
+modes and fails on the CRT's "Detected memory leaks" or that stderr line (Debug; Release checks exit 0 only; skipped
+under CT_CI because it opens windows and records). ctest `camtesia_crash_dump` runs `--crash-test` and checks the new
+dump with `tools/dump_check`, which walks the faulting thread with StackWalk64 over the dump's memory, serving code
+and .pdata/unwind data from the module files mapped as images (no cdb/WinDbg on this machine), and requires main.cpp
+on the stack.
+Why: both checks were manual; an automated run found a real leak (editor `--seek` retry std::function holding its
+own shared_ptr) that the earlier manual bar-only check could not see.
+Impact: `build.cmd test` launches Camtesia.exe windows for ~20 s per config; the crash test leaves no dump behind.
+
+## 2026-10-18 · P11 task 11.4 · Capture robustness: mode change, removed display, access lost, sleep
+Spec said: mode change keeps the output size (letterbox/scale), never crashes; a removed display ends the recording
+cleanly or switches output; ACCESS_LOST recovers with repeats; sleep/resume finalizes or pauses safely.
+Done instead:
+- Mode change / rotation: a whole-display recording keeps its encoded size and letterboxes the new desktop into it
+  (`ColorConvert::ConvertFit`, border sampler, centred `FitContentRect`, aspect kept, rotation applied); a region
+  recording keeps its rect and is cropped/padded by the new desktop. `ScreenCapturer::Stats::fit_frames` counts them.
+- Removed display: Reinit looks the output up again on a fresh DXGI factory (`CurrentDxgiFactory`, the old one is
+  stale after hot-plug) by device name + same adapter LUID. While it is missing, ticks repeat the last frame; after
+  `display_lost_timeout_ms` (5 s) the capturer raises `kDisplayRemovedHr` (DXGI_ERROR_NOT_FOUND) and the session
+  finalizes with "The display being recorded was disconnected". Re-plugged within 5 s: the recording continues.
+  No switch to another output (the user chose that display; a silent switch would record something else).
+- ACCESS_LOST and INVALID_CALL from AcquireNextFrame (the latter is what a secure-desktop/UAC switch can return) both
+  drop the duplication and retry Reinit every 250 ms while ticks repeat; E_ACCESSDENIED on Reinit (secure desktop)
+  is treated the same. Lost for > 3 s: a session warning (no stop).
+- An empty NV12 pool on a tick repeats the previous frame instead of leaving a hole (fewer drops under load).
+- Sleep: the session registers `RegisterSuspendResumeNotification`; on suspend a recording pauses (the callback waits
+  up to 1 s for the pause); on resume it stays paused with a warning, the user resumes or stops. Not finalized:
+  pausing keeps the take one file and a resume after sleep cannot lose data that was already written.
+Why: these paths can only be forced for real by a human; the hooks `InjectAcquireErrorForTest`,
+`InjectReinitErrorForTest`, `SimulateOutputRemovedForTest` drive the real recovery code in ct_capture_tests.
+Impact: tests `capture_access_lost_repeats_and_recovers`, `capture_display_removed_ends_or_recovers`,
+`capture_mode_change_keeps_size_letterboxed`, `gpu_convert_fit_letterboxes`, `display_rects_are_physical_and_factory_current`,
+`session_sleep_pauses_and_resume_stays_paused`. Human checks listed in PROGRESS 11.4.
+
+## 2026-10-18 · P05 task 5.8 · GPU budget at 1080p60: profile, no encoder setting helps
+Spec said: 1080p60 recording GPU < 15 % (busiest engine); measured 19.5 % and 28/8,972 drops under load.
+Done instead: profiled per GPU engine. The busiest engine is the encoder ("video codec 0", AMD VCN): 12-38 % with the
+same input depending on the GPU clock state; the compute BGRA->NV12 pass is 7-10 % on 3D; the duplication copy is 0
+(zero-copy, DECISIONS 2.7). Interleaved A/B runs (`capture_bench --record` with `--quality`, `--bframes`,
+`--low-latency`) found no setting that lowers VCN load: B-frames, reference count, usage, CABAC and VBR/CBR all cost
+the same ~2.9 ms/frame pipelined; CODECAPI_AVEncCommonQualityVsSpeed is not supported by AMDh264Encoder; low latency
+serializes the pipeline (16 ms/frame) and has the POC type-2 decode problem. A UAV-bound pool vs a staging copy made no
+difference on 3D. Quality targets unchanged. Mp4Writer now logs the encoder's CODECAPI values after init.
+The pool-empty fix (DECISIONS 11.4 entry above) cut drops: 20 s `--record --verify` 4 of 1,189 frames dropped
+(GPU codec 18.5 %, 3D 6.8 %, machine at 100 % CPU), verify PASS.
+Why: the counter is relative to the current clock, so on a loaded shared machine it moves with the other agents'
+GPU work more than with our settings.
+Impact: budget left open. Proposal (needs a decision, it is a design change): encode only new frames (VFR with
+the CFR tick as the timestamp grid) instead of re-sending the last texture for repeats — on a static desktop
+most ticks are repeats, so VCN load drops with screen activity. Requires A/V-sync and editor checks of VFR media.
+Re-measure 10 min on an idle machine first; it may already be within 15 % there.
+
+## 2026-10-18 · P05 task 5.8 · Arming: hotkey -> first frame with countdown 0
+Spec said: hotkey -> first frame < 150 ms; with countdown 0 the prepare (~550 ms, writer ~750 ms cold) was on the path.
+Done instead: with an effective countdown of 0 the bar arms the session while idle (`RecordingSession::Arm`), 700 ms
+after the setup last changed, after a recording and after display changes (WM_DISPLAYCHANGE disarms first). Arming
+prepares the capturer and the screen writer into a hidden bundle folder (`BundleWriter::SetHidden`), declaring the
+audio streams the setup will use, but opens no microphone, system audio, camera (DECISIONS 5.6) and no desktop
+duplication (`release_duplication_until_start`), and does not call IMFSinkWriter::BeginWriting
+(`defer_begin_writing`: from BeginWriting on the AMD MFT thread polls at ~3.5 % of a core). REC/hotkey with a
+matching setup (`IsArmedFor`, `SameSetup`) starts the armed session: unhide, writer -> capturer -> audio -> camera ->
+events (screen before audio now; audio is stamped from device positions so nothing moves in time, the writer pads
+the first ms with silence). A failed arm, or an endpoint layout that changed since arming, falls back to a normal
+prepare. On finish the bundle is renamed to the start time. A leftover hidden bundle (killed process) is removed by
+the next arm (`DeleteStaleArmed`: hidden, no meta.json, no events.ctev). Countdown > 0 never arms (the prepare
+overlaps the countdown). Preview mode never uses an armed session.
+Why: the remaining cost is the encoder/MF setup; it cannot be made faster, only earlier. Holding an encoder open
+costs nothing measurable once BeginWriting is deferred.
+Impact: `--bench-hotkey 5` countdown 0: 353/555/640 -> 51.5/60.7/111 ms (min/median/max); idle bar armed 0 redraws/s,
+CPU 0.64 % of one core vs 0.55 % unarmed (noise), GPU 0. An empty hidden `.ctrec` exists in the output folder while
+armed. Tests `session_armed_start_is_fast`, `bundle_stale_armed_cleanup`, `capture_released_duplication_comes_back_at_start`.
+
 ## 2026-10-18 · P09 9.7 · --bench-scrub hang: root cause and regression test
 Spec said: (P09 pitfalls) scrubbing shows the nearest cached frame and redraws when the exact one lands.
 Done instead: no new rule; the fix is the perf follow-up's "playhead frame is always stored" (cache budget entry

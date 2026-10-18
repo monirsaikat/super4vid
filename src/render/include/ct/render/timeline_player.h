@@ -113,6 +113,8 @@ public:
     double Rate() const { return m_clock.Rate(); }
     TimeUs Duration() const;     // project duration (0 without a project)
     bool HasAudioOutput() const { return m_engine_ok; }
+    // The WASAPI render stream is running (false while paused for more than kEngineIdleStopMs; Play restarts it).
+    bool AudioOutputRunning() const { return m_engine_running.load(std::memory_order_acquire); }
     // Media still opening on the IO pool (Resolve returns all_exact = false meanwhile).
     bool MediaPending() const;
     // Camera file of a recording (nullptr when none / not open yet).
@@ -199,6 +201,15 @@ private:
     Thread m_feed_thread;
     Event m_feed_wake{false, false};
     std::atomic<bool> m_feed_stop{false};
+    // Idle power (P11 11.1): while paused the mixer thread sleeps without a timeout and, after kEngineIdleStopMs, stops
+    // the WASAPI render stream (100 wake-ups/s rendering silence otherwise). Play restarts it (EnsureEngine). Engine
+    // Start/Stop are serialized by m_engine_lock; m_feed_active is written on the control thread.
+    static constexpr uint32_t kEngineIdleStopMs = 250;
+    void EnsureEngine();      // control thread, before m_clock.Play
+    void FeedIdle();          // control thread, after the clock paused
+    SrwLock m_engine_lock;
+    std::atomic<bool> m_feed_active{false};
+    std::atomic<bool> m_engine_running{false};
 };
 
 } // namespace ct::render

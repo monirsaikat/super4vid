@@ -10,6 +10,7 @@
 #include <ct/platform/win.h>
 
 #include <dxgi1_6.h>
+#include <wrl/client.h>
 
 #include <string>
 #include <vector>
@@ -45,5 +46,11 @@ int DisplayIndexAt(const std::vector<DisplayInfo>&, PointI p);   // -1 when no d
 RectI ClampRegionToDisplay(const DisplayInfo&, RectI region);
 
 const char* RotationName(Rotation r);
+
+// A DXGI factory that knows the current display configuration: null when `factory` is still current (use it), else a
+// newly created factory. A factory made before a monitor was plugged in, removed or re-arranged keeps listing the
+// outputs it saw at creation (IDXGIFactory1::IsCurrent() is false), so hot-plugged monitors are only found through a
+// fresh one: https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgifactory1-iscurrent
+Microsoft::WRL::ComPtr<IDXGIFactory6> CurrentDxgiFactory(IDXGIFactory6* factory);
 
 } // namespace ct::capture

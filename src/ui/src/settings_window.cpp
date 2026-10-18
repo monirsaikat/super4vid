@@ -10,6 +10,7 @@
 #include <ct/ui/error_ux.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/icons.h>
+#include <ct/ui/level_monitor.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 #include <ct/ui/widgets.h>
@@ -471,6 +472,7 @@ void SettingsWindow::Draw() {
         case SettingsSection::About: DrawAbout(); break;
         }
         if (m_capturing >= 0) PollCapture();
+        if (m_section != SettingsSection::Audio && MeterTestActive()) StopMeterTest();
     }
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
@@ -695,6 +697,33 @@ void SettingsWindow::DrawAudio() {
                 ImGui::PopID();
             }
             ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+        RowEnd();
+    }
+    {
+        // Test microphone: live meter (docs/phases/P11 11.6 "meters test"). Restarted when the device changes.
+        const bool running = MeterTestActive();
+        if (running && m_meter->GetSource() == LevelMonitor::Source::Microphone && m_meter_device != r.mic_device) StartMeterTest();
+        const LevelMonitor::Status ms = m_meter ? m_meter->GetStatus() : LevelMonitor::Status::Stopped;
+        const char* hint = ms == LevelMonitor::Status::Failed     ? str::kSetMicTestFailed
+                           : ms == LevelMonitor::Status::Starting ? str::kSetMicTestStarting
+                                                                  : str::kSetMicTestHint;
+        const float meter_w = Dp(160), btn_w = Dp(72);
+        RowBegin(str::kSetMicTest, hint, meter_w + Dp(8) + btn_w, 0,
+                 ms == LevelMonitor::Status::Failed ? col::danger : col::text_dim);
+        const double now = ImGui::GetTime();
+        const float dt = static_cast<float>(now - m_meter_t);
+        m_meter_t = now;
+        const float shown = m_meter ? m_meter->Shown(dt) : -120.0f;
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + (ImGui::GetFrameHeight() - Dp(8)) * 0.5f));
+        MeterBar("##mictest_meter", shown, ImVec2(meter_w, Dp(8)));
+        ImGui::SetCursorScreenPos(ImVec2(p.x + meter_w + Dp(8), p.y));
+        ImGui::BeginDisabled(!r.mic && !running);
+        if (Button(running ? str::kSetMicTestStop : str::kSetMicTestStart, ButtonKind::Normal, ImVec2(btn_w, 0))) {
+            if (running) StopMeterTest();
+            else StartMeterTest();
         }
         ImGui::EndDisabled();
         RowEnd();
