@@ -81,6 +81,8 @@ public:
     void ShowSavedToast(const std::string& bundle_path);   // also what OnFinished calls
     bool IsRecording() const;                              // countdown .. finalizing
     bool IsIdle() const;
+    // The session is armed (prepared ahead for the current setup; countdown 0, see RecorderBar::Impl::ArmIfIdle).
+    bool IsArmed() const;
     double LastStartLatencyMs() const;
     int64_t LastTriggerQpc() const;                        // QPC of the last REC / hotkey trigger
     void ShowBar(bool show);

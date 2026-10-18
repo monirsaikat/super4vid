@@ -58,6 +58,8 @@ constexpr float kSnapDip = 16;               // snap to work-area edges within 1
 constexpr float kMarginDip = 24;             // default distance from the bottom of the work area
 constexpr UINT kTrayMsg = WM_APP + 41;
 enum HotkeyId { kHkToggle = 1, kHkPause = 2, kHkMarker = 3, kHkCancel = 4, kHkEsc = 5 };
+constexpr UINT_PTR kArmTimer = 0xC7A1;   // re-arm the session this long after the bar last changed (debounce)
+constexpr UINT kArmDelayMs = 700;
 enum MenuId { kMenuRecord = 1, kMenuPause, kMenuStop, kMenuEditor, kMenuSettings, kMenuShow, kMenuQuit };
 constexpr const char* kSyntheticCameraId = "synthetic";
 
@@ -343,6 +345,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         if (s == State::Finalizing || s == State::Idle) frame.Hide();
         if (s == State::Idle) {
             preparing = false;
+            ScheduleArm();
             SetBarSize(kIdleW, kIdleH);
             if (icon_normal) tray.SetIcon(icon_normal);
             tray.SetTip(W(str::kTrayTip).c_str());
@@ -748,6 +751,42 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         return source == 0 ? d->rect : capture::ClampRegionToDisplay(*d, region);
     }
 
+    // --- arming (P05 5.8 hotkey latency) ------------------------------------------------------------------------
+    // With countdown 0 the session prepare (encoder creation, 300-800 ms) would sit between the hotkey and the first
+    // frame, so the idle bar keeps the session armed for the current setup (RecordingSession::Arm: screen capturer and
+    // encoder only; no microphone, camera or duplication is opened while idle). A frame (the bar draws only on input
+    // or animation) that finds the armed setup out of date schedules a re-arm kArmDelayMs later; so do a finished
+    // recording and display changes. Nothing runs while the bar is idle. With a countdown the prepare overlaps the
+    // countdown, so nothing is armed.
+    bool arm_timer = false;   // kArmTimer is pending
+    int EffectiveCountdown() const {
+        return opt.countdown_override >= 0 ? opt.countdown_override : settings.recording.countdown_s;
+    }
+    bool ArmOutOfDate() const {
+        if (EffectiveCountdown() > 0 || opt.faults.Any()) return session.IsArmed();   // fault runs never arm
+        return displays.empty() || !session.IsArmedFor(MakeConfig());
+    }
+    void ScheduleArm() {
+        if (!win || arm_timer) return;
+        arm_timer = SetTimer(win->Hwnd(), kArmTimer, kArmDelayMs, nullptr) != 0;
+    }
+    void ArmIfIdle() {
+        if (win) KillTimer(win->Hwnd(), kArmTimer);
+        arm_timer = false;
+        const int countdown_s = EffectiveCountdown();
+        const bool can_arm = dev && !displays.empty() && state == State::Idle && !preparing && !session.IsActive() &&
+                             !countdown.IsRunning() && (source == 0 || !region.IsEmpty()) && countdown_s <= 0 &&
+                             !opt.faults.Any();
+        if (!can_arm) {
+            if (session.IsArmed() && state == State::Idle && !preparing) session.Disarm();
+            return;
+        }
+        const recorder::SessionConfig cfg = MakeConfig();
+        if (session.IsArmedFor(cfg)) return;
+        if (session.IsArmed()) session.Disarm();
+        session.Arm(*dev, cfg, this);
+    }
+
     void BeginRecording(int64_t trig) {
         if (state != State::Idle || session.IsActive() || preparing) return;
         if (displays.empty()) {
@@ -763,13 +802,20 @@ struct RecorderBar::Impl final : recorder::SessionListener {
         StopMonitor();
         trigger_qpc = trig ? trig : Clock::QpcNow();
         const recorder::SessionConfig cfg = MakeConfig();
-        preparing = true;
-        // The idle camera preview owns the device: release it before the session opens the camera.
-        recorder::RecordingSession* s = &session;
-        platform::D3DDevice* d = dev;
-        recorder::SessionListener* l = this;
-        if (preview) StopPreview([s, d, cfg, l]() { s->PrepareAsync(*d, cfg, l); });
-        else session.PrepareAsync(*dev, cfg, this);
+        if (win) KillTimer(win->Hwnd(), kArmTimer);
+        arm_timer = false;
+        if (!preview && session.IsArmedFor(cfg)) {
+            // Armed for exactly this setup: StartNow opens audio/camera after the capture started.
+        } else {
+            if (session.IsArmed()) session.Disarm();
+            preparing = true;
+            // The idle camera preview owns the device: release it before the session opens the camera.
+            recorder::RecordingSession* s = &session;
+            platform::D3DDevice* d = dev;
+            recorder::SessionListener* l = this;
+            if (preview) StopPreview([s, d, cfg, l]() { s->PrepareAsync(*d, cfg, l); });
+            else session.PrepareAsync(*dev, cfg, this);
+        }
         session.StartCountdown();
         const capture::DisplayInfo* disp = CurrentDisplay();
         const int secs = cfg.countdown_s;
@@ -934,6 +980,7 @@ struct RecorderBar::Impl final : recorder::SessionListener {
     }
 
     void Frame() {
+        if (state == State::Idle && !preparing && ArmOutOfDate()) ScheduleArm();
         UpdateMeters();
         UpdateWindowSize();
         if (preview && preview->failed.load()) {
@@ -1894,8 +1941,22 @@ LRESULT RecorderBar::HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
             return 0;
         }
         break;
+    case WM_TIMER:
+        if (wparam == kArmTimer) {
+            s.ArmIfIdle();
+            handled = true;
+            return 0;
+        }
+        break;
+    case WM_DISPLAYCHANGE:
+        // Monitors added, removed or re-arranged: the display list and an armed setup are out of date.
+        if (s.session.IsArmed() && s.state == State::Idle) s.session.Disarm();
+        s.DiscoverAsync();
+        s.ScheduleArm();
+        break;
     case WM_POWERBROADCAST:
-        if (wparam == PBT_APMSUSPEND && s.state == State::Recording) s.session.TogglePause();   // user resumes manually
+        // RecordingSession pauses on suspend itself (RegisterSuspendResumeNotification, also headless); toggling
+        // here as well would resume it again.
         break;
     case WM_CLOSE:
         s.ShowBar(false);   // close hides to tray; Quit is in the tray menu
@@ -1937,6 +1998,7 @@ void RecorderBar::CancelRecording() {
 }
 void RecorderBar::ShowSavedToast(const std::string& bundle_path) { m->ShowSavedToastImpl(bundle_path); }
 bool RecorderBar::IsRecording() const { return m->state != State::Idle || m->preparing; }
+bool RecorderBar::IsArmed() const { return m->session.IsArmed() && m->session.IsPrepared(); }
 bool RecorderBar::IsIdle() const { return m->state == State::Idle && !m->preparing && !m->session.IsActive(); }
 double RecorderBar::LastStartLatencyMs() const {
     const recorder::State st = m->session.GetState();

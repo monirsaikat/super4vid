@@ -7,5 +7,6 @@ ct_add_test(ct_capture_tests DEPS ct_capture SOURCES
   convert_test.cpp
   cursor_test.cpp
   capturer_test.cpp
+  robustness_test.cpp
   gpu_bench_test.cpp
   webcam_test.cpp)

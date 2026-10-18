@@ -7,6 +7,7 @@
 #include <ct/core/strings.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 using Microsoft::WRL::ComPtr;
@@ -39,9 +40,19 @@ void MapToNative(Rotation rot, int dw, int dh, int x, int y, int w, int h, int& 
     }
 }
 
+// Consumes one injected result when the counter is positive (test hooks).
+bool TakeInjected(std::atomic<uint32_t>& count, const std::atomic<HRESULT>& value, HRESULT& hr) {
+    uint32_t c = count.load(std::memory_order_acquire);
+    while (c > 0 && !count.compare_exchange_weak(c, c - 1, std::memory_order_acq_rel)) {}
+    if (c == 0) return false;
+    hr = value.load(std::memory_order_acquire);
+    return true;
+}
+
 bool IsRetryable(HRESULT hr) {
     return hr == E_ACCESSDENIED || hr == DXGI_ERROR_UNSUPPORTED || hr == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE ||
-           hr == DXGI_ERROR_SESSION_DISCONNECTED || hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_MODE_CHANGE_IN_PROGRESS;
+           hr == DXGI_ERROR_SESSION_DISCONNECTED || hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_MODE_CHANGE_IN_PROGRESS ||
+           hr == DXGI_ERROR_NOT_FOUND;
 }
 
 } // namespace
@@ -58,25 +69,19 @@ HRESULT DesktopDuplicator::Init(platform::D3DDevice& dev, const Config& cfg) {
     m_dev = &dev;
     m_cfg = cfg;
 
-    // 1. The output: by adapter LUID + output index, verified (or found) by GDI device name.
-    ComPtr<IDXGIAdapter1> adapter;
+    // 1. The output, by GDI device name, through a factory that knows the current displays (one hot-plugged after
+    //    the device was created is not listed by the device's factory).
+    m_factory = CurrentDxgiFactory(dev.Factory());
+    if (!m_factory) m_factory = dev.Factory();
     ComPtr<IDXGIAdapter1> found_adapter;
-    for (UINT a = 0; !m_output && dev.Factory()->EnumAdapters1(a, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++a) {
-        ComPtr<IDXGIOutput> output;
-        for (UINT o = 0; adapter->EnumOutputs(o, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++o) {
-            DXGI_OUTPUT_DESC od{};
-            if (FAILED(output->GetDesc(&od)) || cfg.display.device_name != od.DeviceName) continue;
-            CT_RETURN_IF_FAILED(output.As(&m_output));
-            found_adapter = adapter;
-            break;
-        }
-    }
-    if (!m_output) {
+    const HRESULT find_hr = FindOutput(m_factory.Get(), m_output, found_adapter);
+    if (FAILED(find_hr)) {
         CT_LOG_ERROR("DesktopDuplicator: no DXGI output for %ls", cfg.display.device_name.c_str());
-        return DXGI_ERROR_NOT_FOUND;
+        return find_hr;
     }
     DXGI_ADAPTER_DESC1 ad{};
     CT_RETURN_IF_FAILED(found_adapter->GetDesc1(&ad));
+    m_adapter_luid = ad.AdapterLuid;
 
     // Cross-adapter: the output is scanned out by another GPU. Duplicate on a second device there and copy through
     // system memory (slow path; the fast path is PX).
@@ -116,6 +121,44 @@ HRESULT DesktopDuplicator::Init(platform::D3DDevice& dev, const Config& cfg) {
                 cfg.region.w, cfg.region.h, cfg.region.x, cfg.region.y,
                 m_format == DXGI_FORMAT_R16G16B16A16_FLOAT ? "RGBA16F" : "BGRA8", RotationName(m_rotation),
                 m_cross_adapter ? ", cross-adapter" : "");
+    return S_OK;
+}
+
+HRESULT DesktopDuplicator::FindOutput(IDXGIFactory6* factory, ComPtr<IDXGIOutput1>& output, ComPtr<IDXGIAdapter1>& adapter_out) const {
+    output.Reset();
+    adapter_out.Reset();
+    if (!factory) return E_UNEXPECTED;
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT a = 0; factory->EnumAdapters1(a, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++a) {
+        ComPtr<IDXGIOutput> o;
+        for (UINT i = 0; adapter->EnumOutputs(i, o.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_OUTPUT_DESC od{};
+            if (FAILED(o->GetDesc(&od)) || m_cfg.display.device_name != od.DeviceName || !od.AttachedToDesktop) continue;
+            CT_RETURN_IF_FAILED(o.As(&output));
+            adapter_out = adapter;
+            return S_OK;
+        }
+    }
+    return DXGI_ERROR_NOT_FOUND;
+}
+
+HRESULT DesktopDuplicator::RefindOutput() {
+    // A fresh factory every time: this runs only while the duplication cannot be re-created (every 250 ms at most).
+    ComPtr<IDXGIFactory6> fresh;
+    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(fresh.GetAddressOf())))) return E_FAIL;
+    ComPtr<IDXGIOutput1> output;
+    ComPtr<IDXGIAdapter1> adapter;
+    const HRESULT hr = FindOutput(fresh.Get(), output, adapter);
+    if (FAILED(hr)) return hr;   // DXGI_ERROR_NOT_FOUND: the display is not attached (unplugged, or turned off)
+    DXGI_ADAPTER_DESC1 ad{};
+    CT_RETURN_IF_FAILED(adapter->GetDesc1(&ad));
+    if (!SameLuid(ad.AdapterLuid, m_adapter_luid)) {
+        // Now driven by another GPU: the duplication device would have to change. Treated as gone.
+        if (!m_failing) CT_LOG_WARN("DesktopDuplicator: %ls moved to another adapter", m_cfg.display.device_name.c_str());
+        return DXGI_ERROR_NOT_FOUND;
+    }
+    m_output = output;
+    m_factory = fresh;
     return S_OK;
 }
 
@@ -166,6 +209,7 @@ HRESULT DesktopDuplicator::CreateDuplication(bool log_failures) {
         m_dup.Reset();
         return DXGI_ERROR_UNSUPPORTED;
     }
+    m_cur_rotation = FromDxgi(desc.Rotation);
     m_desktop_native = SizeI{static_cast<int32_t>(desc.ModeDesc.Width), static_cast<int32_t>(desc.ModeDesc.Height)};
     return S_OK;
 }
@@ -214,12 +258,30 @@ HRESULT DesktopDuplicator::ClearDst(ID3D11Texture2D* dst) {
 
 HRESULT DesktopDuplicator::AcquireFrame(uint32_t timeout_ms, ComPtr<ID3D11Texture2D>& tex, int64_t& present_qpc) {
     if (!m_dup) return DXGI_ERROR_ACCESS_LOST;
-    DXGI_OUTDUPL_FRAME_INFO info{};
-    ComPtr<IDXGIResource> resource;
-    HRESULT hr = m_dup->AcquireNextFrame(timeout_ms, &info, resource.GetAddressOf());
-    if (hr == DXGI_ERROR_WAIT_TIMEOUT) return S_FALSE;
+    HRESULT hr;
+    if (TakeInjected(m_inject_acquire_count, m_inject_acquire_hr, hr)) [[unlikely]] {
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return S_FALSE;
+    } else {
+        DXGI_OUTDUPL_FRAME_INFO info{};
+        ComPtr<IDXGIResource> resource;
+        hr = m_dup->AcquireNextFrame(timeout_ms, &info, resource.GetAddressOf());
+        if (hr == S_OK) return AcceptFrame(info, resource, tex, present_qpc);
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return S_FALSE;
+    }
     if (hr == DXGI_ERROR_ACCESS_LOST) return hr;   // do not ReleaseFrame
-    CT_RETURN_IF_FAILED(hr);
+    if (hr == DXGI_ERROR_INVALID_CALL) {
+        // Some drivers report a duplication invalidated by a mode change this way; re-creating it recovers.
+        if (!m_invalid_call_logged) CT_LOG_WARN("AcquireNextFrame returned DXGI_ERROR_INVALID_CALL; re-creating the duplication");
+        m_invalid_call_logged = true;
+        return DXGI_ERROR_ACCESS_LOST;
+    }
+    LogHr(hr, "AcquireNextFrame", __FILE__, __LINE__);
+    return hr;
+}
+
+HRESULT DesktopDuplicator::AcceptFrame(const DXGI_OUTDUPL_FRAME_INFO& info, ComPtr<IDXGIResource>& resource,
+                                       ComPtr<ID3D11Texture2D>& tex, int64_t& present_qpc) {
+    HRESULT hr = S_OK;
     if (info.LastPresentTime.QuadPart == 0) {      // only the pointer moved
         m_dup->ReleaseFrame();
         return S_FALSE;
@@ -269,7 +331,16 @@ HRESULT DesktopDuplicator::AcquireInto(ID3D11Texture2D* dst, uint32_t timeout_ms
 }
 
 bool DesktopDuplicator::CanAcquireDirect() const {
-    return m_dup && m_direct_ok && !m_cross_adapter && !m_partial && m_box.right > m_box.left;
+    return m_dup && m_direct_ok && !m_cross_adapter && (NeedsFit() || (!m_partial && m_box.right > m_box.left));
+}
+
+bool DesktopDuplicator::NeedsFit() const {
+    if (!m_cfg.fit_full_display || m_desktop_native.IsEmpty()) return false;
+    if (m_cur_rotation != m_rotation) return true;
+    const int dw = Swaps(m_cur_rotation) ? m_desktop_native.h : m_desktop_native.w;
+    const int dh = Swaps(m_cur_rotation) ? m_desktop_native.w : m_desktop_native.h;
+    // The region of a whole-display recording is the display rounded down to even sizes.
+    return (dw & ~1) != m_cfg.region.w || (dh & ~1) != m_cfg.region.h;
 }
 
 HRESULT DesktopDuplicator::AcquireDirect(uint32_t timeout_ms, ID3D11Texture2D*& desktop, D3D11_BOX& src_box,
@@ -283,7 +354,8 @@ HRESULT DesktopDuplicator::AcquireDirect(uint32_t timeout_ms, ID3D11Texture2D*& 
     }
     m_held = tex;
     desktop = tex.Get();
-    src_box = m_box;
+    src_box = NeedsFit() ? D3D11_BOX{0, 0, 0, static_cast<UINT>(m_desktop_native.w), static_cast<UINT>(m_desktop_native.h), 1}
+                         : m_box;
     return S_OK;
 }
 
@@ -324,22 +396,59 @@ HRESULT DesktopDuplicator::CopyCrossAdapter(ID3D11Texture2D* desktop, ID3D11Text
 HRESULT DesktopDuplicator::Reinit() {
     if (!m_output) return E_UNEXPECTED;
     m_held.Reset();
-    const HRESULT hr = CreateDuplication(!m_failing);
+    m_dup.Reset();
+    HRESULT hr = S_OK;
+    if (m_sim_removed.load(std::memory_order_acquire)) [[unlikely]] {
+        hr = DXGI_ERROR_NOT_FOUND;
+    } else if (!TakeInjected(m_inject_reinit_count, m_inject_reinit_hr, hr)) {
+        // The display configuration changed since the output was found (hot-plug, topology): the output object may be
+        // stale even if DuplicateOutput still succeeds on it, so look it up again first.
+        if (!m_factory || !m_factory->IsCurrent()) hr = RefindOutput();
+        if (SUCCEEDED(hr)) {
+            hr = CreateDuplication(!m_failing);
+            // A failure other than the secure desktop's E_ACCESSDENIED may be a stale output: retry on a fresh one.
+            if (FAILED(hr) && hr != E_ACCESSDENIED && hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET) {
+                const HRESULT fr = RefindOutput();
+                if (SUCCEEDED(fr)) hr = CreateDuplication(false);
+                else if (fr == DXGI_ERROR_NOT_FOUND) hr = fr;
+            }
+        }
+    }
     if (FAILED(hr)) {
+        m_dup.Reset();
         if (!m_failing && IsRetryable(hr)) CT_LOG_WARN("DesktopDuplicator: duplication unavailable (%s); retrying", HrToString(hr).c_str());
         m_failing = true;
         return hr;
     }
     ComputeBox();
-    if (m_failing) CT_LOG_INFO("DesktopDuplicator: duplication restored");
+    if (m_failing) CT_LOG_INFO("DesktopDuplicator: duplication restored (%dx%d, rotation %s)", m_desktop_native.w,
+                               m_desktop_native.h, RotationName(m_cur_rotation));
     m_failing = false;
     return S_OK;
 }
+
+void DesktopDuplicator::ReleaseDuplication() {
+    m_held.Reset();
+    m_dup.Reset();
+}
+
+void DesktopDuplicator::InjectAcquireErrorForTest(HRESULT hr, uint32_t count) {
+    m_inject_acquire_hr.store(hr, std::memory_order_release);
+    m_inject_acquire_count.store(count, std::memory_order_release);
+}
+
+void DesktopDuplicator::InjectReinitErrorForTest(HRESULT hr, uint32_t count) {
+    m_inject_reinit_hr.store(hr, std::memory_order_release);
+    m_inject_reinit_count.store(count, std::memory_order_release);
+}
+
+void DesktopDuplicator::SimulateOutputRemovedForTest(bool removed) { m_sim_removed.store(removed, std::memory_order_release); }
 
 void DesktopDuplicator::Shutdown() {
     m_held.Reset();
     m_dup.Reset();
     m_output.Reset();
+    m_factory.Reset();
     m_staging.Reset();
     for (ClearView& cv : m_clear_views) {
         cv.tex = nullptr;

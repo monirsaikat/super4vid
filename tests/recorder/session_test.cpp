@@ -31,6 +31,7 @@ struct TestListener final : SessionListener {
     std::atomic<int> states{0}, ticks{0}, finished{0}, errors{0}, prepared{0};
     std::atomic<int> last_state{0};
     std::atomic<HRESULT> prepare_hr{S_OK};
+    std::atomic<int> sleep_warnings{0};
     void OnStateChanged(State s) override {
         ++states;
         last_state.store(static_cast<int>(s));
@@ -39,6 +40,9 @@ struct TestListener final : SessionListener {
     void OnTick(const LiveStats&) override { ++ticks; }
     void OnFinished(const std::string&) override { ++finished; }
     void OnError(const std::string&, HRESULT) override { ++errors; }
+    void OnWarning(const std::string& message) override {
+        if (message.find("went to sleep") != std::string::npos) ++sleep_warnings;
+    }
     void OnPrepared(HRESULT hr) override {
         prepare_hr.store(hr);
         ++prepared;
@@ -230,4 +234,143 @@ CT_TEST_DEVICE(session_prepare_failure_reports_error) {
     s.StartNow();   // ignored
     CT_REQUIRE(s.WaitIdle(5'000));
     CT_CHECK(s.GetState() == State::Idle);
+}
+
+// Sleep / resume (docs/03 section 10, P11 11.4): the suspend notification pauses a running recording before the
+// machine sleeps, resume leaves it paused and warns once; the user resumes and the file has one gapless pause. A
+// recording the user had paused already is left alone (no warning, no toggle back to recording).
+CT_TEST_DEVICE(session_sleep_pauses_and_resume_stays_paused) {
+    platform::D3DDevice dev;
+    SessionConfig cfg;
+    if (!BaseConfig(dev, cfg)) CT_SKIP("no D3D device / display");
+    cfg.events = false;
+    TestListener l;
+    {
+        RecordingSession s;
+        CT_REQUIRE(SUCCEEDED(s.Prepare(dev, cfg, &l)));
+        s.StartNow(Clock::QpcNow());
+        WaitMediaUs(s, 500'000);
+        CT_REQUIRE(s.GetState() == State::Recording);
+        s.OnSystemSuspend();   // returns once the session paused
+        CT_CHECK(s.GetState() == State::Paused);
+        Sleep(400);
+        s.OnSystemResume();
+        Sleep(300);
+        CT_CHECK(s.GetState() == State::Paused);
+        CT_CHECK_EQ(l.sleep_warnings.load(), 1);
+        s.TogglePause();   // the user resumes
+        WaitMediaUs(s, 1'000'000);
+        CT_CHECK(s.GetState() == State::Recording);
+        // Paused by the user: a suspend keeps it paused, and resume does not warn.
+        s.TogglePause();
+        Sleep(200);
+        s.OnSystemSuspend();
+        CT_CHECK(s.GetState() == State::Paused);
+        s.OnSystemResume();
+        Sleep(200);
+        CT_CHECK(s.GetState() == State::Paused);
+        CT_CHECK_EQ(l.sleep_warnings.load(), 1);
+        s.Stop();
+        CT_REQUIRE(s.WaitIdle(30'000));
+        CT_CHECK_EQ(l.finished.load(), 1);
+        CT_CHECK_EQ(l.errors.load(), 0);
+        Json meta;
+        std::string text;
+        CT_REQUIRE(fs::ReadAll(s.BundlePath() + "\\meta.json", text) && Json::Parse(text, meta));
+        CT_CHECK_EQ(meta["pauses"].Size(), size_t{2});
+        CT_CHECK(meta["pauses"][size_t{0}]["duration_us"].AsInt64() >= 600'000);   // the sleep, until the user resumed
+        CT_CHECK_NEAR(static_cast<double>(meta["duration_us"].AsInt64()), 1.0e6, 0.25e6);
+    }
+    fs::DeleteTree(cfg.output_dir);
+}
+
+// Arm (hotkey latency with countdown 0): the screen part is built ahead quietly, nothing else is opened; StartNow then
+// gets its first frame within the hotkey budget, opens system audio after the capture started (its track is in the
+// file), and the hidden bundle becomes visible and is renamed to the start time. Disarm deletes an unused arm.
+CT_TEST_DEVICE(session_armed_start_is_fast) {
+    platform::D3DDevice dev;
+    SessionConfig cfg;
+    if (!BaseConfig(dev, cfg)) CT_SKIP("no D3D device / display");
+    cfg.events = false;
+    TestListener l;
+    {
+        RecordingSession s;
+        s.Arm(dev, cfg, &l);
+        CT_CHECK(s.IsArmedFor(cfg));
+        SessionConfig other = cfg;
+        other.fps = 15;
+        CT_CHECK(!s.IsArmedFor(other));
+        const int64_t end = Clock::QpcNow() + 20 * Clock::QpcFrequency();
+        while (!s.IsPrepared() && Clock::QpcNow() < end) Sleep(10);
+        CT_REQUIRE(s.IsPrepared());
+        CT_CHECK(s.GetState() == State::Idle);
+        CT_CHECK_EQ(l.prepared.load(), 0);   // quiet: no listener calls for an arm
+        CT_CHECK_EQ(l.errors.load(), 0);
+        const std::string armed_path = s.BundlePath();
+        const DWORD attrs = GetFileAttributesW(fs::ToWinPath(armed_path).c_str());
+        CT_CHECK(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_HIDDEN) != 0);
+        Sleep(1100);   // the start is in a later second than the arm: the bundle gets the start time's name
+        const int64_t trigger = Clock::QpcNow();
+        s.StartNow(trigger);
+        WaitMediaUs(s, 1'000'000);
+        CT_CHECK(s.GetState() == State::Recording);
+        const double latency = s.LastStartLatencyMs();
+        s.Stop();
+        CT_REQUIRE(s.WaitIdle(30'000));
+        const double limit = ct::test::TimingLimit(150.0, 600.0);
+        std::printf("  armed start: trigger -> first frame %.1f ms (limit %.0f ms)\n", latency, limit);
+        CT_CHECK(latency > 0 && latency < limit);
+        CT_CHECK_EQ(l.finished.load(), 1);
+        CT_CHECK_EQ(l.errors.load(), 0);
+        const std::string final_path = s.BundlePath();
+        CT_CHECK(final_path != armed_path);
+        CT_CHECK(!fs::Exists(armed_path));
+        const DWORD fattrs = GetFileAttributesW(fs::ToWinPath(final_path).c_str());
+        CT_CHECK(fattrs != INVALID_FILE_ATTRIBUTES && (fattrs & FILE_ATTRIBUTE_HIDDEN) == 0);
+        Json meta;
+        std::string text;
+        CT_REQUIRE(fs::ReadAll(final_path + "\\meta.json", text) && Json::Parse(text, meta));
+        const LiveStats st = s.Stats();
+        std::printf("  system audio %s\n", st.has_system ? "recorded" : "not available");
+        if (st.has_system) CT_CHECK(meta["audio"]["system"].IsObject());
+
+        // An unused arm is released by Disarm (bundle deleted, nothing prepared).
+        s.Arm(dev, cfg, &l);
+        const int64_t end2 = Clock::QpcNow() + 20 * Clock::QpcFrequency();
+        while (!s.IsPrepared() && Clock::QpcNow() < end2) Sleep(10);
+        CT_REQUIRE(s.IsPrepared());
+        const std::string second = s.BundlePath();
+        s.Disarm();
+        CT_CHECK(!s.IsArmed());
+        CT_REQUIRE(s.WaitIdle(10'000));
+        CT_CHECK(!s.IsPrepared());
+        CT_CHECK(!fs::Exists(second));
+    }
+    fs::DeleteTree(cfg.output_dir);
+}
+
+// A process killed while armed leaves a hidden bundle with only screen.mp4: the next arm removes it. Visible bundles
+// and hidden ones with recording data are never touched.
+CT_TEST(bundle_stale_armed_cleanup) {
+    const std::string dir = NewTempDir();
+    BundleWriter stale, visible, hidden_with_meta;
+    std::string p1, p2, p3;
+    CT_REQUIRE(stale.CreateNamed(dir, "2026-10-18 10-00-00", p1));
+    CT_REQUIRE(visible.CreateNamed(dir, "2026-10-18 10-00-01", p2));
+    CT_REQUIRE(hidden_with_meta.CreateNamed(dir, "2026-10-18 10-00-02", p3));
+    CT_REQUIRE(fs::WriteAtomic(stale.ScreenPath(), "x"));
+    CT_REQUIRE(fs::WriteAtomic(visible.ScreenPath(), "x"));
+    CT_REQUIRE(hidden_with_meta.WriteMeta(Json::Object()));
+    CT_CHECK(stale.SetHidden(true));
+    CT_CHECK(hidden_with_meta.SetHidden(true));
+    CT_CHECK_EQ(BundleWriter::DeleteStaleArmed(dir), 1);
+    CT_CHECK(!fs::Exists(p1));
+    CT_CHECK(fs::Exists(p2));
+    CT_CHECK(fs::Exists(p3));
+    // Rename keeps the contents and resolves collisions.
+    CT_CHECK(visible.Rename("2026-10-18 10-00-02"));
+    CT_CHECK(visible.Path().ends_with("2026-10-18 10-00-02 (2).ctrec"));
+    CT_CHECK(fs::Exists(visible.ScreenPath()));
+    CT_CHECK_EQ(visible.Stem(), std::string("2026-10-18 10-00-02 (2)"));
+    fs::DeleteTree(dir);
 }

@@ -16,6 +16,15 @@
 // (headless mode). GetState/Stats/BundlePath/Clock from any thread.
 // Lifetime: the D3DDevice and the listener must outlive the session. The destructor cancels a running recording.
 // EmergencyFinalize is registered once with platform::CrashHandler and is active between StartNow and Stop.
+// Arm (hotkey latency, P05 5.8): builds the slow part of Prepare - the screen capturer and the screen.mp4 writer with
+// its encoder (300-800 ms) - ahead of time, quietly (no listener calls), so a later StartNow records its first frame
+// within the hotkey budget even with countdown 0. It opens no microphone, camera or duplication while idle (no device
+// LEDs, no DWM work; DECISIONS 5.6): audio and camera are opened by StartNow right after the capture started, and the
+// duplication is re-created at the start. The bundle folder stays hidden until the recording starts and is renamed
+// to the start time when the recording finishes. Disarm / Cancel release it.
+// Sleep: while recording the session registers for suspend/resume notifications (RegisterSuspendResumeNotification,
+// no window needed, so headless mode is covered too): suspend pauses the recording before the machine sleeps, resume
+// leaves it paused and warns; the user resumes (docs/03 section 10).
 
 #include <ct/capture/display.h>
 #include <ct/core/types.h>
@@ -150,6 +159,16 @@ public:
     HRESULT Prepare(platform::D3DDevice& dev, const SessionConfig& cfg, SessionListener* listener);
     void PrepareAsync(platform::D3DDevice& dev, const SessionConfig& cfg, SessionListener* listener);
     bool IsPrepared() const;
+    // See "Arm" above. Only from Idle; any thread. A failed arm is only logged (Prepare reports it when the user
+    // starts). Arm while armed for another setup: Disarm first.
+    void Arm(platform::D3DDevice& dev, const SessionConfig& cfg, SessionListener* listener);
+    // Releases an armed, not started session (nothing else: a prepared or recording session is left alone).
+    void Disarm();
+    // An Arm with the same setup (SameSetup) is queued or done and not yet used by StartNow.
+    bool IsArmedFor(const SessionConfig& cfg) const;
+    bool IsArmed() const;
+    // Everything a prepared session depends on is equal (countdown_s is not part of it); never with fault injection.
+    static bool SameSetup(const SessionConfig& a, const SessionConfig& b);
 
     void StartCountdown();                    // Idle(prepared or preparing) -> Countdown; OnCountdown(countdown_s)
     // Starts recording (after Prepare finishes, if it is still running). trigger_qpc: when the user asked (hotkey or
@@ -162,6 +181,10 @@ public:
     // Crash filter: writer Abort (the writer is never destroyed afterwards), events Flush, meta.json with
     // "incomplete": true. Allocation-free apart from what Abort/Flush do internally.
     void EmergencyFinalize();
+    // Power notifications (called by the session's own registration; public for tests). Suspend pauses a running
+    // recording and waits up to 1 s for that to happen; resume keeps it paused and sends OnWarning.
+    void OnSystemSuspend();
+    void OnSystemResume();
 
     State GetState() const;
     bool IsActive() const;                    // Countdown .. Finalizing

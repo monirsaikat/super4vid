@@ -8,6 +8,7 @@
 #include <ct/platform/win.h>
 
 #include <cstdio>
+#include <vector>
 
 namespace ct::recorder {
 
@@ -71,6 +72,76 @@ bool BundleWriter::WriteMeta(const Json& meta) {
         return false;
     }
     return true;
+}
+
+bool BundleWriter::SetHidden(bool hidden) {
+    if (m_path.empty()) return false;
+    const std::wstring w = fs::ToWinPath(m_path);
+    if (!SetFileAttributesW(w.c_str(), hidden ? FILE_ATTRIBUTE_HIDDEN : FILE_ATTRIBUTE_NORMAL)) {
+        CT_LOG_WARN("SetFileAttributes(%s) failed (%lu)", m_path.c_str(), GetLastError());
+        return false;
+    }
+    return true;
+}
+
+std::string BundleWriter::Stem() const {
+    const size_t slash = m_path.find_last_of("\\/");
+    std::string name = slash == std::string::npos ? m_path : m_path.substr(slash + 1);
+    if (name.size() > 6 && name.ends_with(".ctrec")) name.resize(name.size() - 6);
+    return name;
+}
+
+bool BundleWriter::Rename(std::string_view stem) {
+    if (m_path.empty()) return false;
+    const size_t slash = m_path.find_last_of("\\/");
+    if (slash == std::string::npos) return false;
+    const std::string dir = m_path.substr(0, slash);
+    const std::wstring from = fs::ToWinPath(m_path);
+    for (int n = 1; n < 1000; ++n) {
+        std::string name(stem);
+        if (n > 1) {
+            char suffix[16];
+            std::snprintf(suffix, sizeof(suffix), " (%d)", n);
+            name += suffix;
+        }
+        name += ".ctrec";
+        const std::string path = Join(dir, name);
+        if (path == m_path) return true;
+        if (fs::Exists(path)) continue;
+        if (!MoveFileExW(from.c_str(), fs::ToWinPath(path).c_str(), 0)) {
+            if (GetLastError() == ERROR_ALREADY_EXISTS) continue;
+            CT_LOG_WARN("renaming %s to %s failed (%lu)", m_path.c_str(), path.c_str(), GetLastError());
+            return false;
+        }
+        m_path = path;
+        return true;
+    }
+    return false;
+}
+
+int BundleWriter::DeleteStaleArmed(std::string_view output_dir) {
+    if (output_dir.empty()) return 0;
+    const std::wstring pattern = fs::ToWinPath(Join(output_dir, "*.ctrec"));
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    std::vector<std::string> stale;
+    do {
+        const DWORD a = fd.dwFileAttributes;
+        if (!(a & FILE_ATTRIBUTE_DIRECTORY) || !(a & FILE_ATTRIBUTE_HIDDEN)) continue;
+        const std::string path = Join(output_dir, WideToUtf8(fd.cFileName));
+        if (fs::Exists(Join(path, "meta.json")) || fs::Exists(Join(path, "events.ctev"))) continue;
+        stale.push_back(path);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    int removed = 0;
+    for (const std::string& p : stale) {
+        if (fs::DeleteTree(p)) {
+            ++removed;
+            CT_LOG_INFO("removed an unused armed bundle left behind: %s", p.c_str());
+        }
+    }
+    return removed;
 }
 
 bool BundleWriter::Delete() {

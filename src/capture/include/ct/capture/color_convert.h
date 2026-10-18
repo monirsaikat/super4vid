@@ -41,6 +41,10 @@ public:
     // Converts only `box` of a larger source (e.g. the duplicated desktop image, so no crop copy is needed). The box
     // size must equal Config::src_size. Bilinear chroma taps stay inside the box (2x2 block centres).
     HRESULT ConvertRegion(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, const D3D11_BOX& box, ID3D11Texture2D* dst_nv12);
+    // Scales the whole of `src` (any size, native orientation `rotation`) into dst, keeping its aspect ratio, centred,
+    // with black bars (Y 16, UV 128): a whole-display recording after a resolution or orientation change keeps its
+    // stream size (docs/03 section 10). Bilinear. Shader paths only (E_NOTIMPL on the video processor fallback).
+    HRESULT ConvertFit(ID3D11DeviceContext* ctx, ID3D11Texture2D* src, Rotation rotation, ID3D11Texture2D* dst_nv12);
     bool UsingVideoProcessorFallback() const { return m_use_vp; }
     bool UsingCompute() const;
     // Bind flags the NV12 destination textures must have for the chosen path (RT|SR, plus UAV for compute).
@@ -57,6 +61,11 @@ private:
 // R90: (u,v) -> (v, 1-u); R180: (1-u, 1-v); R270: (1-v, u).
 void RotationUvMatrix(Rotation rotation, float out[16]);
 void RotateUvRef(Rotation rotation, float u, float v, float& su, float& sv);
+
+// The letterbox rectangle ConvertFit uses: `src` (native orientation) shown in `dst` (desktop orientation) after
+// `rotation`, scaled to fit and centred. In dst pixels, desktop orientation; the rest of dst is black.
+struct FitRect { float x, y, w, h; };
+FitRect FitContentRect(SizeI src_native, Rotation rotation, SizeI dst);
 
 // CPU reference of the shader path (Identity rotation, SDR): bgra is width*height pixels (B,G,R,A bytes), tightly
 // packed; y gets width*height bytes, uv gets width*height/2 bytes (interleaved U,V). Chroma is computed from the

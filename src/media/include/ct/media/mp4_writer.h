@@ -58,6 +58,10 @@ public:
         uint32_t audio_queue = 64;              // 2..64 items of up to 100 ms per stream
         Listener* listener = nullptr;
         uint32_t sync_pool_size = 8;            // internal NV12 pool for WriteVideoSync (no external pool)
+        // Arming (P11 11.4/P05 5.8): Init creates the sink writer and the encoder but leaves IMFSinkWriter::BeginWriting
+        // to Start. The AMD MFT's worker thread polls (~3 % of a core) from BeginWriting on, so an armed, idle writer
+        // must not have begun; BeginWriting itself costs only a few ms.
+        bool defer_begin_writing = false;
     };
 
     struct Stats {

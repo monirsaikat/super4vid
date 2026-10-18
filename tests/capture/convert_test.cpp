@@ -284,3 +284,77 @@ CT_TEST_DEVICE(gpu_convert_region_of_larger_source) {
         if (mode < 2) CT_CHECK(d.max_uv <= 2);   // the video processor's chroma filter differs on the sawtooth (see above)
     }
 }
+
+// ConvertFit (a whole-display recording after a resolution / orientation change): the source keeps its aspect ratio,
+// scaled into the stream and centred, with black bars (Y 16, U/V 128); a rotated source is turned upright first.
+CT_TEST_DEVICE(gpu_convert_fit_letterboxes) {
+    D3DDevice dev;
+    CT_REQUIRE(SUCCEEDED(dev.Init(true)));
+    if (!dev.SupportsNv12RenderTarget()) CT_SKIP("no NV12 render target support");
+    // Solid red source, 640x360 (native orientation).
+    const int sw = 640, sh = 360;
+    std::vector<uint8_t> red(static_cast<size_t>(sw) * sh * 4);
+    for (size_t i = 0; i < red.size(); i += 4) {
+        red[i] = 0;
+        red[i + 1] = 0;
+        red[i + 2] = 255;
+        red[i + 3] = 255;
+    }
+    uint8_t ref_y = 0, ref_uv[2] = {0, 0};
+    {
+        uint8_t y4[4], uv2[2];
+        RgbToNv12Ref(red.data(), 2, 2, y4, uv2);   // the first 2x2 block (all red)
+        ref_y = y4[0];
+        ref_uv[0] = uv2[0];
+        ref_uv[1] = uv2[1];
+    }
+    ComPtr<ID3D11Texture2D> src = MakeTexture(dev, sw, sh, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+                                              red.data(), sw * 4);
+    CT_REQUIRE(src != nullptr);
+    struct Case { Rotation rot; int dw, dh; };
+    // 640x360 into 640x480: bars of 60 rows top and bottom. Rotated 90: upright 360x640 into 640x480 -> 270x480 at x 185.
+    // 640x360 into 320x240 (downscale): 320x180 at y 30.
+    const Case cases[] = {{Rotation::Identity, 640, 480}, {Rotation::R90, 640, 480}, {Rotation::Identity, 320, 240}};
+    for (int compute = 1; compute >= 0; --compute)
+        for (const Case& c : cases) {
+            ColorConverter conv;
+            ColorConverter::Config cfg;
+            cfg.src_size = SizeI{c.dw, c.dh};   // the stream's original source size (not this source's)
+            cfg.dst_size = SizeI{c.dw, c.dh};
+            cfg.allow_compute = compute != 0;
+            CT_REQUIRE(SUCCEEDED(conv.Init(dev, cfg)));
+            ComPtr<ID3D11Texture2D> dst = MakeTexture(dev, c.dw, c.dh, DXGI_FORMAT_NV12, conv.DstBindFlags(), nullptr, 0);
+            CT_REQUIRE(dst != nullptr);
+            {
+                D3DDevice::Lock lock(dev);
+                CT_REQUIRE(SUCCEEDED(conv.ConvertFit(dev.Context(), src.Get(), c.rot, dst.Get())));
+            }
+            std::vector<uint8_t> gpu;
+            UINT w = 0, h = 0;
+            CT_REQUIRE(test_util::ReadbackTexture(dev, dst.Get(), gpu, w, h));
+            const FitRect fr = FitContentRect(SizeI{sw, sh}, c.rot, SizeI{c.dw, c.dh});
+            int bad_bar = 0, bad_content = 0, bar_px = 0, content_px = 0;
+            for (int y = 0; y < c.dh; y += 2)
+                for (int x = 0; x < c.dw; x += 2) {
+                    const float cx = static_cast<float>(x) + 1.f, cy = static_cast<float>(y) + 1.f;   // 2x2 block centre
+                    const bool inside = cx > fr.x + 2 && cx < fr.x + fr.w - 2 && cy > fr.y + 2 && cy < fr.y + fr.h - 2;
+                    const bool outside = cx < fr.x - 2 || cx > fr.x + fr.w + 2 || cy < fr.y - 2 || cy > fr.y + fr.h + 2;
+                    const int yv = gpu[static_cast<size_t>(y) * c.dw + x];
+                    const uint8_t* uv = &gpu[static_cast<size_t>(c.dw) * c.dh + static_cast<size_t>(y / 2) * c.dw + x];
+                    if (inside) {
+                        ++content_px;
+                        if (std::abs(yv - ref_y) > 2 || std::abs(uv[0] - ref_uv[0]) > 2 || std::abs(uv[1] - ref_uv[1]) > 2) ++bad_content;
+                    } else if (outside) {
+                        ++bar_px;
+                        if (std::abs(yv - 16) > 1 || std::abs(uv[0] - 128) > 1 || std::abs(uv[1] - 128) > 1) ++bad_bar;
+                    }
+                }
+            std::printf("  %s, rotation %s, %dx%d: content (%.0f,%.0f %.0fx%.0f), %d/%d bar and %d/%d content samples off\n",
+                        conv.UsingCompute() ? "compute" : "pixel shaders", RotationName(c.rot), c.dw, c.dh, fr.x, fr.y, fr.w,
+                        fr.h, bad_bar, bar_px, bad_content, content_px);
+            CT_CHECK(content_px > 0);
+            CT_CHECK_EQ(bad_bar, 0);
+            CT_CHECK_EQ(bad_content, 0);
+            if (c.dh == 480) CT_CHECK(bar_px > 0);
+        }
+}

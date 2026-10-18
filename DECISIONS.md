@@ -1876,3 +1876,65 @@ Why: both checks were manual; an automated run found a real leak (editor `--seek
 own shared_ptr) that the earlier manual bar-only check could not see.
 Impact: `build.cmd test` launches Camtesia.exe windows for ~20 s per config; the crash test leaves no dump behind.
 
+## 2026-10-18 · P11 task 11.4 · Capture robustness: mode change, removed display, access lost, sleep
+Spec said: mode change keeps the output size (letterbox/scale), never crashes; a removed display ends the recording
+cleanly or switches output; ACCESS_LOST recovers with repeats; sleep/resume finalizes or pauses safely.
+Done instead:
+- Mode change / rotation: a whole-display recording keeps its encoded size and letterboxes the new desktop into it
+  (`ColorConvert::ConvertFit`, border sampler, centred `FitContentRect`, aspect kept, rotation applied); a region
+  recording keeps its rect and is cropped/padded by the new desktop. `ScreenCapturer::Stats::fit_frames` counts them.
+- Removed display: Reinit looks the output up again on a fresh DXGI factory (`CurrentDxgiFactory`, the old one is
+  stale after hot-plug) by device name + same adapter LUID. While it is missing, ticks repeat the last frame; after
+  `display_lost_timeout_ms` (5 s) the capturer raises `kDisplayRemovedHr` (DXGI_ERROR_NOT_FOUND) and the session
+  finalizes with "The display being recorded was disconnected". Re-plugged within 5 s: the recording continues.
+  No switch to another output (the user chose that display; a silent switch would record something else).
+- ACCESS_LOST and INVALID_CALL from AcquireNextFrame (the latter is what a secure-desktop/UAC switch can return) both
+  drop the duplication and retry Reinit every 250 ms while ticks repeat; E_ACCESSDENIED on Reinit (secure desktop)
+  is treated the same. Lost for > 3 s: a session warning (no stop).
+- An empty NV12 pool on a tick repeats the previous frame instead of leaving a hole (fewer drops under load).
+- Sleep: the session registers `RegisterSuspendResumeNotification`; on suspend a recording pauses (the callback waits
+  up to 1 s for the pause); on resume it stays paused with a warning, the user resumes or stops. Not finalized:
+  pausing keeps the take one file and a resume after sleep cannot lose data that was already written.
+Why: these paths can only be forced for real by a human; the hooks `InjectAcquireErrorForTest`,
+`InjectReinitErrorForTest`, `SimulateOutputRemovedForTest` drive the real recovery code in ct_capture_tests.
+Impact: tests `capture_access_lost_repeats_and_recovers`, `capture_display_removed_ends_or_recovers`,
+`capture_mode_change_keeps_size_letterboxed`, `gpu_convert_fit_letterboxes`, `display_rects_are_physical_and_factory_current`,
+`session_sleep_pauses_and_resume_stays_paused`. Human checks listed in PROGRESS 11.4.
+
+## 2026-10-18 · P05 task 5.8 · GPU budget at 1080p60: profile, no encoder setting helps
+Spec said: 1080p60 recording GPU < 15 % (busiest engine); measured 19.5 % and 28/8,972 drops under load.
+Done instead: profiled per GPU engine. The busiest engine is the encoder ("video codec 0", AMD VCN): 12-38 % with the
+same input depending on the GPU clock state; the compute BGRA->NV12 pass is 7-10 % on 3D; the duplication copy is 0
+(zero-copy, DECISIONS 2.7). Interleaved A/B runs (`capture_bench --record` with `--quality`, `--bframes`,
+`--low-latency`) found no setting that lowers VCN load: B-frames, reference count, usage, CABAC and VBR/CBR all cost
+the same ~2.9 ms/frame pipelined; CODECAPI_AVEncCommonQualityVsSpeed is not supported by AMDh264Encoder; low latency
+serializes the pipeline (16 ms/frame) and has the POC type-2 decode problem. A UAV-bound pool vs a staging copy made no
+difference on 3D. Quality targets unchanged. Mp4Writer now logs the encoder's CODECAPI values after init.
+The pool-empty fix (DECISIONS 11.4 entry above) cut drops: 20 s `--record --verify` 4 of 1,189 frames dropped
+(GPU codec 18.5 %, 3D 6.8 %, machine at 100 % CPU), verify PASS.
+Why: the counter is relative to the current clock, so on a loaded shared machine it moves with the other agents'
+GPU work more than with our settings.
+Impact: budget left open. Proposal (needs a decision, it is a design change): encode only new frames (VFR with
+the CFR tick as the timestamp grid) instead of re-sending the last texture for repeats — on a static desktop
+most ticks are repeats, so VCN load drops with screen activity. Requires A/V-sync and editor checks of VFR media.
+Re-measure 10 min on an idle machine first; it may already be within 15 % there.
+
+## 2026-10-18 · P05 task 5.8 · Arming: hotkey -> first frame with countdown 0
+Spec said: hotkey -> first frame < 150 ms; with countdown 0 the prepare (~550 ms, writer ~750 ms cold) was on the path.
+Done instead: with an effective countdown of 0 the bar arms the session while idle (`RecordingSession::Arm`), 700 ms
+after the setup last changed, after a recording and after display changes (WM_DISPLAYCHANGE disarms first). Arming
+prepares the capturer and the screen writer into a hidden bundle folder (`BundleWriter::SetHidden`), declaring the
+audio streams the setup will use, but opens no microphone, system audio, camera (DECISIONS 5.6) and no desktop
+duplication (`release_duplication_until_start`), and does not call IMFSinkWriter::BeginWriting
+(`defer_begin_writing`: from BeginWriting on the AMD MFT thread polls at ~3.5 % of a core). REC/hotkey with a
+matching setup (`IsArmedFor`, `SameSetup`) starts the armed session: unhide, writer -> capturer -> audio -> camera ->
+events (screen before audio now; audio is stamped from device positions so nothing moves in time, the writer pads
+the first ms with silence). A failed arm, or an endpoint layout that changed since arming, falls back to a normal
+prepare. On finish the bundle is renamed to the start time. A leftover hidden bundle (killed process) is removed by
+the next arm (`DeleteStaleArmed`: hidden, no meta.json, no events.ctev). Countdown > 0 never arms (the prepare
+overlaps the countdown). Preview mode never uses an armed session.
+Why: the remaining cost is the encoder/MF setup; it cannot be made faster, only earlier. Holding an encoder open
+costs nothing measurable once BeginWriting is deferred.
+Impact: `--bench-hotkey 5` countdown 0: 353/555/640 -> 51.5/60.7/111 ms (min/median/max); idle bar armed 0 redraws/s,
+CPU 0.64 % of one core vs 0.55 % unarmed (noise), GPU 0. An empty hidden `.ctrec` exists in the output folder while
+armed. Tests `session_armed_start_is_fast`, `bundle_stale_armed_cleanup`, `capture_released_duplication_comes_back_at_start`.
