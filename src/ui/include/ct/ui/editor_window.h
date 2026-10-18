@@ -41,6 +41,9 @@ public:
     // the current one is empty, else import into it; media files -> import into the media bin.
     void OpenPath(std::string_view path);
     void OpenPaths(const std::vector<std::string>& paths);   // drag and drop (WM_DROPFILES)
+    // File > Export (Ctrl+E): the export dialog on a snapshot of the project, `preset_id` preselected (empty = last
+    // used). One dialog per window; while an export runs this brings its progress window back.
+    void OpenExportDialog(const std::string& preset_id = {});
 
     // Outside NewFrame/Render: runs deferred shell dialogs (they must not open inside an ImGui frame), releases last
     // frame's pinned thumbnails.

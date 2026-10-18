@@ -1569,3 +1569,38 @@ Impact: remaining >= 20 ms events are images the duplication handed out more tha
 (one frame late, +16.7 ms on top of the phase). Fixing them needs a one-tick delivery delay (re-stamp a held frame
 when a late image for its window arrives) or a longer acquire timeout (longer device-lock hold); not done. The vsync /
 tick phase itself (+-8.3 ms) is inherent to CFR ticks not locked to the display.
+
+## 2026-10-17 · P09b/P05 integration · A file forwarded to the running bar starts the editor process
+Spec said: (P05 5.6 decisions) a double-clicked `.ctproj`/`.ctrec` while the bar runs is forwarded to the bar through
+SingleInstance and ignored; integration should open the editor for it or exempt editor launches from the check.
+Done instead: the bar's window handler looks at a forwarded command line first: when `IsRecorderBarCommandLine` says it
+is not a bar launch (`--editor`, a `.ctproj`/`.ctrec` argument), `ForwardedEditorArguments` re-quotes its arguments
+(argv[0] dropped, CommandLineToArgvW rules incl. trailing backslashes) and the bar starts `Camtesia.exe <args>` with
+`CAMTESIA_SEPARATE_INSTANCE=1`, the same path as "Open in editor". The bar stays hidden/as it was; a plain second
+launch still shows the bar. Bar diagnostics (temp output folder) only print the forwarded line. Also: a recording
+argument with a trailing slash (`take.ctrec\`) now counts as an editor launch, and `--bench-drag/scrub/play` skip the
+single-instance check like `--bench-hotkey` (`RunsAsSeparateInstance` matches `--bench-`).
+Why: the bar and the editor do not share a process yet; launching keeps "the same as a fresh launch" semantics,
+including the unsaved-prompt-free fresh editor and the editor's own forwarding target.
+Impact: when bar and editor share one process (later), replace `launch_editor` with in-process opening.
+
+## 2026-10-17 · Dev/test · CT_INSTANCE_SUFFIX single-instance override
+Spec said: one instance per session (mutex `Local\Camtesia.Instance`, forward to class `CamtesiaMain`).
+Done instead: `SingleInstance::Suffix()` reads the environment variable `CT_INSTANCE_SUFFIX` (sanitized to
+`[A-Za-z0-9._-]`, at most 32 characters); when non-empty, `MutexName()` and `MainWindowClass()` append `.<suffix>`.
+main.cpp, the recorder bar window and the editor window use these names. Unset = the release names, byte for byte.
+There are no named pipes or other named kernel objects to rename. Documented in docs/06 section 5.
+Why: parallel worktrees, benches and agents on the reference machine blocked each other's launches (P09 9.7 could not
+be measured while another agent's instance held the mutex).
+Impact: none for users. Test: `instance_suffix_override` (ct_ui_tests).
+
+## 2026-10-17 · P09b task 9.1/10.1 · Export wiring in the editor
+Spec said: File > Export opens the P10 dialog; status bar shows export progress; docs/05 shows an `Export ▾` button.
+Done instead: one `ExportDialog` per EditorWindow (destroyed first in Destroy, so a running job is cancelled and joined
+before the RenderContext/Compositor go). Opening pauses playback. The `Export ▾` button is split: the label opens the
+dialog (Ctrl+E), the chevron opens a popup with "Export..." and the 10 built-in presets; the Export menu lists the same
+presets (user presets stay in the dialog's list). The status-bar pill ("Exporting N %" + bar) shows while `Busy()`;
+clicking it calls `Restore()`. `DrawStatusBar` returns `StatusBarClick` instead of bool. `--open-export [preset]`
+opens the dialog after load (screenshots). Closing the editor during an export cancels it without a prompt.
+Why: docs/05 section 4 layout; ExportDialog's lifetime contract.
+Impact: a "cancel the running export?" prompt on close could be added with the P11 error UX work.

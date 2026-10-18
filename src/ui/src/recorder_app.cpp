@@ -97,6 +97,8 @@ struct App {
     HICON icon = nullptr;
     uint32_t redraws = 0, messages = 0;
     UINT last_message = 0;
+    // A forwarded editor launch (double-clicked .ctproj/.ctrec) starts the editor process; diagnostics only log it.
+    std::function<void(const std::wstring& args)> launch_editor;
 };
 
 App* g_app = nullptr;
@@ -151,6 +153,22 @@ LRESULT Handler(void* user, HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, b
     if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam)) {
         handled = true;
         return 1;
+    }
+    if (msg == WM_COPYDATA) {
+        // A second launch asking for the editor (double-clicked project/recording, `--editor`): open the editor the
+        // way a fresh launch would, as its own process (the bar keeps running and is not shown).
+        const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+        if (cds && cds->dwData == platform::SingleInstance::kCopyDataCommandLine && cds->lpData) {
+            std::wstring cmd(static_cast<const wchar_t*>(cds->lpData), cds->cbData / sizeof(wchar_t));
+            while (!cmd.empty() && cmd.back() == L'\0') cmd.pop_back();
+            const std::wstring args = ForwardedEditorArguments(cmd.c_str());
+            if (!args.empty()) {
+                CT_LOG_INFO("forwarded editor launch: %ls", args.c_str());
+                if (app.launch_editor) app.launch_editor(args);
+                handled = true;
+                return TRUE;
+            }
+        }
     }
     const LRESULT r = app.bar.HandleMessage(hwnd, msg, wparam, lparam, handled);
     if (handled) return r;
@@ -333,23 +351,63 @@ struct HotkeyBench {
     }
 };
 
-void LaunchEditor(const std::string& path) {
+void LaunchEditorArgs(const std::wstring& args) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring args = L"--editor";
-    if (!path.empty()) args += L" \"" + Utf8ToWide(path) + L"\"";
     // The editor runs as its own process until bar and editor share one (main.cpp skips the single-instance check).
     SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", L"1");
-    ShellExecuteW(nullptr, L"open", exe, args.c_str(), nullptr, SW_SHOWNORMAL);
+    const HINSTANCE r = ShellExecuteW(nullptr, L"open", exe, args.c_str(), nullptr, SW_SHOWNORMAL);
     SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", nullptr);
+    if (reinterpret_cast<INT_PTR>(r) <= 32) CT_LOG_WARN("could not start the editor (%lld): %ls", static_cast<long long>(reinterpret_cast<INT_PTR>(r)), args.c_str());
+}
+
+void LaunchEditor(const std::string& path) {
+    std::wstring args = L"--editor";
+    if (!path.empty()) args += L" " + QuoteCommandLineArg(Utf8ToWide(path));
+    LaunchEditorArgs(args);
 }
 
 } // namespace
 
+std::wstring QuoteCommandLineArg(const std::wstring& a) {
+    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) return a;
+    // CommandLineToArgvW rules: backslashes are literal unless they precede a quote, so double those (and the ones
+    // before the closing quote, e.g. a folder path ending in a backslash).
+    std::wstring out = L"\"";
+    size_t slashes = 0;
+    for (wchar_t c : a) {
+        if (c == L'\\') {
+            ++slashes;
+            continue;
+        }
+        if (c == L'"') out.append(slashes * 2 + 1, L'\\');
+        else out.append(slashes, L'\\');
+        slashes = 0;
+        out.push_back(c);
+    }
+    out.append(slashes * 2, L'\\');
+    out.push_back(L'"');
+    return out;
+}
+
+std::wstring ForwardedEditorArguments(const wchar_t* cmdline) {
+    if (!cmdline || IsRecorderBarCommandLine(cmdline)) return {};
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(cmdline, &argc);
+    std::wstring out;
+    for (int i = 1; argv && i < argc; ++i) {
+        if (!out.empty()) out.push_back(L' ');
+        out += QuoteCommandLineArg(argv[i]);
+    }
+    if (argv) LocalFree(argv);
+    return out;
+}
+
 bool RunsAsSeparateInstance(const wchar_t* cmdline) {
     if (GetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", nullptr, 0) > 0) return true;
     if (!cmdline) return false;
-    return wcsstr(cmdline, L"--screenshot") || wcsstr(cmdline, L"--time-to-window") || wcsstr(cmdline, L"--bench-hotkey");
+    // --bench- covers the bar's --bench-hotkey and the editor's --bench-drag/--bench-scrub/--bench-play.
+    return wcsstr(cmdline, L"--screenshot") || wcsstr(cmdline, L"--time-to-window") || wcsstr(cmdline, L"--bench-");
 }
 
 bool IsRecorderBarCommandLine(const wchar_t* cmdline) {
@@ -359,9 +417,10 @@ bool IsRecorderBarCommandLine(const wchar_t* cmdline) {
     for (int i = 1; argv && i < argc && bar; ++i) {
         const wchar_t* a = argv[i];
         if (!wcscmp(a, L"--editor") || !wcscmp(a, L"--editor-demo") || !wcscmp(a, L"--settings-demo")) bar = false;
-        const size_t n = wcslen(a);
+        size_t n = wcslen(a);
+        while (n > 0 && (a[n - 1] == L'\\' || a[n - 1] == L'/')) --n;   // "D:\rec\take.ctrec\" is still a recording
         // A project or recording passed as a file (Explorer "Open with", the .ctproj association) opens the editor.
-        if ((n > 7 && !_wcsicmp(a + n - 7, L".ctproj")) || (n > 6 && !_wcsicmp(a + n - 6, L".ctrec"))) bar = false;
+        if ((n > 7 && !_wcsnicmp(a + n - 7, L".ctproj", 7)) || (n > 6 && !_wcsnicmp(a + n - 6, L".ctrec", 6))) bar = false;
     }
     if (argv) LocalFree(argv);
     return bar;
@@ -410,7 +469,8 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     if (bench.runs > 0) settings.hotkeys.toggle = Hotkey{MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F22};
 
     platform::Window::Desc desc;
-    desc.class_name = L"CamtesiaMain";   // single-instance forwarding finds this window
+    const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
+    desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
     desc.title = L"Camtesia";
     desc.w_dip = 560;
     desc.h_dip = 64;
@@ -456,6 +516,8 @@ int RunRecorderApp(const RecorderAppOptions& options) {
             hooks.open_editor = &LaunchEditor;
         }
         hooks.quit = [&app]() { app.quit = true; };
+        if (!temp_out.empty()) app.launch_editor = [](const std::wstring& a) { std::printf("forwarded editor launch: %ls (ignored)\n", a.c_str()); };
+        else app.launch_editor = &LaunchEditorArgs;
         // Diagnostics runs never write the user's settings (the hotkey bench uses its own chord).
         app.bar.Init(app.dev, app.win, settings, screenshot || bench.runs > 0 ? std::string() : settings_path, bo, std::move(hooks));
         if (!options.tray) ShowWindow(app.win.Hwnd(), SW_SHOWNOACTIVATE);

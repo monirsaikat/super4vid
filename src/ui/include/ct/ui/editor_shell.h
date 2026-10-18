@@ -20,9 +20,10 @@
 #include <imgui.h>
 
 #include <functional>
-#include <vector>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace ct::ui {
 
@@ -64,6 +65,9 @@ public:
     std::function<void()> on_preferences;                        // Edit > Preferences (P11)
     std::function<void()> on_open_logs;                          // Help > Open logs folder / status bar warnings
     std::function<void()> on_about;                              // Help > About
+    // Export menu / the Export button's chevron: open the export dialog with this built-in preset preselected.
+    std::function<void(const std::string& preset_id)> on_export_preset;
+    std::function<void()> on_export_restore;                     // status-bar export pill: show the progress again
     std::vector<std::string> recent_files;                       // File > Open recent, newest first
     StatusInfo status;                                           // filled by the owner each frame
     // Layout persistence: when true the docking layout comes from the ImGui ini (io.IniFilename) and is built only
@@ -75,6 +79,7 @@ public:
 private:
     void DispatchShortcuts();
     void DrawMenuBar();
+    void DrawExportPresetItems();
     void BuildLayout(unsigned int dockspace_id);
     void DrawStats();
     void UpdateTitle();
@@ -94,6 +99,7 @@ private:
     bool m_show_panels[4] = {true, true, true, true};
     void* m_hwnd = nullptr;
     std::string m_title;
+    std::vector<std::pair<std::string, std::string>> m_export_presets;   // built-in (id, name), dialog order
     double m_last_frame_s = 0;
     double m_frame_ms = 0;
 };

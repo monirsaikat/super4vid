@@ -22,6 +22,8 @@ struct EditorLaunch {
     std::string select_clip;          // --select-clip ID (debug / screenshots)
     bool show_stats_overlay = false;  // --overlay: F11 stats overlay on
     int fit_mode = -1;                // --fit 0..3 (preview zoom)
+    bool open_export = false;         // --open-export [preset-id]: File > Export once the files opened (screenshots)
+    std::string export_preset;
     std::string bench;                // --bench-drag | --bench-scrub | --bench-play
     int bench_count = 0;              // frames / seeks / seconds
     int width_dip = 1600, height_dip = 900;
