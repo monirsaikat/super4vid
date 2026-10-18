@@ -159,9 +159,9 @@ bool PollExact(MediaCache& cache, TimeUs t, uint32_t timeout_ms) {
 } // namespace
 
 // Perf follow-up (P06 seek/4K): every cached frame is copied once, from the decoder surface straight into its cache
-// slot (the decoder owns no pool), and one seek fills the whole paused window: the frames behind the playhead that the
-// fast-forward passes are kept instead of being decoded again by a second seek to the keyframe.
-CT_TEST_DEVICE(media_cache_one_copy_per_frame_single_pass_window) {
+// slot (the decoder owns no pool). The paused window is filled playhead first, then ahead, then behind (a second
+// seek: storing the behind frames during the first fast-forward delayed the playhead frame, see DECISIONS).
+CT_TEST_DEVICE(media_cache_one_copy_per_frame_window_fill) {
     CT_REQUIRE_DEVICE(dev);
     CT_REQUIRE_MEDIA(path, "pattern_1080p60_5s.mp4");
     MediaCache cache;
@@ -183,7 +183,7 @@ CT_TEST_DEVICE(media_cache_one_copy_per_frame_single_pass_window) {
     std::printf("    window filled with %llu seek(s), %llu frames cached, %llu decoder copies\n",
                 static_cast<unsigned long long>(st.seeks - s0.seeks), static_cast<unsigned long long>(st.frames_decoded),
                 static_cast<unsigned long long>(st.decoder_copies));
-    CT_CHECK_EQ(st.seeks - s0.seeks, 1u);
+    CT_CHECK(st.seeks - s0.seeks <= 2u);
     CT_CHECK_EQ(st.decoder_copies, st.frames_decoded);
     cache.Close();
     CT_CHECK_EQ(CacheBudget::Used(), 0u);
@@ -209,12 +209,13 @@ CT_TEST_DEVICE(media_cache_scrub_aborts_and_resumes_forward) {
         // Scrub back to 3.6 s (window from 3.35 s) while the decoder is still before 3.35 s.
         cache.Hint(3'600'000, 1.0, false);
         CT_REQUIRE(PollExact(cache, 3'600'000, 5000));
+        // Seeks until the new playhead frame arrived (the window's behind part comes later, with its own seek).
+        const int seeks = static_cast<int>(cache.GetStats().seeks - seeks0);
         CT_REQUIRE(PollExact(cache, FrameTimeUs(201, 60, 1), 5000));   // 3.35 s, behind the playhead
         FrameRef f;
         bool exact = false;
         CT_REQUIRE(cache.GetVideoFrame(3'600'000, f, exact));
         CT_CHECK_EQ(IndexOf(*dev, f), 216);
-        const int seeks = static_cast<int>(cache.GetStats().seeks - seeks0);
         std::printf("    attempt %d: %d seek(s) for the abandoned and the new position\n", attempt + 1, seeks);
         best = std::min(best, seeks);
     }

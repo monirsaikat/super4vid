@@ -176,6 +176,11 @@ binaries of master b4d6553 run alternately with after; numbers are not CT_STRICT
   load); seek-bench 1080p 50 seeks p95 223 -> 216 ms, 4K 30 seeks p95 481 -> 545 ms (noise): the exact-seek p95 is bound
   by the DXVA decoder (2.1 ms per ReadSample measured, 119 frames to the end of a 2 s GOP), not by copies; window fill
   after a seek: 2 seeks -> 1; a scrub during a fast-forward: 2-3 seeks -> 1. Seek budget (150 ms) still missed, see DECISIONS
+  - 2026-10-18 re-measure (CPU 100 % busy all day, so only rough): 4K60 `--seconds 4` frames shown 52 / 33 before ->
+    85 / 52 after (late 8 / 19 -> 0 / 13); seek-bench 1080p p50 67-307 ms before, 41-228 ms after (decoder seeks
+    31-36 -> 18-32), p95 554-1960 ms before, 306-2448 ms after: noise-dominated. Behind-window frames are now stored
+    only after the playhead frame (DECISIONS correction), so a window fill takes 2 seeks again; a scrub during a
+    fast-forward still reaches the new frame with 1 seek
 - [x] F2 Export camera contention — `export_demo --seconds 20` (screen + 1080p60 camera PIP + overlay + cursor + 2
   annotations), 2026-10-18, alternating, CPU 30-60 % busy: before (b4d6553) RenderFrame CPU 5.59 / 5.94 ms, render
   6.5 / 7.0 ms, 0.95x / 0.98x real time; after F1 (one copy per frame, no decoder pool) RenderFrame CPU 0.30 / 0.20 ms,

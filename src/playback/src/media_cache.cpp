@@ -443,8 +443,13 @@ TimeUs MediaCache::FillFrom(const Window& w, TimeUs need) const {
     // Frames of the window behind the playhead that the decoder passes on its way to `need` are kept instead of
     // skipped: filling them later would take a second seek and a second decode of the GOP (up to 2 s of frames), which
     // keeps the decoder busy when the next scrub arrives.
+    // Only once the playhead frame is in: before that every copy (and its locks) delays the frame a scrub waits for,
+    // which cost more seek p95 on a loaded machine than the second pass saves (the second pass is aborted by the
+    // next scrub anyway).
     if (!w.forward || need < w.playhead) return need;
     SharedGuard g(m_lock);
+    bool playhead_exact = false;
+    if (m_cache.Find(w.playhead, playhead_exact) < 0 || !playhead_exact) return need;
     const TimeUs gap = m_cache.FirstGap(w.start, FrameCache::kContiguousUs);
     return gap < need ? gap : need;
 }

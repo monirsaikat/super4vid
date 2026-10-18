@@ -1684,3 +1684,12 @@ Done instead:
   priority of the thread that opened the encoder). The frame-diff mask and canvas passes are split by rows too.
 Why: GIF 720p20 export at 1.41x (31 ms per frame on the CPU, PROGRESS F4).
 Impact: an export uses up to 8 more threads while it encodes a GIF (below normal priority when the job is).
+
+## 2026-10-18 · Perf follow-up (P06) · Correction to the 2026-10-17 entry: behind-window frames after the playhead frame
+Spec said: (the 2026-10-17 perf entry) frames behind the playhead are stored during the fast-forward after a seek.
+Done instead: `MediaCache::FillFrom` stores them only once the playhead frame is cached, so a seek fills playhead,
+then ahead, then behind (a second seek, aborted by the next scrub). Storing them first put up to 15 copies and their
+locks in front of the frame a scrub waits for; on the loaded machine the seek-bench p95 came out worse more often
+than not (260 -> 306 / 421 ms, 554 -> 923 ms in A/B runs), while the p50 gain came from the scrub abort/resume.
+Why: seek latency of the playhead frame comes first.
+Impact: none outside MediaCache; the test is now `media_cache_one_copy_per_frame_window_fill` (<= 2 seeks).
