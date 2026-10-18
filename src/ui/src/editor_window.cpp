@@ -629,6 +629,7 @@ struct EditorWindow::Impl {
         last_t = t;
         ++w.m_stats.preview_renders;
         w.m_stats.last_render_cpu_ms = comp.LastTiming().total_ms;
+        w.m_stats.last_render_gpu_ms = comp.LastTiming().gpu_total_ms;
         if (playing) {
             ++w.m_stats.playing_frames;
             if (!exact) ++w.m_stats.frames_inexact_playing;

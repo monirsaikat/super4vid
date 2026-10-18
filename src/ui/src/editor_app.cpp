@@ -103,6 +103,9 @@ struct App {
     std::vector<double> frame_ms;    // wall time between presents
     std::vector<double> cpu_ms;      // RenderOneFrame CPU time (incl. present wait)
     std::vector<double> build_ms;    // ImGui NewFrame..Render (UI CPU)
+    std::vector<double> gpu_ms;      // compositor GPU time of each preview render
+    std::vector<double> swap_wait_ms;   // waits for the swapchain's frame latency object (GPU behind)
+    uint64_t renders_seen = 0;
     int64_t last_present_qpc = 0;
     std::vector<double> scrub_cold, scrub_cached;
     int scrub_phase = 0;             // 0 waiting for media, 1 cold seeks, 2 cached seeks, 3 done
@@ -265,6 +268,8 @@ void BenchInput(App& app) {
             app.frame_ms.clear();
             app.cpu_ms.clear();
             app.build_ms.clear();
+            app.gpu_ms.clear();
+            app.swap_wait_ms.clear();
             return;
         }
         const int n = std::max(60, L.bench_count);
@@ -290,6 +295,8 @@ void BenchInput(App& app) {
             app.frame_ms.clear();
             app.cpu_ms.clear();
             app.build_ms.clear();
+            app.gpu_ms.clear();
+            app.swap_wait_ms.clear();
             app.bench_start_qpc = QpcNow();
         }
         if (app.bench_frame > 90 && static_cast<double>(QpcNow() - app.bench_start_qpc) / app.qpc_freq > std::max(2, L.bench_count)) {
@@ -382,6 +389,11 @@ bool RenderOneFrame(App& app) {
         if (app.last_present_qpc) app.frame_ms.push_back(static_cast<double>(end - app.last_present_qpc) * 1000.0 / app.qpc_freq);
         app.cpu_ms.push_back(app.last_frame_ms);
         app.build_ms.push_back(static_cast<double>(built - start) * 1000.0 / app.qpc_freq);
+        const EditorWindow::Stats& st = app.editor.GetStats();
+        if (st.preview_renders != app.renders_seen) {
+            app.renders_seen = st.preview_renders;
+            if (st.last_render_gpu_ms >= 0) app.gpu_ms.push_back(st.last_render_gpu_ms);
+        }
     }
     app.last_present_qpc = end;
     ++app.redraws_this_second;
@@ -415,6 +427,10 @@ void ReportBench(App& app) {
         if (L.bench == "--bench-play")
             std::printf("  preview: %llu frames rendered while playing, %llu without every exact frame, render CPU last %.2f ms\n",
                         static_cast<unsigned long long>(st.playing_frames), static_cast<unsigned long long>(st.frames_inexact_playing), st.last_render_cpu_ms);
+        const Percentiles g = Stats(app.gpu_ms);
+        std::printf("  preview renders during the run: %zu, compositor GPU p50 %.2f p95 %.2f max %.2f ms\n", app.gpu_ms.size(), g.p50, g.p95, g.max);
+        const Percentiles sw = Stats(app.swap_wait_ms);
+        std::printf("  swapchain wait (GPU behind) p50 %.2f p95 %.2f max %.2f ms\n", sw.p50, sw.p95, sw.max);
     } else if (L.bench == "--bench-scrub") {
         const Percentiles a = Stats(app.scrub_cold), b = Stats(app.scrub_cached);
         std::printf("bench-scrub: cold %zu seeks p50 %.1f p95 %.1f max %.1f ms; cached %zu seeks p50 %.1f p95 %.1f max %.1f ms\n",
@@ -456,7 +472,9 @@ int Loop(App& app) {
         }
         if (app.quit) break;
         if (frames_requested > 0 && !app.win.IsMinimized()) {
+            const int64_t wait_start = QpcNow();
             WaitForSingleObject(app.sc.WaitableObject(), 1000);
+            if (!L.bench.empty()) app.swap_wait_ms.push_back(static_cast<double>(QpcNow() - wait_start) * 1000.0 / app.qpc_freq);
             if (app.win.ConsumeResize()) CT_LOG_IF_FAILED(app.sc.Resize(app.win.ClientSizePx()));
             if (!RenderOneFrame(app)) break;
             --frames_requested;

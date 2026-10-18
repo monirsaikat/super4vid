@@ -63,6 +63,7 @@ public:
     struct Stats {
         double last_scrub_ms = -1;          // playhead change -> exact frame rendered (paused)
         double last_render_cpu_ms = 0;      // Compositor CPU time of the last preview frame
+        double last_render_gpu_ms = -1;     // Compositor GPU time (timestamp queries, a few frames late; -1 unknown)
         uint64_t preview_renders = 0;
         uint64_t frames_inexact_playing = 0;   // preview frames rendered while playing without every exact frame
         uint64_t playing_frames = 0;
