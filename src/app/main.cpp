@@ -412,6 +412,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
             ImGuiIO& io = ImGui::GetIO();
             io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
             io.IniFilename = nullptr;   // layout persistence is decided in P09
+#if !defined(CT_DEBUG)
+            io.ConfigDebugHighlightIdConflicts = false;   // developer aid only (on by default in ImGui)
+#endif
             if (opt.editor_demo || opt.settings_demo) ct::ui::EditorShell::SetupImGui();   // theme + system fonts + icons
             else ImGui::StyleColorsDark();
             app.base_style = ImGui::GetStyle();

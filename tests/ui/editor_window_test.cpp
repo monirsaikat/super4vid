@@ -265,3 +265,78 @@ CT_TEST(recorder_bar_is_found_and_shown_from_the_editor) {
     DestroyWindow(editor);
     UnregisterClassW(cls.c_str(), wc.hInstance);
 }
+
+// v0.1.0 bug: the "Export" menu and the title-bar "Export" button had the same ID, so hovering either one popped
+// ImGui's "2 visible items with conflicting ID" error. Sweep the title bar with the menus closed, then open the File
+// menu and walk across every header (each menu opens in turn) and down through its items.
+CT_TEST(title_bar_and_open_menus_have_no_id_conflicts) {
+    Headless h(1600, 900);
+    EditorShell shell;
+    std::vector<Action> forwarded;
+    shell.on_action = [&](Action a) {   // nothing reaches the real window (no recorder launch, no dialogs)
+        forwarded.push_back(a);
+        return true;
+    };
+    for (int i = 0; i < 3; ++i) h.Frame([&] { shell.Frame(); }, false);
+    const float bar_y = ImGui::GetFrameHeight() * 0.5f;
+    bool conflict = false;
+    float conflict_x = -1, conflict_y = -1;
+    auto at = [&](float x, float y) {
+        h.Mouse(x, y);
+        h.Frame([&] { shell.Frame(); }, false);
+        if (!conflict && h.IdConflict()) {
+            conflict = true;
+            conflict_x = x;
+            conflict_y = y;
+        }
+    };
+    for (float x = 2; x < 1600; x += 4) at(x, bar_y);   // menus closed: headers, title, Record, Export, chevron
+    // Open File (the first header) by clicking it.
+    at(20, bar_y);
+    h.Button(0, true);
+    h.Frame([&] { shell.Frame(); }, false);
+    h.Button(0, false);
+    h.Frame([&] { shell.Frame(); }, false);
+    for (float x = 8; x < 420; x += 12) {   // the menu headers sit at the left of the bar
+        at(x, bar_y);
+        for (float y = bar_y + 14; y < 420; y += 9) at(x + 20, y);
+        at(x, bar_y);
+    }
+    if (conflict) std::printf("  ID conflict while hovering (%.0f, %.0f)\n", conflict_x, conflict_y);
+    CT_CHECK(!conflict);
+}
+
+// Whole-window sweep with a full project open: every hovered item in every panel has a unique ID (ImGui reports a
+// conflict only for a hovered item, so the mouse visits a grid over the window), first with nothing selected, then
+// with the first clip selected (the properties panel shows the clip sections).
+CT_TEST(editor_window_grid_sweep_has_no_id_conflicts) {
+    Headless h(1600, 900);
+    EditorShell shell;
+    shell.on_action = [](Action) { return true; };
+    std::string err;
+    CT_REQUIRE(shell.LoadProject("data/projects/full.ctproj", &err));
+    for (int i = 0; i < 3; ++i) h.Frame([&] { shell.Frame(); }, false);
+    bool conflict = false;
+    float cx = -1, cy = -1;
+    for (int pass = 0; pass < 2 && !conflict; ++pass) {
+        if (pass == 1) {
+            EditorState& s = shell.State();
+            CT_REQUIRE(!s.project.clips.empty());
+            s.selection.Clear();
+            s.selection.clips = {s.project.clips.front().id};
+        }
+        for (float y = 4; y < 900 && !conflict; y += 14)
+            for (float x = 4; x < 1600 && !conflict; x += 14) {
+                h.Mouse(x, y);
+                h.Frame([&] { shell.Frame(); }, false);
+                if (h.IdConflict()) {
+                    conflict = true;
+                    cx = x;
+                    cy = y;
+                }
+            }
+    }
+    if (conflict) std::printf("  ID conflict while hovering (%.0f, %.0f)\n", cx, cy);
+    CT_CHECK(!conflict);
+    CT_CHECK_EQ(shell.State().undo.UndoEntries(), size_t(0));   // hovering never edits
+}

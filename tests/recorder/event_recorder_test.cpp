@@ -80,8 +80,14 @@ CT_TEST_DEVICE(event_recorder_hooks_capture_sendinput) {
     // A real cursor move (restored below) so the 120 Hz tracker sees a change.
     SetCursorPos(start.x + 17, start.y + 11);
     Wait(60);
+    // A person moving the mouse meanwhile takes the real cursor elsewhere: detected here, then those position checks
+    // are skipped (the hooks only report the test's own tagged input, but the cursor itself is shared).
+    POINT moved_to{};
+    GetCursorPos(&moved_to);
     SetCursorPos(start.x, start.y);
     Wait(30);
+    POINT before_click{};
+    GetCursorPos(&before_click);
 
     SendMouse(MOUSEEVENTF_LEFTDOWN);
     SendMouse(MOUSEEVENTF_LEFTUP);
@@ -92,6 +98,12 @@ CT_TEST_DEVICE(event_recorder_hooks_capture_sendinput) {
     SendKey(VK_F24, false);
     SendKey(VK_PAUSE, true);  // not a shortcut: only feeds the TYPING burst
     SendKey(VK_PAUSE, false);
+    POINT after_click{};
+    GetCursorPos(&after_click);
+    const bool cursor_steady = std::abs(before_click.x - start.x) <= 2 && std::abs(before_click.y - start.y) <= 2 &&
+                               std::abs(after_click.x - start.x) <= 2 && std::abs(after_click.y - start.y) <= 2;
+    const bool move_held = std::abs(moved_to.x - (start.x + 17)) <= 2 && std::abs(moved_to.y - (start.y + 11)) <= 2;
+    if (!cursor_steady || !move_held) std::printf("  WARN: the mouse was moved during the test; cursor position checks skipped\n");
     rec.Marker("chapter 1");
     CT_CHECK(WaitRecords(rec, 9, 3000));
     rec.SetPaused(true);
@@ -128,8 +140,10 @@ CT_TEST_DEVICE(event_recorder_hooks_capture_sendinput) {
     CT_CHECK(!log.Buttons()[1].down);
     CT_CHECK_EQ(log.Buttons()[2].button, events::Button::Right);
     // Same tolerance as the cursor move below: other processes can nudge the real cursor between steps.
-    CT_CHECK(std::abs(log.Buttons()[0].x - (start.x - cfg.region.x)) <= 32);
-    CT_CHECK(std::abs(log.Buttons()[0].y - (start.y - cfg.region.y)) <= 32);
+    if (cursor_steady) {
+        CT_CHECK(std::abs(log.Buttons()[0].x - (start.x - cfg.region.x)) <= 2);
+        CT_CHECK(std::abs(log.Buttons()[0].y - (start.y - cfg.region.y)) <= 2);
+    }
     CT_REQUIRE(log.Wheels().size() == 1);
     CT_CHECK_EQ(log.Wheels()[0].delta_v, static_cast<int16_t>(-WHEEL_DELTA));
     CT_REQUIRE(log.Keys().size() == 2);   // F24 down + up; Pause is not a shortcut
@@ -147,7 +161,7 @@ CT_TEST_DEVICE(event_recorder_hooks_capture_sendinput) {
     // between steps, so accept the recorded move within 8 px of the target.
     for (const auto& c : log.Cursor())
         moved |= std::abs(c.x - (start.x + 17 - cfg.region.x)) <= 8 && std::abs(c.y - (start.y + 11 - cfg.region.y)) <= 8;
-    CT_CHECK(moved);
+    if (move_held) CT_CHECK(moved);
     // Every referenced shape is in the file (CURSOR_SHAPE precedes its first move).
     for (const auto& c : log.Cursor())
         if (c.shape_id) CT_CHECK(log.FindShape(c.shape_id) != nullptr);

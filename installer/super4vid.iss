@@ -2,7 +2,7 @@
 ; CMakeLists.txt project(super4vid VERSION x.y.z). Per-user by default (no UAC); "Install for all users" is offered
 ; in the privileges dialog. User data (%APPDATA%\super4vid, %LOCALAPPDATA%\super4vid, Videos\super4vid) is never deleted.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.1.1"
 #endif
 #ifndef BinDir
   #define BinDir "..\out\build\ninja-release\bin"

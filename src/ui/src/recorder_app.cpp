@@ -786,6 +786,9 @@ int RunRecorderApp(const RecorderAppOptions& options) {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable | ImGuiConfigFlags_NavEnableKeyboard;   // Tab/Enter (P11 11.6)
+#if !defined(CT_DEBUG)
+        io.ConfigDebugHighlightIdConflicts = false;   // developer aid only (on by default in ImGui)
+#endif
         io.ConfigViewportsNoAutoMerge = true;     // popovers/toasts always get their own (excluded) window
         io.ConfigViewportsNoTaskBarIcon = true;
         io.ConfigViewportsNoDecoration = true;

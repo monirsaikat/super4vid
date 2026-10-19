@@ -93,8 +93,12 @@ void EditorShell::SetupImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
     io.ConfigDockingWithShift = false;
+    // ImGui shows its "conflicting ID" popup by default; it is a developer aid, so only Debug builds show it
+    // (ct_ui_tests turn it on to detect conflicts in every build).
 #if defined(CT_DEBUG)
     io.ConfigDebugHighlightIdConflicts = true;
+#else
+    io.ConfigDebugHighlightIdConflicts = false;
 #endif
     Theme::Apply(ImGui::GetStyle());
     Fonts::Load(*io.Fonts);
@@ -362,7 +366,10 @@ void EditorShell::DrawMenuBar() {
         ItemTooltip(str::kRecord, Shortcuts::KeysFor(Action::OpenRecorder));
         ImGui::SameLine(0, Dp(8));
         ImGui::SetCursorPosY((ImGui::GetFrameHeight() - bh) * 0.5f);
-        if (Button(str::kExport, ButtonKind::Primary, ImVec2(exp_w, bh))) Run(Action::Export);
+        // "##titlebar": the Export menu header above uses the same label (same ID) in this window.
+        char exp[48];
+        std::snprintf(exp, sizeof(exp), "%s##titlebar", str::kExport);
+        if (Button(exp, ButtonKind::Primary, ImVec2(exp_w, bh))) Run(Action::Export);
         ItemTooltip(str::kExport, Shortcuts::KeysFor(Action::Export));
         ImGui::SameLine(0, Dp(2));
         ImGui::SetCursorPosY((ImGui::GetFrameHeight() - bh) * 0.5f);

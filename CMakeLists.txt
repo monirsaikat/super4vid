@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(super4vid VERSION 0.1.0 LANGUAGES C CXX)
+project(super4vid VERSION 0.1.1 LANGUAGES C CXX)
 
 if(NOT MSVC)
   message(FATAL_ERROR "super4vid builds with MSVC only. See docs/01-toolchain-and-build.md")
