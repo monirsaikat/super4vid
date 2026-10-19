@@ -1,8 +1,8 @@
-# Camtesia user guide
+# super4vid user guide
 
-> Describes Camtesia 1.0 as specified; some features are still in development.
+> Describes super4vid 1.0 as specified; some features are still in development.
 
-Camtesia records your screen, microphone, system audio and webcam, then lets you edit the result on a timeline
+super4vid records your screen, microphone, system audio and webcam, then lets you edit the result on a timeline
 and export it. The editor re-renders the cursor, zooms in on your clicks, and frames the recording on a padded,
 rounded background.
 
@@ -25,34 +25,34 @@ Contents:
 ### Requirements
 
 - Windows 10 version 2004 (build 19041) or later, 64-bit. Windows 11 is the main test target.
-- No other software. Camtesia is one executable with no runtimes or redistributables.
-- A GPU with a hardware video encoder is recommended. Without one, Camtesia uses the Windows software encoder.
+- No other software. super4vid is one executable with no runtimes or redistributables.
+- A GPU with a hardware video encoder is recommended. Without one, super4vid uses the Windows software encoder.
 
 ### Installer
 
-1. Run `CamtesiaSetup-x.y.z.exe`.
+1. Run `super4vidSetup-x.y.z.exe`.
 2. By default it installs for the current user only and needs no administrator rights. The program goes to
-   `%LOCALAPPDATA%\Programs\Camtesia`. Choose "Install for all users" in the first dialog to install to
+   `%LOCALAPPDATA%\Programs\super4vid`. Choose "Install for all users" in the first dialog to install to
    `Program Files` instead (this asks for administrator rights).
 3. Optional tasks:
    - **Create a desktop shortcut** (off by default).
-   - **Start Camtesia in the tray when Windows starts** (off by default).
-4. Setup adds a Start menu entry and opens `.ctproj` project files with Camtesia when you double-click them.
+   - **Start super4vid in the tray when Windows starts** (off by default).
+4. Setup adds a Start menu entry and opens `.ctproj` project files with super4vid when you double-click them.
 
 Unsigned builds trigger a Windows SmartScreen warning. Choose **More info** and then **Run anyway**.
 
 For scripted installs, the standard Inno Setup switches work, for example:
 
 ```
-CamtesiaSetup-1.0.0.exe /VERYSILENT /CURRENTUSER /TASKS=desktopicon,startup
+super4vidSetup-1.0.0.exe /VERYSILENT /CURRENTUSER /TASKS=desktopicon,startup
 ```
 
 ### Portable ZIP
 
-1. Extract `Camtesia-x.y.z-portable.zip` to any folder, for example a USB drive.
-2. Run `Camtesia.exe`.
+1. Extract `super4vid-x.y.z-portable.zip` to any folder, for example a USB drive.
+2. Run `super4vid.exe`.
 
-The ZIP contains a file named `portable.txt`. While it sits next to the exe, Camtesia keeps all its data
+The ZIP contains a file named `portable.txt`. While it sits next to the exe, super4vid keeps all its data
 (settings, logs, crash dumps, autosaves and recordings) in a `data\` folder next to the exe. Nothing is written to
 your user profile. The portable version does not register the `.ctproj` file type.
 
@@ -61,7 +61,7 @@ your user profile. The portable version does not register the `.ctproj` file typ
 Each release ships `SHA256SUMS.txt`. In PowerShell:
 
 ```
-Get-FileHash .\CamtesiaSetup-1.0.0.exe -Algorithm SHA256
+Get-FileHash .\super4vidSetup-1.0.0.exe -Algorithm SHA256
 ```
 
 Compare the result with the line in `SHA256SUMS.txt`.
@@ -72,7 +72,7 @@ Compare the result with the line in `SHA256SUMS.txt`.
 
 ### The recorder bar
 
-Camtesia starts as a small floating bar at the bottom centre of your main monitor. The bar never appears in your
+super4vid starts as a small floating bar at the bottom centre of your main monitor. The bar never appears in your
 recordings. Drag it by the grip on the left; it remembers its position.
 
 From left to right the bar has:
@@ -92,7 +92,7 @@ From left to right the bar has:
 The level meters are green below -18 dBFS, amber up to -6 dBFS and red above. Speak at a level that stays mostly
 green and amber.
 
-On first start, Camtesia shows one tip: "Press F9 to start recording. Recordings are saved to Videos\Camtesia".
+On first start, super4vid shows one tip: "Press F9 to start recording. Recordings are saved to Videos\super4vid".
 
 ### Choose what to record
 
@@ -138,7 +138,7 @@ On an HDR monitor the recording is converted to standard dynamic range (SDR).
 
 - Microphone and system audio are recorded as **separate tracks**, so you can adjust them independently later.
   Both are on by default. Audio is 48 kHz stereo AAC.
-- If a device is unplugged or the Windows default device changes during a recording, Camtesia fills the gap with
+- If a device is unplugged or the Windows default device changes during a recording, super4vid fills the gap with
   silence and switches to the new default device. The timeline stays in sync.
 - The webcam is off by default. When on, it records to its own file at 1280 × 720 by default. You place it on the
   video as picture-in-picture in the editor.
@@ -152,7 +152,7 @@ On an HDR monitor the recording is converted to standard dynamic range (SDR).
 | Add a marker | flag button | `F8` |
 | Cancel and delete the recording | - | `Ctrl+Shift+F9` |
 
-All hotkeys can be changed in Settings. If another app already uses a hotkey, Camtesia shows a message with the key
+All hotkeys can be changed in Settings. If another app already uses a hotkey, super4vid shows a message with the key
 name and keeps running without it.
 
 1. Press **REC** or `F9`. A 3-2-1 countdown appears in the middle of the capture area. Press `Esc` to cancel it.
@@ -161,7 +161,7 @@ name and keeps running without it.
    tray icon turns red. You can hide the bar completely during recording with the setting **Hide bar while recording**
    (off by default); the hotkeys and tray menu still work when it is hidden.
 3. Pause as often as you like. The saved video has no gaps; pauses are listed in the recording's metadata.
-4. Press `F9` again to stop. Camtesia shows "Finalizing..." for a moment and then a notification:
+4. Press `F9` again to stop. super4vid shows "Finalizing..." for a moment and then a notification:
    "Saved · 2026-10-17 12-03-44.ctrec" with **Open in editor**, **Show in folder** and **Delete**.
 
 Markers you add during recording (`F8`) appear in the editor so you can find important moments quickly.
@@ -174,7 +174,7 @@ Windows notification.
 
 ### What happens automatically during a recording
 
-| Situation | What Camtesia does |
+| Situation | What super4vid does |
 |---|---|
 | UAC prompt or `Ctrl+Alt+Del` screen | Repeats the last frame while Windows blocks capture, then continues. |
 | Screen resolution changes | Keeps recording at the original size; the new image is letterboxed. |
@@ -189,17 +189,17 @@ Windows notification.
 
 | What | Installed version | Portable version |
 |---|---|---|
-| Recordings | `%USERPROFILE%\Videos\Camtesia\` (change in Settings > Recording) | `<exe folder>\data\recordings\` |
-| Settings | `%APPDATA%\Camtesia\settings.json` | `<exe folder>\data\settings\` |
-| Editor layout | `%APPDATA%\Camtesia\editor_layout.ini` | `<exe folder>\data\settings\` |
-| Your export presets | `%APPDATA%\Camtesia\presets\` | `<exe folder>\data\settings\` |
-| Autosaves (crash recovery) | `%LOCALAPPDATA%\Camtesia\autosave\` | `<exe folder>\data\autosave\` |
-| Logs | `%LOCALAPPDATA%\Camtesia\logs\` | `<exe folder>\data\logs\` |
-| Crash dumps | `%LOCALAPPDATA%\Camtesia\crashes\` | `<exe folder>\data\crashes\` |
-| Exports | You choose; the default is `%USERPROFILE%\Videos\Camtesia\` | You choose |
+| Recordings | `%USERPROFILE%\Videos\super4vid\` (change in Settings > Recording) | `<exe folder>\data\recordings\` |
+| Settings | `%APPDATA%\super4vid\settings.json` | `<exe folder>\data\settings\` |
+| Editor layout | `%APPDATA%\super4vid\editor_layout.ini` | `<exe folder>\data\settings\` |
+| Your export presets | `%APPDATA%\super4vid\presets\` | `<exe folder>\data\settings\` |
+| Autosaves (crash recovery) | `%LOCALAPPDATA%\super4vid\autosave\` | `<exe folder>\data\autosave\` |
+| Logs | `%LOCALAPPDATA%\super4vid\logs\` | `<exe folder>\data\logs\` |
+| Crash dumps | `%LOCALAPPDATA%\super4vid\crashes\` | `<exe folder>\data\crashes\` |
+| Exports | You choose; the default is `%USERPROFILE%\Videos\super4vid\` | You choose |
 
 Each recording is named after its start time, for example `2026-10-17 12-03-44.ctrec`. If that name exists,
-Camtesia adds ` (2)`.
+super4vid adds ` (2)`.
 
 Projects (`.ctproj`) are saved wherever you choose. A project stores the paths of its media: relative to the project
 file when both are on the same drive, otherwise absolute. Move projects and recordings together to keep the links.
@@ -249,7 +249,7 @@ Properties and Timeline.
 ### Media panel
 
 - **Import...** (`Ctrl+I`) adds files. Supported: `.ctrec` recordings, MP4, MOV, M4A, MP3, WAV, PNG, JPG.
-- Cards show a thumbnail, name, duration and badges: `REC` (a Camtesia recording), `CAM` (has webcam),
+- Cards show a thumbnail, name, duration and badges: `REC` (a super4vid recording), `CAM` (has webcam),
   `EVT` (has cursor and keystroke data).
 - Drag a card onto the timeline to add it.
 - Right-click a card: **Reveal** (in Explorer), **Relink** (point a missing file to its new location),
@@ -259,7 +259,7 @@ Properties and Timeline.
 
 ### What importing a recording does
 
-When you import a `.ctrec`, Camtesia creates (or reuses) these tracks and places clips on them:
+When you import a `.ctrec`, super4vid creates (or reuses) these tracks and places clips on them:
 
 | Track | Content |
 |---|---|
@@ -482,9 +482,9 @@ The default duration is 0.5 s.
 
 - `Ctrl+S` saves the project as a `.ctproj` file. The title bar shows `*` when there are unsaved changes, and closing
   asks whether to save.
-- Camtesia autosaves to a separate recovery file every 60 s and after every 20 edits. Your `.ctproj` is only written
+- super4vid autosaves to a separate recovery file every 60 s and after every 20 edits. Your `.ctproj` is only written
   when you save.
-- If Camtesia closes unexpectedly, the next start asks "Recover unsaved project?".
+- If super4vid closes unexpectedly, the next start asks "Recover unsaved project?".
 - If a media file is missing when you open a project, its clips show in red. The project still opens; use **Relink**
   in the Media panel.
 
@@ -556,7 +556,7 @@ Changing a hotkey takes effect immediately. The interface is English only in ver
 
 ## 8. Privacy
 
-- **Nothing leaves your computer.** Camtesia has no telemetry, no accounts, no cloud features and no automatic
+- **Nothing leaves your computer.** super4vid has no telemetry, no accounts, no cloud features and no automatic
   update checks.
 - **Keystroke recording** has three modes (Settings > Recording):
 
@@ -570,7 +570,7 @@ Changing a hotkey takes effect immediately. The interface is English only in ver
 - **Window titles.** Each recording's `events.ctev` stores the title and program name of the window that had focus
   during the recording. Keep this in mind before sharing a `.ctrec` folder. Exported videos contain only pixels and
   audio.
-- **Crash dumps** are written only to your own disk (`%LOCALAPPDATA%\Camtesia\crashes\`) and are never sent anywhere.
+- **Crash dumps** are written only to your own disk (`%LOCALAPPDATA%\super4vid\crashes\`) and are never sent anywhere.
   Turn them off in Settings > Privacy. A dump can contain parts of what was in memory, such as window titles.
 - Use the **Blur** annotation to hide private details in the video before exporting.
 
@@ -583,29 +583,29 @@ location, with an **Open log folder** button.
 
 | Problem | Cause and fix |
 |---|---|
-| The video freezes for a few seconds | A UAC prompt, `Ctrl+Alt+Del`, the lock screen or a full-screen game blocked capture ("Windows blocked screen capture"). Windows does not allow recording the secure desktop. Camtesia repeats the last frame and continues automatically. |
+| The video freezes for a few seconds | A UAC prompt, `Ctrl+Alt+Del`, the lock screen or a full-screen game blocked capture ("Windows blocked screen capture"). Windows does not allow recording the secure desktop. super4vid repeats the last frame and continues automatically. |
 | "No video encoder is available. Install the latest graphics driver." | Neither a hardware nor the Windows software encoder could be used. Update the graphics driver. On Windows N editions, install the Media Feature Pack. |
 | HEVC is greyed out | Your GPU has no hardware HEVC encoder. Use H.264. |
 | "The microphone is in use by another app. Recording continues without it." | Another program holds the microphone exclusively. Close it or turn off its exclusive mode (Windows Sound settings > device > Advanced). |
-| A microphone was unplugged | Camtesia records silence and switches to the new default microphone. |
-| "Not enough disk space on <drive>. Recording stopped and saved." | Free up space or choose another output folder in Settings > Recording. Camtesia warns at 1 GB free and stops at 200 MB. |
+| A microphone was unplugged | super4vid records silence and switches to the new default microphone. |
+| "Not enough disk space on <drive>. Recording stopped and saved." | Free up space or choose another output folder in Settings > Recording. super4vid warns at 1 GB free and stops at 200 MB. |
 | "The graphics device was reset. The recording was saved up to this point." | The graphics driver restarted. Start a new recording. |
-| A hotkey does not work | Another app registered it first. Camtesia showed the key name at startup. Choose another key in Settings > Hotkeys. |
+| A hotkey does not work | Another app registered it first. super4vid showed the key name at startup. Choose another key in Settings > Hotkeys. |
 | The recorder bar appears in recordings | Your Windows build does not support hiding windows from capture. Turn on **Hide bar while recording**. |
 | "Media file not found: <path>" | The file was moved or deleted. Right-click it in the Media panel > **Relink**. |
-| Camtesia crashed or was closed during a recording | Camtesia tries to save the recording when it crashes. If the process is killed (for example from Task Manager), `screen.mp4` cannot be recovered in version 1.0; `events.ctev` keeps everything up to the last second. |
-| Camtesia crashed in the editor | Restart it and accept "Recover unsaved project?". |
+| super4vid crashed or was closed during a recording | super4vid tries to save the recording when it crashes. If the process is killed (for example from Task Manager), `screen.mp4` cannot be recovered in version 1.0; `events.ctev` keeps everything up to the last second. |
+| super4vid crashed in the editor | Restart it and accept "Recover unsaved project?". |
 
 ### Logs and crash dumps
 
 | What | Where |
 |---|---|
-| Logs | `%LOCALAPPDATA%\Camtesia\logs\camtesia-YYYYMMDD-HHMMSS.log`. A file rotates at 10 MB; the last 5 are kept. |
-| Crash dumps | `%LOCALAPPDATA%\Camtesia\crashes\*.dmp` |
+| Logs | `%LOCALAPPDATA%\super4vid\logs\super4vid-YYYYMMDD-HHMMSS.log`. A file rotates at 10 MB; the last 5 are kept. |
+| Crash dumps | `%LOCALAPPDATA%\super4vid\crashes\*.dmp` |
 | Portable version | `<exe folder>\data\logs\` and `<exe folder>\data\crashes\` |
 
 Help > **Open logs folder** opens the log folder. For more detail, set the environment variable `CT_LOG=trace`
-before starting Camtesia. When you report a problem, attach the newest log, the crash dump if there is one, and the
+before starting super4vid. When you report a problem, attach the newest log, the crash dump if there is one, and the
 text from Settings > About > **Copy diagnostics**.
 
 ---
@@ -614,8 +614,8 @@ text from Settings > About > **Copy diagnostics**.
 
 ### Installed version
 
-Open Windows Settings > Apps > Installed apps > Camtesia > Uninstall (or "Add or remove programs"). The uninstaller
-closes Camtesia if it is running and removes:
+Open Windows Settings > Apps > Installed apps > super4vid > Uninstall (or "Add or remove programs"). The uninstaller
+closes super4vid if it is running and removes:
 
 - the program files,
 - the Start menu and desktop shortcuts,
@@ -624,13 +624,13 @@ closes Camtesia if it is running and removes:
 
 It does **not** delete your data. To remove everything, also delete these folders by hand:
 
-- `%USERPROFILE%\Videos\Camtesia\` (your recordings and exports, check before deleting)
-- `%APPDATA%\Camtesia\` (settings, presets, editor layout)
-- `%LOCALAPPDATA%\Camtesia\` (autosaves, logs, crash dumps)
+- `%USERPROFILE%\Videos\super4vid\` (your recordings and exports, check before deleting)
+- `%APPDATA%\super4vid\` (settings, presets, editor layout)
+- `%LOCALAPPDATA%\super4vid\` (autosaves, logs, crash dumps)
 
 For a silent uninstall, run `unins000.exe /VERYSILENT` from the install folder.
 
 ### Portable version
 
-Quit Camtesia and delete its folder. Your recordings are in its `data\recordings\` subfolder, so move them first if
+Quit super4vid and delete its folder. Your recordings are in its `data\recordings\` subfolder, so move them first if
 you want to keep them.

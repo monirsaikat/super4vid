@@ -67,7 +67,7 @@ public:
     class AudioReader { public: HRESULT Seek(TimeUs); uint32_t Read(float* out, uint32_t frames, TimeUs& pts); };   // sequential, one per consumer (clip)
     std::unique_ptr<AudioReader> OpenAudio(int stream_index);
     bool Thumbnail(TimeUs t_us, ID3D11ShaderResourceView*& srv);   // 160x90 RGBA; false = not ready yet (requested on the IO pool), cached up to 2,000 per media
-    const media::Peaks* GetPeaks(int stream_index);                // nullptr until built (IO pool, cached on disk under %LOCALAPPDATA%\Camtesia\cache\)
+    const media::Peaks* GetPeaks(int stream_index);                // nullptr until built (IO pool, cached on disk under %LOCALAPPDATA%\super4vid\cache\)
     void Close();
 };
 class AudioEngine {                          // WASAPI render + mixing callback; master clock when playing

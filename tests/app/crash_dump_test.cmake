@@ -1,12 +1,12 @@
-# ctest camtesia_crash_dump (P00 0.7): run `Camtesia.exe --crash-test`, expect a new crash-*.dmp in
-# %LOCALAPPDATA%\Camtesia\crashes whose faulting stack (dump_check) contains main.cpp, then delete that dump.
-# -DAPP=<Camtesia.exe> -DCHECK=<dump_check.exe>
-file(TO_CMAKE_PATH "$ENV{LOCALAPPDATA}/Camtesia/crashes" dir)
+# ctest super4vid_crash_dump (P00 0.7): run `super4vid.exe --crash-test`, expect a new crash-*.dmp in
+# %LOCALAPPDATA%\super4vid\crashes whose faulting stack (dump_check) contains main.cpp, then delete that dump.
+# -DAPP=<super4vid.exe> -DCHECK=<dump_check.exe>
+file(TO_CMAKE_PATH "$ENV{LOCALAPPDATA}/super4vid/crashes" dir)
 file(GLOB before "${dir}/crash-*.dmp")
-# Own instance name: a running Camtesia (another worktree, the user's) must not receive the command line instead.
+# Own instance name: a running super4vid (another worktree, the user's) must not receive the command line instead.
 execute_process(COMMAND ${CMAKE_COMMAND} -E env CT_INSTANCE_SUFFIX=crash-test-ctest ${APP} --crash-test
                 RESULT_VARIABLE rc TIMEOUT 60)
-message(STATUS "Camtesia --crash-test exit: ${rc}")
+message(STATUS "super4vid --crash-test exit: ${rc}")
 file(GLOB after "${dir}/crash-*.dmp")
 if(before)
   list(REMOVE_ITEM after ${before})

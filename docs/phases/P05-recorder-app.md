@@ -167,7 +167,7 @@ Behaviour per `docs/05` section 3. Draw with D2D: dim fill, cleared selection, 1
 
 ## Tests
 - Unit: `SessionClock` pause math; `EventWriter` -> `EventReader` round trip for every record type incl. padding and RLE shapes; unknown record type skipped; `keys::IsShortcut` table; `keys::LabelFor` for VK_RETURN/VK_SPACE/'A' on the US layout; TYPING burst derivation; bundle name collision suffix.
-- Integration (device): `Camtesia.exe --record --monitor 0 --fps 60 --seconds 3 --out <tmp>` -> bundle exists with `meta.json` (valid, duration 3.0 +- 0.1 s), `screen.mp4` probes to 60 fps and ~180 frames, `events.ctev` parses, `CURSOR_SHAPE` count >= 1; `--selftest` returns 0.
+- Integration (device): `super4vid.exe --record --monitor 0 --fps 60 --seconds 3 --out <tmp>` -> bundle exists with `meta.json` (valid, duration 3.0 +- 0.1 s), `screen.mp4` probes to 60 fps and ~180 frames, `events.ctev` parses, `CURSOR_SHAPE` count >= 1; `--selftest` returns 0.
 - Manual (write results in `PROGRESS.md`): bar hidden from the recording; countdown hidden; hotkey start from another app; pause 10 s then resume -> media has no gap and `pauses` lists it; unplug mic mid-recording -> continues with silence then new device; lock/unlock -> continues; kill the process with Task Manager during recording -> `events.ctev` readable up to the last second, `meta.json` absent (expected), UI next start offers nothing (v1 limitation).
 
 ## Acceptance (5.8)

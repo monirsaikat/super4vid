@@ -1,7 +1,7 @@
 #pragma once
 // ct/platform/single_instance.h
-// One Camtesia per session. A second launch forwards its command line to the running instance's main window
-// (class "CamtesiaMain") with WM_COPYDATA (dwData = 1, UTF-16 with terminator) and exits.
+// One super4vid per session. A second launch forwards its command line to the running instance's main window
+// (class "super4vidMain") with WM_COPYDATA (dwData = 1, UTF-16 with terminator) and exits.
 // Dev/test override: when the environment variable CT_INSTANCE_SUFFIX is set (letters, digits, '-', '_', '.'; at most
 // 32 characters, anything else is dropped), it is appended to the mutex name and the main window class, so parallel
 // worktrees and benches each get their own instance. Unset (every normal user) = the release names unchanged.
@@ -14,8 +14,8 @@ namespace ct::platform {
 
 struct SingleInstance {
     static constexpr unsigned long kCopyDataCommandLine = 1;   // COPYDATASTRUCT::dwData
-    static constexpr const wchar_t* kBaseMutexName = L"Local\\Camtesia.Instance";
-    static constexpr const wchar_t* kBaseWindowClass = L"CamtesiaMain";
+    static constexpr const wchar_t* kBaseMutexName = L"Local\\super4vid.Instance";
+    static constexpr const wchar_t* kBaseWindowClass = L"super4vidMain";
 
     // The sanitized CT_INSTANCE_SUFFIX (empty when unset or nothing valid is left).
     static std::wstring Suffix();

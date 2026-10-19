@@ -44,7 +44,7 @@ bool ReadRecordingMeta(std::string_view bundle_path, RecordingMeta* out, Err* er
     const std::string bundle = fs::Absolute(bundle_path);
     const std::string meta_path = PathJoin(bundle, "meta.json");
     std::string text;
-    if (!fs::ReadAll(meta_path, text)) return Fail(err, "This is not a Camtesia recording (meta.json is missing): " + bundle);
+    if (!fs::ReadAll(meta_path, text)) return Fail(err, "This is not a super4vid recording (meta.json is missing): " + bundle);
     Json j;
     std::string perr;
     if (!Json::Parse(text, j, &perr) || !j.IsObject()) return Fail(err, "The recording's meta.json is damaged (" + perr + ")");

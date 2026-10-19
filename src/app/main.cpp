@@ -1,4 +1,4 @@
-// Camtesia.exe entry point: window + D3D11 flip-model swapchain + Dear ImGui, driven by an event loop
+// super4vid.exe entry point: window + D3D11 flip-model swapchain + Dear ImGui, driven by an event loop
 // that renders only after input (0 redraws/s when idle).
 #define CT_LOG_CATEGORY "app"
 #include <ct/core/error.h>
@@ -203,8 +203,8 @@ bool RenderOneFrame(App& app) {
     ImGui::ShowDemoWindow();
 #endif
     ImGui::SetNextWindowPos(ImVec2(24.0f * app.win.DpiScale(), 24.0f * app.win.DpiScale()), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Camtesia", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::Text("Camtesia %s (%s, %s)", CT_VERSION_STRING, CT_GIT_HASH, CT_BUILD_DATE);
+    ImGui::Begin("super4vid", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Text("super4vid %s (%s, %s)", CT_VERSION_STRING, CT_GIT_HASH, CT_BUILD_DATE);
     ImGui::Text("Adapter: %s", app.dev.AdapterName().c_str());
     ImGui::Text("DPI: %u (%.0f%%)", app.win.Dpi(), app.win.DpiScale() * 100.0f);
     ImGui::Text("Frame time: %.2f ms (CPU)", app.last_frame_ms);
@@ -312,7 +312,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     const double entry_ms = MsSinceProcessStart();   // P11 11.2: loader + static imports + CRT init before this
 #if defined(CT_DEBUG)
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-    // Leak reports also go to stderr so they are visible without a debugger (e.g. `Camtesia.exe 2>leaks.txt`).
+    // Leak reports also go to stderr so they are visible without a debugger (e.g. `super4vid.exe 2>leaks.txt`).
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
 #endif
@@ -331,7 +331,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
         return 0;   // forwarded to the running instance via WM_COPYDATA
     }
     ct::Log::Init(ct::platform::Paths::LogsDir().c_str());
-    CT_LOG_INFO("Camtesia %s (%s) starting; wWinMain entered %.1f ms after process creation", CT_VERSION_STRING, CT_GIT_HASH,
+    CT_LOG_INFO("super4vid %s (%s) starting; wWinMain entered %.1f ms after process creation", CT_VERSION_STRING, CT_GIT_HASH,
                 entry_ms);
 
     const Options opt = ParseArgs();
@@ -392,12 +392,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     HRESULT hr = app.dev.Init(debug_layer);
     if (FAILED(hr)) {
         CT_LOG_ERROR("no usable D3D11 device: %s", ct::HrToString(hr).c_str());
-        MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
+        MessageBoxW(nullptr, L"super4vid needs a Direct3D 11 capable graphics driver.", L"super4vid", MB_ICONERROR);
     } else {
         Window::Desc desc;
         const std::wstring window_class = ct::platform::SingleInstance::MainWindowClass();
         desc.class_name = window_class.c_str();
-        desc.title = L"Camtesia";
+        desc.title = L"super4vid";
         desc.w_dip = opt.editor_demo ? 1600 : opt.settings_demo ? 840 : 1280;
         desc.h_dip = opt.editor_demo ? 900 : opt.settings_demo ? 580 : 800;
         desc.resizable = true;

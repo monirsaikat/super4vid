@@ -19,13 +19,13 @@
 
 namespace {
 
-// Counts lines containing `marker` in every camtesia-*.log of `dir`.
+// Counts lines containing `marker` in every super4vid-*.log of `dir`.
 size_t CountLines(const std::string& dir, const char* marker, size_t* files = nullptr) {
     std::vector<ct::fs::Entry> entries;
     ct::fs::List(dir, entries);
     size_t count = 0, logs = 0;
     for (const auto& e : entries) {
-        if (!ct::StartsWith(e.name, "camtesia-") || !ct::EndsWith(e.name, ".log")) continue;
+        if (!ct::StartsWith(e.name, "super4vid-") || !ct::EndsWith(e.name, ".log")) continue;
         ++logs;
         std::string text;
         ct::fs::ReadAll(ct::PathJoin(dir, e.name), text);
@@ -200,7 +200,7 @@ CT_TEST(log_failed_rotation_keeps_old_file) {
         FileTimeToLocalFileTime(&utc, &local);
         FileTimeToSystemTime(&local, &st);
         wchar_t base[64];
-        swprintf(base, 64, L"camtesia-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+        swprintf(base, 64, L"super4vid-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
                  st.wSecond);
         for (int n = 1; n <= 20; ++n) {
             std::wstring path = dir + L"\\" + base + (n > 1 ? L"-" + std::to_wstring(n) : std::wstring()) + L".log";

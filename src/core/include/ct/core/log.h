@@ -1,6 +1,6 @@
 #pragma once
 // ct/core/log.h
-// Process-wide logger: UTF-8 lines to %LOCALAPPDATA%\Camtesia\logs\camtesia-<stamp>.log and to the debugger.
+// Process-wide logger: UTF-8 lines to %LOCALAPPDATA%\super4vid\logs\super4vid-<stamp>.log and to the debugger.
 // Thread model: Write() may be called from any thread, including capture/audio threads: it formats on the caller's
 // stack and only memcpy's into a 1 MB ring under an SRW lock (no file IO); a "ct-log" thread writes the file every
 // 500 ms, on Warn/Error, and on Flush(). A full ring drops the new line (counted as Stats "log.dropped").
@@ -14,7 +14,7 @@ namespace ct {
 enum class LogLevel : uint8_t { Trace, Debug, Info, Warn, Error, Off };
 
 struct Log {
-    static void Init(const char* log_dir_utf8);        // opens <log_dir>\camtesia-<stamp>.log, rotates (keep 5)
+    static void Init(const char* log_dir_utf8);        // opens <log_dir>\super4vid-<stamp>.log, rotates (keep 5)
     static void SetLevel(LogLevel);                    // default Info; CT_LOG env var: trace|debug|info|warn|error
     static LogLevel Level();
     static void Write(LogLevel, const char* category, const char* file, int line, const char* fmt, ...);

@@ -123,10 +123,10 @@ exit /b 0
 
 ```cmake
 cmake_minimum_required(VERSION 3.25)
-project(Camtesia VERSION 0.1.0 LANGUAGES C CXX)
+project(super4vid VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT MSVC)
-  message(FATAL_ERROR "Camtesia builds with MSVC only. See docs/01-toolchain-and-build.md")
+  message(FATAL_ERROR "super4vid builds with MSVC only. See docs/01-toolchain-and-build.md")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -282,7 +282,7 @@ set_target_properties(imgui PROPERTIES FOLDER "third_party")
 ```xml
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="Camtesia.App" version="0.1.0.0"/>
+  <assemblyIdentity type="win32" name="super4vid.App" version="0.1.0.0"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security><requestedPrivileges>
     <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
   </requestedPrivileges></security></trustInfo>
@@ -308,27 +308,27 @@ set_target_properties(imgui PROPERTIES FOLDER "third_party")
   `CT_VERSION_STRING "0.1.0"`, `CT_VERSION_MAJOR/MINOR/PATCH`, `CT_GIT_HASH "abc1234"` (from
   `execute_process(COMMAND git rev-parse --short=7 HEAD ...)`, `"nogit"` if unavailable), `CT_BUILD_DATE`.
 - `src/app/app.rc`: icon `IDI_APP ICON "assets/icon.ico"` and a `VS_VERSION_INFO VERSIONINFO` block whose strings
-  come from `version.h` (CompanyName "Camtesia", FileDescription "Camtesia Screen Recorder and Editor",
-  OriginalFilename "Camtesia.exe", LegalCopyright "Copyright (C) 2026"). Translation `0x409, 1200`.
+  come from `version.h` (CompanyName "super4vid", FileDescription "super4vid Screen Recorder and Editor",
+  OriginalFilename "super4vid.exe", LegalCopyright "Copyright (C) 2026"). Translation `0x409, 1200`.
 - Bumping the version = editing one line in the root `CMakeLists.txt` (`project(... VERSION x.y.z)`).
 
 ## 9. Output layout
 
 ```
-out/build/ninja-release/bin/Camtesia.exe       (+ Camtesia.pdb)
+out/build/ninja-release/bin/super4vid.exe       (+ super4vid.pdb)
 out/build/ninja-release/bin/ct_core_tests.exe  ... one per module
 out/build/ninja-release/bin/capture_bench.exe  audio_bench.exe player_demo.exe (tool exes, P02/P03/P06)
-out/dist/CamtesiaSetup-0.1.0.exe  Camtesia-0.1.0-portable.zip  Camtesia-0.1.0-symbols.zip
+out/dist/super4vidSetup-0.1.0.exe  super4vid-0.1.0-portable.zip  super4vid-0.1.0-symbols.zip
 ```
 
 ## 10. Debugging aids
 
 - Debug builds create the D3D11 device with `D3D11_CREATE_DEVICE_DEBUG` when the Graphics Tools feature is installed,
   and set `ID3D11InfoQueue` to break on `CORRUPTION` and `ERROR`. On exit, `ReportLiveDeviceObjects(D3D11_RLDO_DETAIL | D3D11_RLDO_IGNORE_INTERNAL)` must print nothing but the device itself.
-- Set `CT_LOG=trace` in the environment for verbose logs; logs go to `%LOCALAPPDATA%\Camtesia\logs\camtesia-YYYYMMDD-HHMMSS.log` and `OutputDebugString`.
+- Set `CT_LOG=trace` in the environment for verbose logs; logs go to `%LOCALAPPDATA%\super4vid\logs\super4vid-YYYYMMDD-HHMMSS.log` and `OutputDebugString`.
 - Media Foundation: `mftrace.exe` (SDK `bin\10.0.26100.0\x64`) wraps the exe and dumps every MF call; use it when a sink writer or source reader rejects a media type.
-- `Camtesia.exe --stats` prints per-second counters (captured/encoded/dropped frames, queue depths, audio gaps) to the console.
-- Attach WinDbg or VS to `.dmp` files from `%LOCALAPPDATA%\Camtesia\crashes\`; PDBs for a release build are in the symbols zip of that version.
+- `super4vid.exe --stats` prints per-second counters (captured/encoded/dropped frames, queue depths, audio gaps) to the console.
+- Attach WinDbg or VS to `.dmp` files from `%LOCALAPPDATA%\super4vid\crashes\`; PDBs for a release build are in the symbols zip of that version.
 
 ## 11. CI (`.github/workflows/build.yml`, created in P12 but documented here)
 
@@ -349,7 +349,7 @@ jobs:
       - run: choco install innosetup --no-progress -y
       - run: .\build.cmd package
       - uses: actions/upload-artifact@v4
-        with: { name: camtesia-dist, path: out/dist/* }
+        with: { name: super4vid-dist, path: out/dist/* }
 ```
 
 Tests that need real hardware check `getenv("CT_CI")` (or detect the absence of a hardware adapter / audio endpoint)

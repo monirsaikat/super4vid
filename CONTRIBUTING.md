@@ -1,4 +1,4 @@
-# Contributing to Camtesia
+# Contributing to super4vid
 
 This page is for developers and coding agents who join the codebase. It summarizes the rules; the full specs are
 in [MASTER_PLAN.md](MASTER_PLAN.md) and [docs/](docs/). When this page and a spec disagree, the spec wins.
@@ -61,11 +61,11 @@ docs/               01 toolchain · 02 conventions · 03 architecture · 04 file
                     06 testing and performance · 07 API reference map · phases/P00..P12, PX · user-guide.md
 src/<module>/       include/ct/<module>/*.h (public), src/*.cpp, shaders/*.hlsl (if any)
 src/test/           ct_test harness (header + one .cpp)
-src/app/            Camtesia.exe: main.cpp, app.rc, app.manifest.in, resource.h
+src/app/            super4vid.exe: main.cpp, app.rc, app.manifest.in, resource.h
 third_party/imgui/  Dear ImGui docking branch (the only third-party code; never edit it)
 tests/<module>/     one test executable per module; tests/data/ for fixtures and goldens
 tools/              package.ps1, make_icon.py, capture_bench/, audio_bench/
-installer/          camtesia.iss, LICENSE.txt
+installer/          super4vid.iss, LICENSE.txt
 .github/workflows/  build.yml (build, test, package; release on v* tags)
 assets/             icon.ico (presets/*.json arrive with P10)
 ```
@@ -158,7 +158,7 @@ programming errors only).
 
 **Logging.** `CT_LOG_TRACE/DEBUG/INFO/WARN/ERROR`, printf-style, UTF-8 (`%ls` for wide strings). The logger never
 blocks producers. Never log per frame at INFO; hot paths use `CT_TRACE_SCOPE("Name")` (ETW TraceLogging).
-Logs go to `%LOCALAPPDATA%\Camtesia\logs\` and `OutputDebugString`.
+Logs go to `%LOCALAPPDATA%\super4vid\logs\` and `OutputDebugString`.
 
 **Threads.** Create threads with `ct::Thread` (name, priority, optional MMCSS class). One owner thread per resource;
 others talk to it through `SpscQueue<T>` or a message to the UI thread. `ct::SrwLock` for rarely written shared
@@ -282,7 +282,7 @@ This includes interface changes to a public header from an earlier phase, droppe
 ## 11. Releases
 
 The release process is in [docs/phases/P12-installer-release.md](docs/phases/P12-installer-release.md) sections
-12.1 and 12.5. In short: bump `project(Camtesia VERSION x.y.z)` in the root `CMakeLists.txt` (everything else
+12.1 and 12.5. In short: bump `project(super4vid VERSION x.y.z)` in the root `CMakeLists.txt` (everything else
 derives from it), update `CHANGELOG.md`, run `build.cmd clean`, `build.cmd test` and `build.cmd package`, run the
 checklist on a clean Windows 11 machine and a Windows 10 VM, then push a `vX.Y.Z` tag. CI builds, tests, packages,
 checks `SHA256SUMS.txt` and publishes the GitHub release.

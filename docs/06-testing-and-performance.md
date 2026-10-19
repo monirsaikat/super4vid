@@ -59,7 +59,7 @@ decode a frame and assert its index without OCR (`tests/common/frame_index.h` re
 | Device | `ct_*_tests` (`CT_TEST_DEVICE`) | skipped | DXGI dup, WASAPI, MF encoder/decoder, D2D text |
 | Golden | `ct_render_tests`, `ct_export_tests` | skipped (needs GPU) but **required** locally | compositor pixel output |
 | Bench | any (`CT_BENCH`) | no | queues, resampler, GIF quantizer, timeline culling |
-| Tool runs | `capture_bench`, `audio_bench`, `player_demo`, `Camtesia.exe --selftest` | selftest skipped | end-to-end numbers for `PROGRESS.md` |
+| Tool runs | `capture_bench`, `audio_bench`, `player_demo`, `super4vid.exe --selftest` | selftest skipped | end-to-end numbers for `PROGRESS.md` |
 | Fuzz-lite | `ct_core_tests`, `ct_project_tests`, `ct_media_tests` | yes | random JSON, random `.ctev` bytes, random edit sequences, 10,000 iterations, must not crash and must keep invariants |
 
 ## 4. A/V sync "clap test" (P04, P05, P11)
@@ -73,36 +73,36 @@ decode a frame and assert its index without OCR (`tests/common/frame_index.h` re
 
 | Metric | How |
 |---|---|
-| Cold start | Reboot, run `Camtesia.exe --time-to-window` which prints (window shown QPC - process creation time from `GetProcessTimes`) and exits. Run 3 times, report the median. Warm = second run without reboot. |
-| Idle CPU / redraws | `Camtesia.exe --stats` with the bar visible for 60 s: `redraws/s` must be 0 while the mouse is still; Task Manager CPU column shows 0 %. |
-| Recording CPU/GPU/RSS | `Camtesia.exe --record --monitor 0 --fps 60 --seconds 600 --stats` while a 1080p YouTube video plays in a browser. CPU = delta of `GetProcessTimes` kernel+user divided by wall time and core count; GPU = Task Manager "GPU engine" column of the process averaged by eye over 60 s (or `typeperf "\GPU Engine(*)\Utilization Percentage"`); RSS = `PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize` peak printed by `--stats`. |
+| Cold start | Reboot, run `super4vid.exe --time-to-window` which prints (window shown QPC - process creation time from `GetProcessTimes`) and exits. Run 3 times, report the median. Warm = second run without reboot. |
+| Idle CPU / redraws | `super4vid.exe --stats` with the bar visible for 60 s: `redraws/s` must be 0 while the mouse is still; Task Manager CPU column shows 0 %. |
+| Recording CPU/GPU/RSS | `super4vid.exe --record --monitor 0 --fps 60 --seconds 600 --stats` while a 1080p YouTube video plays in a browser. CPU = delta of `GetProcessTimes` kernel+user divided by wall time and core count; GPU = Task Manager "GPU engine" column of the process averaged by eye over 60 s (or `typeperf "\GPU Engine(*)\Utilization Percentage"`); RSS = `PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize` peak printed by `--stats`. |
 | Dropped frames | `--stats` prints `captured`, `repeated`, `dropped_queue_full`, `encoder_rejected`. Budget: `dropped_* == 0`. Also verify with `player_demo --count-frames` that the file has `fps * seconds ± 1` frames. |
 | Hotkey latency | `--stats` logs the QPC of `WM_HOTKEY` and of the first `Acquire` success; print the difference. |
 | Editor fps | F11 stats overlay while dragging a clip in `projects/1000_clips.ctproj`; shows CPU frame time and GPU time; budget 16.6 ms total, < 1 ms timeline draw. |
 | Scrub latency | overlay shows `seek->frame ms` for the last scrub; test with `pattern_1080p60_5s.mp4` random seeks (`player_demo --seek-bench`). |
 | Export speed | export dialog prints `x realtime` at completion; log it. |
-| Binary sizes | `dir out\build\ninja-release\bin\Camtesia.exe`, `out\dist\*.exe`, installed folder size in Settings > Apps. |
-| Editor benches (P09 9.7) | `Camtesia.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt`; `--editor out\testmedia\preview_bench.ctproj --bench-scrub 60` / `--bench-play 600`; `--editor --stats` (redraws/s, mouse still). `preview_bench.ctproj` is written by `ct_ui_tests` (`editor_fixtures_synthetic_bundle_and_preview_project`, run from `tests\`). Redirect stdout to a file: the app is a GUI exe. |
+| Binary sizes | `dir out\build\ninja-release\bin\super4vid.exe`, `out\dist\*.exe`, installed folder size in Settings > Apps. |
+| Editor benches (P09 9.7) | `super4vid.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt`; `--editor out\testmedia\preview_bench.ctproj --bench-scrub 60` / `--bench-play 600`; `--editor --stats` (redraws/s, mouse still). `preview_bench.ctproj` is written by `ct_ui_tests` (`editor_fixtures_synthetic_bundle_and_preview_project`, run from `tests\`). Redirect stdout to a file: the app is a GUI exe. |
 
 ### Running several instances side by side (dev/test only)
 
-Camtesia is single-instance per session: the first launch holds the named mutex `Local\Camtesia.Instance` and a
-second launch forwards its command line to the window of class `CamtesiaMain`, then exits. Parallel worktrees,
+super4vid is single-instance per session: the first launch holds the named mutex `Local\super4vid.Instance` and a
+second launch forwards its command line to the window of class `super4vidMain`, then exits. Parallel worktrees,
 benches and agents on one machine would block each other, so the environment variable **`CT_INSTANCE_SUFFIX`**
 gives a launch its own instance: when set, `.<suffix>` is appended to the mutex name and to the main window class
-(`Local\Camtesia.Instance.wt1`, `CamtesiaMain.wt1`), so only launches with the same suffix forward to each other.
+(`Local\super4vid.Instance.wt1`, `super4vidMain.wt1`), so only launches with the same suffix forward to each other.
 Allowed characters are letters, digits, `-`, `_` and `.` (others are dropped, at most 32 are kept; nothing left =
 no suffix). Processes started by the app (the bar's "Open in editor") inherit it. Unset, which is every normal
 user's case, the names are exactly the release names. There are no named pipes or other named objects to rename.
 
 ```
 set CT_INSTANCE_SUFFIX=wt-a256
-out\build\ninja-release\bin\Camtesia.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt
+out\build\ninja-release\bin\super4vid.exe --editor tests\data\projects\1000_clips.ctproj --bench-drag 600 > drag.txt
 ```
 
 Diagnostics never forward anyway: `--screenshot`, `--time-to-window`, `--bench-*`, `--fault-test`, `--bar-keys`,
 `--record`, `--selftest` and
-editors started from the bar (`CAMTESIA_SEPARATE_INSTANCE=1`) skip the single-instance check. `--stats` does not,
+editors started from the bar (`SUPER4VID_SEPARATE_INSTANCE=1`) skip the single-instance check. `--stats` does not,
 so use the suffix for idle measurements next to another running instance.
 
 ### Error paths and keyboard (P11 11.5/11.6)
@@ -119,28 +119,28 @@ recorder bar (error panel text, recovery actions, device recreation, a clean sec
 ```
 set CT_INSTANCE_SUFFIX=wt-a256
 for %k in (disk-full low-disk device-lost no-encoder sw-encoder mic-busy mic-lost bad-folder) do (
-  out\build\ninja-debug\bin\Camtesia.exe --fault-test %k > fault-%k.txt )
-Camtesia.exe --fault-test disk-full --no-exclude --fault-shot panel.png      (screenshot of the error panel)
-Camtesia.exe --bar-keys "tab,tab,tab,tab,enter,esc,tab" > keys.txt           (prints the focused control per key)
+  out\build\ninja-debug\bin\super4vid.exe --fault-test %k > fault-%k.txt )
+super4vid.exe --fault-test disk-full --no-exclude --fault-shot panel.png      (screenshot of the error panel)
+super4vid.exe --bar-keys "tab,tab,tab,tab,enter,esc,tab" > keys.txt           (prints the focused control per key)
 ```
 
 A real TDR (`dxcap -forcetdr`, admin) and a real full volume (a small VHD) remain manual checks (PROGRESS 11.5).
 
 ### Idle wake-ups without admin rights, leak and crash checks
 
-- `idle_probe [--seconds 30] [--warmup 10] -- Camtesia.exe --tray` (or `--pid N`): per-thread wake-ups (context
+- `idle_probe [--seconds 30] [--warmup 10] -- super4vid.exe --tray` (or `--pid N`): per-thread wake-ups (context
   switches) and CPU time over the window, then process totals and memory; ends the app with WM_QUIT so Debug exit
   checks still run. Use it when WPR is not available (WPR needs admin). Budget: no thread of ours above 0 wakes/s while
   idle; OS thread-pool workers (ntdll) wake a few times a minute.
-- `ctest -R camtesia_` runs `camtesia_exit_leak_check` (8 app modes; Debug: no CRT leak report, no debug-layer line on
-  stderr) and `camtesia_crash_dump` (`--crash-test` dump whose stack `dump_check` resolves to main.cpp).
+- `ctest -R super4vid_` runs `super4vid_exit_leak_check` (8 app modes; Debug: no CRT leak report, no debug-layer line on
+  stderr) and `super4vid_crash_dump` (`--crash-test` dump whose stack `dump_check` resolves to main.cpp).
 - `dump_check crash.dmp [--symbols dir]` prints the exception and the faulting thread's stack (WinDbg `.ecxr; kn`).
 
 ## 6. Profiling workflow (P11, and any time a budget fails)
 
-1. **ETW first.** `wpr -start GeneralProfile -start Power` (admin) -> reproduce for 30 s -> `wpr -stop trace.etl`. Open in WPA: CPU Usage (Sampled) by process/thread/stack, and the `Camtesia` TraceLogging provider events (our `CT_TRACE_SCOPE` spans show up under Generic Events). Our provider GUID is in `src/core/src/trace.cpp`; it must be enabled: `wpr -start camtesia.wprp` with a profile that lists the provider name `Camtesia`.
+1. **ETW first.** `wpr -start GeneralProfile -start Power` (admin) -> reproduce for 30 s -> `wpr -stop trace.etl`. Open in WPA: CPU Usage (Sampled) by process/thread/stack, and the `super4vid` TraceLogging provider events (our `CT_TRACE_SCOPE` spans show up under Generic Events). Our provider GUID is in `src/core/src/trace.cpp`; it must be enabled: `wpr -start super4vid.wprp` with a profile that lists the provider name `super4vid`.
 2. **GPU.** `ID3D11Query` timestamp pairs around each compositor pass (already in `RenderContext` behind `stats.enabled`); F11 shows them. For deeper work use PIX for Windows GPU captures (`winget install Microsoft.PIX`).
-3. **Media Foundation.** `mftrace -o trace.txt Camtesia.exe --record ...` when the encoder or sink rejects something.
+3. **Media Foundation.** `mftrace -o trace.txt super4vid.exe --record ...` when the encoder or sink rejects something.
 4. **Memory.** `--stats` prints pool occupancy and cache bytes every second; Debug build prints CRT leak report and `ReportLiveDeviceObjects` at exit (must be empty).
 5. Commit the fix with before/after numbers in the message.
 

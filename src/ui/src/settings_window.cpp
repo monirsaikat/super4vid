@@ -581,7 +581,7 @@ void SettingsWindow::DrawSidebar(float width) {
     {
         FontScope f(FontRole::Label);
         char v[64];
-        std::snprintf(v, sizeof(v), "Camtesia %s", CT_VERSION_STRING);
+        std::snprintf(v, sizeof(v), "super4vid %s", CT_VERSION_STRING);
         dl->AddText(ImVec2(origin.x + Dp(22), bottom - Dp(34)), col::text_faint, v);
     }
 }

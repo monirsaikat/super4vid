@@ -167,7 +167,7 @@ void CreateViewportWindow(ImGuiViewport* vp) {
     if (vp->Flags & ImGuiViewportFlags_NoDecoration) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     } else {   // the settings window: a normal titled top-level window
-        SetWindowTextW(hwnd, L"Camtesia Settings");
+        SetWindowTextW(hwnd, L"super4vid Settings");
         if (g_app && g_app->icon) {
             SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_app->icon));
             SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_app->icon));
@@ -635,9 +635,9 @@ void LaunchEditorArgs(const std::wstring& args) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     // The editor runs as its own process until bar and editor share one (main.cpp skips the single-instance check).
-    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", L"1");
+    SetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", L"1");
     const HINSTANCE r = ShellExecuteW(nullptr, L"open", exe, args.c_str(), nullptr, SW_SHOWNORMAL);
-    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", nullptr);
+    SetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", nullptr);
     if (reinterpret_cast<INT_PTR>(r) <= 32) CT_LOG_WARN("could not start the editor (%lld): %ls", static_cast<long long>(reinterpret_cast<INT_PTR>(r)), args.c_str());
 }
 
@@ -684,7 +684,7 @@ std::wstring ForwardedEditorArguments(const wchar_t* cmdline) {
 }
 
 bool RunsAsSeparateInstance(const wchar_t* cmdline) {
-    if (GetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", nullptr, 0) > 0) return true;
+    if (GetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", nullptr, 0) > 0) return true;
     if (!cmdline) return false;
     // --bench- covers the bar's --bench-hotkey and the editor's --bench-drag/--bench-scrub/--bench-play.
     return wcsstr(cmdline, L"--screenshot") || wcsstr(cmdline, L"--time-to-window") || wcsstr(cmdline, L"--bench-") ||
@@ -769,7 +769,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     platform::Window::Desc desc;
     const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
     desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
-    desc.title = L"Camtesia";
+    desc.title = L"super4vid";
     desc.w_dip = 560;
     desc.h_dip = 64;
     desc.frameless = true;
@@ -806,7 +806,7 @@ int RunRecorderApp(const RecorderAppOptions& options) {
     marks.Mark("device");
     if (FAILED(hr)) {
         CT_LOG_ERROR("no usable D3D11 device: %s", HrToString(hr).c_str());
-        MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
+        MessageBoxW(nullptr, L"super4vid needs a Direct3D 11 capable graphics driver.", L"super4vid", MB_ICONERROR);
         if (window_ok) {
             ImGui_ImplWin32_Shutdown();
             Fonts::Unload();

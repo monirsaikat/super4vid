@@ -1,11 +1,11 @@
 # Release smoke test (P12 12.5, docs/phases/P12 + tools/release_checklist.md): install -> record -> project -> export
 # -> uninstall -> leftover check, all headless and per-user. Run after `build.cmd package`:
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\release_smoke.ps1 [-Installer out\dist\CamtesiaSetup-x.y.z.exe]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\release_smoke.ps1 [-Installer out\dist\super4vidSetup-x.y.z.exe]
 #              [-Seconds 5] [-Tasks desktopicon,startup] [-KeepTemp]
 #
 # What it does:
-#   1. refuses to run when Camtesia is already installed (per-user or machine-wide) or its association / Run value /
+#   1. refuses to run when super4vid is already installed (per-user or machine-wide) or its association / Run value /
 #      shortcuts exist, so it never overwrites or removes someone else's install;
 #   2. installs silently and per user (/CURRENTUSER) into a fresh folder under %TEMP% (/DIR), with the optional tasks
 #      (desktop icon + start with Windows) so their removal is checked too;
@@ -15,13 +15,13 @@
 #      the build tree: the installed app has no headless export mode);
 #   6. opens the saved .ctproj through the registered association command (+ --screenshot, which closes the editor
 #      after a few frames) to prove the double-click path launches the installed editor;
-#   7. starts the installed exe with --tray plus a decoy Camtesia.exe from the build tree (-TrayCheck $false skips
+#   7. starts the installed exe with --tray plus a decoy super4vid.exe from the build tree (-TrayCheck $false skips
 #      this), then ALWAYS (finally) uninstalls silently and waits for the uninstaller's second phase; the tray
 #      instance must be ended by the uninstaller and the decoy must survive (it is then ended by this script);
 #   8. reports what remains: install dir, HKCU/HKLM keys, shortcuts, Inno temp folders; user data folders
-#      (%APPDATA%\Camtesia, %LOCALAPPDATA%\Camtesia, Videos\Camtesia) are allowed to remain and are only listed.
+#      (%APPDATA%\super4vid, %LOCALAPPDATA%\super4vid, Videos\super4vid) are allowed to remain and are only listed.
 # Every child process has a timeout and is killed (with its tree) when it runs over. Launches use CT_INSTANCE_SUFFIX
-# so they never forward to (or block on) another Camtesia instance on the machine. Exit code 0 = all checks passed.
+# so they never forward to (or block on) another super4vid instance on the machine. Exit code 0 = all checks passed.
 param(
     [string]$Installer = "",
     [string]$ExportDemo = "",
@@ -34,8 +34,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2
 $repo = Split-Path $PSScriptRoot -Parent
-$ver = (Select-String -Path "$repo\CMakeLists.txt" -Pattern 'project\(Camtesia VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-if (-not $Installer) { $Installer = "$repo\out\dist\CamtesiaSetup-$ver.exe" }
+$ver = (Select-String -Path "$repo\CMakeLists.txt" -Pattern 'project\(super4vid VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+if (-not $Installer) { $Installer = "$repo\out\dist\super4vidSetup-$ver.exe" }
 if (-not $ExportDemo) { $ExportDemo = "$repo\out\build\ninja-release\bin\export_demo.exe" }
 $Installer = (Resolve-Path $Installer).Path
 $ExportDemo = (Resolve-Path $ExportDemo).Path
@@ -45,15 +45,15 @@ $uninstKeys = @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appI
                 "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId",
                 "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\$appId")
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$classKeys = @("HKCU:\Software\Classes\.ctproj", "HKCU:\Software\Classes\Camtesia.Project",
-               "HKLM:\Software\Classes\Camtesia.Project")
-$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "Camtesia.lnk"
-$desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "Camtesia.lnk"
-$commonStartMenu = Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Camtesia.lnk"
-$userData = @("$env:APPDATA\Camtesia", "$env:LOCALAPPDATA\Camtesia", (Join-Path ([Environment]::GetFolderPath("MyVideos")) "Camtesia"))
+$classKeys = @("HKCU:\Software\Classes\.ctproj", "HKCU:\Software\Classes\super4vid.Project",
+               "HKLM:\Software\Classes\super4vid.Project")
+$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "super4vid.lnk"
+$desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "super4vid.lnk"
+$commonStartMenu = Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "super4vid.lnk"
+$userData = @("$env:APPDATA\super4vid", "$env:LOCALAPPDATA\super4vid", (Join-Path ([Environment]::GetFolderPath("MyVideos")) "super4vid"))
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$tmp = Join-Path $env:TEMP "camtesia-smoke-$stamp-$PID"
+$tmp = Join-Path $env:TEMP "super4vid-smoke-$stamp-$PID"
 $appDir = "$tmp\app"; $recDir = "$tmp\rec"; $outDir = "$tmp\out"
 $logDir = "$repo\out\smoke"
 New-Item -ItemType Directory -Force $tmp, $recDir, $outDir, $logDir | Out-Null
@@ -85,7 +85,7 @@ function Run-Timed([string]$exe, [string[]]$argv, [int]$timeoutS, [string]$name)
     return @{ code = $code; out = $out; timed_out = $timedOut }
 }
 
-function Get-RunValue { (Get-ItemProperty -Path $runKey -Name "Camtesia" -ErrorAction SilentlyContinue) }
+function Get-RunValue { (Get-ItemProperty -Path $runKey -Name "super4vid" -ErrorAction SilentlyContinue) }
 
 function Uninstall-Smoke {
     $unins = "$appDir\unins000.exe"
@@ -117,7 +117,7 @@ function Find-Leftovers {
     foreach ($k in $uninstKeys + $classKeys) { if (Test-Path $k) { $script:leftovers.Add("registry key $k") } }
     $ext = Get-ItemProperty -Path "HKCU:\Software\Classes\.ctproj" -ErrorAction SilentlyContinue
     if ($ext -and $ext.PSObject.Properties["(default)"]) { $script:leftovers.Add("HKCU .ctproj default value '$($ext.'(default)')'") }
-    if (Get-RunValue) { $script:leftovers.Add("Run value HKCU\...\Run\Camtesia = '$((Get-RunValue).Camtesia)'") }
+    if (Get-RunValue) { $script:leftovers.Add("Run value HKCU\...\Run\super4vid = '$((Get-RunValue).super4vid)'") }
     foreach ($lnk in $startMenu, $desktop, $commonStartMenu) { if (Test-Path $lnk) { $script:leftovers.Add("shortcut $lnk") } }
     # Windows' own per-extension bookkeeping (created only when Explorer opened a .ctproj; not ours to delete).
     $fe = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ctproj"
@@ -150,7 +150,7 @@ function Find-Leftovers {
 
 # ---------------------------------------------------------------------------------------------------------------
 $script:started = Get-Date
-Say "Camtesia $ver release smoke test, $(Get-Date -Format s), log $logFile"
+Say "super4vid $ver release smoke test, $(Get-Date -Format s), log $logFile"
 Say "installer  $Installer ($([math]::Round((Get-Item $Installer).Length / 1MB, 2)) MB)"
 Say "export     $ExportDemo"
 Say "temp       $tmp"
@@ -160,10 +160,10 @@ Say "os         $($os.Caption) $($os.Version) build $($os.BuildNumber)"
 # 1. preconditions: never touch an existing install, association, Run value or shortcut
 $pre = New-Object System.Collections.Generic.List[string]
 foreach ($k in $uninstKeys + $classKeys) { if (Test-Path $k) { $pre.Add($k) } }
-if (Get-RunValue) { $pre.Add("$runKey\Camtesia") }
+if (Get-RunValue) { $pre.Add("$runKey\super4vid") }
 foreach ($lnk in $startMenu, $desktop, $commonStartMenu) { if (Test-Path $lnk) { $pre.Add($lnk) } }
 if ($pre.Count -gt 0) {
-    Say "ABORT: Camtesia is already installed or registered on this machine; uninstall it first: $($pre -join '; ')"
+    Say "ABORT: super4vid is already installed or registered on this machine; uninstall it first: $($pre -join '; ')"
     exit 2
 }
 $script:userDataBefore = @{}
@@ -172,7 +172,7 @@ foreach ($d in $userData) { $script:userDataBefore[$d] = (Test-Path $d) }
 $suffix = "smoke-$PID"
 $oldSuffix = $env:CT_INSTANCE_SUFFIX
 $env:CT_INSTANCE_SUFFIX = $suffix
-$exe = "$appDir\Camtesia.exe"
+$exe = "$appDir\super4vid.exe"
 $script:trayProc = $null; $script:decoyProc = $null
 try {
     # 2. install
@@ -182,19 +182,19 @@ try {
     Check ($r.code -eq 0) "installer exit code 0"
 
     # 3. installed state
-    Check (Test-Path $exe) "Camtesia.exe installed"
+    Check (Test-Path $exe) "super4vid.exe installed"
     Check (Test-Path "$appDir\LICENSE.txt") "LICENSE.txt installed"
     Check (Test-Path "$appDir\licenses\imgui-LICENSE.txt") "licenses\imgui-LICENSE.txt installed"
     Check (Test-Path "$appDir\unins000.exe") "uninstaller present"
     Check (Test-Path $uninstKeys[0]) "per-user uninstall entry (HKCU)"
     Check (-not (Test-Path $uninstKeys[1]) -and -not (Test-Path $uninstKeys[2])) "no machine-wide uninstall entry (HKLM)"
     $assoc = (Get-ItemProperty -Path "HKCU:\Software\Classes\.ctproj" -ErrorAction SilentlyContinue)
-    Check ($assoc -and $assoc.'(default)' -eq "Camtesia.Project") "HKCU .ctproj -> Camtesia.Project"
-    $cmdKey = Get-ItemProperty -Path "HKCU:\Software\Classes\Camtesia.Project\shell\open\command" -ErrorAction SilentlyContinue
+    Check ($assoc -and $assoc.'(default)' -eq "super4vid.Project") "HKCU .ctproj -> super4vid.Project"
+    $cmdKey = Get-ItemProperty -Path "HKCU:\Software\Classes\super4vid.Project\shell\open\command" -ErrorAction SilentlyContinue
     $openCmd = if ($cmdKey) { $cmdKey.'(default)' } else { "" }
     Check ($openCmd -eq "`"$exe`" --editor `"%1`"") "open command = '$openCmd'"
     $run = Get-RunValue
-    if ($Tasks -match "startup") { Check ($run -and $run.Camtesia -eq "`"$exe`" --tray") "Run value = '$(if ($run) { $run.Camtesia })'" }
+    if ($Tasks -match "startup") { Check ($run -and $run.super4vid -eq "`"$exe`" --tray") "Run value = '$(if ($run) { $run.super4vid })'" }
     Check (Test-Path $startMenu) "Start menu shortcut $startMenu"
     if ($Tasks -match "desktopicon") { Check (Test-Path $desktop) "desktop shortcut $desktop" }
     if (Test-Path $exe) {
@@ -244,12 +244,12 @@ try {
         Check ($r.code -eq 0 -and (Test-Path $shot)) "association command opens the project in the editor (screenshot $shot)"
     }
 
-    # 7a. uninstall while the installed app runs in the tray; a second Camtesia.exe from another folder (the build
+    # 7a. uninstall while the installed app runs in the tray; a second super4vid.exe from another folder (the build
     # tree, own instance suffix) must survive: the uninstaller may end only processes started from {app}.
     if ($TrayCheck -and (Test-Path $exe)) {
         Say "start the installed exe with --tray (must be ended by the uninstaller)"
         $script:trayProc = Start-Process -FilePath $exe -ArgumentList "--tray" -PassThru
-        $buildExe = "$repo\out\build\ninja-release\bin\Camtesia.exe"
+        $buildExe = "$repo\out\build\ninja-release\bin\super4vid.exe"
         if (Test-Path $buildExe) {
             $env:CT_INSTANCE_SUFFIX = "$suffix-decoy"
             Say "start a decoy $buildExe --tray (must survive the uninstall)"

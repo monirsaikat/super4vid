@@ -1,7 +1,7 @@
 #pragma once
 // ct/export/preset.h
 // Export presets (docs/04 section 5): the built-in list, JSON (de)serialization, user presets under
-// %APPDATA%\Camtesia\presets\<id>.json and a file size estimate for the export dialog.
+// %APPDATA%\super4vid\presets\<id>.json and a file size estimate for the export dialog.
 // Thread model: Preset is a plain value. Builtin/ToJson/FromJson/EstimateBytes are pure and thread-safe; LoadUser and
 // SaveUser do disk IO (call them from ct::Async, not the UI thread) and need platform::Paths::Init() first.
 
@@ -58,7 +58,7 @@ struct Preset {
     static std::vector<Preset> Builtin();   // ids listed in docs/04 section 5, in dialog order
     static const Preset* FindBuiltin(std::string_view id);
 
-    // %APPDATA%\Camtesia\presets (platform::Paths::SettingsDir() + "\\presets"); empty before Paths::Init().
+    // %APPDATA%\super4vid\presets (platform::Paths::SettingsDir() + "\\presets"); empty before Paths::Init().
     static std::string UserDir();
     // Every valid <dir>\*.json, sorted by name then id; invalid files are logged and skipped.
     static std::vector<Preset> LoadUser();

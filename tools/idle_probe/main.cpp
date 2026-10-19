@@ -4,7 +4,7 @@
 // the Win32 start address maps the others to a module (ntdll = thread pool worker, AudioSes, MFPlat, the driver).
 //
 //   idle_probe --pid N [--seconds 60] [--warmup 0]
-//   idle_probe [--seconds 60] [--warmup 10] [--keep] -- Camtesia.exe --tray ...
+//   idle_probe [--seconds 60] [--warmup 10] [--keep] -- super4vid.exe --tray ...
 //       launches the command (stdout/stderr inherited), waits the warm-up, samples, then ends it with WM_QUIT posted
 //       to the threads owning its windows (terminated after 10 s); --keep leaves it running. Exit code 0, or 2 when
 //       the process exited early.

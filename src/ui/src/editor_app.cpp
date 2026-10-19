@@ -1,4 +1,4 @@
-// Editor mode of Camtesia.exe: window, device, ImGui, event loop, drag and drop, forwarding, measurement modes.
+// Editor mode of super4vid.exe: window, device, ImGui, event loop, drag and drop, forwarding, measurement modes.
 #define CT_LOG_CATEGORY "ui"
 #include <ct/ui/editor_app.h>
 
@@ -617,7 +617,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
     HRESULT hr = app.dev.Init(debug_layer);
     if (FAILED(hr)) {
         CT_LOG_ERROR("no usable D3D11 device: %s", HrToString(hr).c_str());
-        MessageBoxW(nullptr, L"Camtesia needs a Direct3D 11 capable graphics driver.", L"Camtesia", MB_ICONERROR);
+        MessageBoxW(nullptr, L"super4vid needs a Direct3D 11 capable graphics driver.", L"super4vid", MB_ICONERROR);
         delete app_ptr;
         return 1;
     }
@@ -625,7 +625,7 @@ int RunEditorApp(void* instance, int show_cmd, const EditorLaunch& launch) {
     Window::Desc desc;
     const std::wstring window_class = platform::SingleInstance::MainWindowClass();   // + CT_INSTANCE_SUFFIX (dev/test)
     desc.class_name = window_class.c_str();   // SingleInstance forwards to this class
-    desc.title = L"Camtesia";
+    desc.title = L"super4vid";
     desc.w_dip = launch.width_dip;
     desc.h_dip = launch.height_dip;
     desc.resizable = true;

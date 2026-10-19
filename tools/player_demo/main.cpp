@@ -421,7 +421,7 @@ int RunWindow(platform::D3DDevice& dev, audio::AudioDevices& devices, const Opti
     std::printf("%s: %.3f s, %zu streams, audio clock %s\n", opt.path.c_str(), info.duration_us / 1e6, info.streams.size(),
                 app.player.HasAudio() ? app.player.Engine().DeviceName().c_str() : "none (QPC)");
     platform::Window::Desc desc;
-    desc.class_name = L"CamtesiaPlayerDemo";
+    desc.class_name = L"super4vidPlayerDemo";
     desc.title = L"player_demo";
     desc.w_dip = 1280;
     desc.h_dip = 720;

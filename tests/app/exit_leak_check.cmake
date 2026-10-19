@@ -1,7 +1,7 @@
-# ctest camtesia_exit_leak_check (P11 11.3, P00 0.7): every app mode that ends on its own is started, must exit 0,
+# ctest super4vid_exit_leak_check (P11 11.3, P00 0.7): every app mode that ends on its own is started, must exit 0,
 # and in Debug must print neither the CRT leak report ("Detected memory leaks!", _CRTDBG_LEAK_CHECK_DF) nor the
 # D3D11 debug-layer summary line ("d3d11 debug: ..." on stderr: errors, warnings or live objects besides the device).
-# -DAPP=<Camtesia.exe> -DSOURCE_DIR=<repo> -DDEBUG_BUILD=0|1
+# -DAPP=<super4vid.exe> -DSOURCE_DIR=<repo> -DDEBUG_BUILD=0|1
 if(DEFINED ENV{CT_CI})
   message(STATUS "CT_CI set: skipped (opens windows, records the screen)")
   if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
@@ -10,7 +10,7 @@ if(DEFINED ENV{CT_CI})
   return()
 endif()
 
-file(TO_CMAKE_PATH "$ENV{TEMP}/camtesia_exit_check_$ENV{USERNAME}" tmp)
+file(TO_CMAKE_PATH "$ENV{TEMP}/super4vid_exit_check_$ENV{USERNAME}" tmp)
 file(REMOVE_RECURSE "${tmp}")
 file(MAKE_DIRECTORY "${tmp}")
 set(media "${SOURCE_DIR}/tests/data/pattern_1080p60_5s.mp4")

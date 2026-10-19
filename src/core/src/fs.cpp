@@ -276,7 +276,7 @@ std::string TempPath(std::string_view ext) {
     wchar_t buf[MAX_PATH + 2] = {};
     const DWORD n = GetTempPathW(static_cast<DWORD>(std::size(buf)), buf);
     std::string dir = n > 0 && n < std::size(buf) ? WideToUtf8(std::wstring_view(buf, n)) : std::string(".");
-    std::string name = "camtesia-" + Uuid4();
+    std::string name = "super4vid-" + Uuid4();
     if (!ext.empty() && ext.front() != '.') name.push_back('.');
     name.append(ext);
     return PathJoin(dir, name);

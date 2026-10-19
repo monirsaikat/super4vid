@@ -36,7 +36,7 @@ std::string CacheDir() {
     PWSTR local = nullptr;
     std::string dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &local))) {
-        dir = PathJoin(PathJoin(WideToUtf8(local), "Camtesia"), "cache");
+        dir = PathJoin(PathJoin(WideToUtf8(local), "super4vid"), "cache");
     }
     CoTaskMemFree(local);
     return dir;

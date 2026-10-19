@@ -379,18 +379,18 @@ CT_TEST(timecode_parsing) {
 
 CT_TEST(editor_command_line) {
     EditorLaunch l;
-    CT_CHECK(ParseEditorLaunch(L"Camtesia.exe --editor \"C:\\x\\a b.ctproj\"", &l));
+    CT_CHECK(ParseEditorLaunch(L"super4vid.exe --editor \"C:\\x\\a b.ctproj\"", &l));
     CT_REQUIRE(l.paths.size() == 1);
     CT_CHECK_EQ(l.paths[0], std::string("C:\\x\\a b.ctproj"));
     EditorLaunch bare;
-    CT_CHECK(ParseEditorLaunch(L"Camtesia.exe D:\\rec\\one.ctrec", &bare));
+    CT_CHECK(ParseEditorLaunch(L"super4vid.exe D:\\rec\\one.ctrec", &bare));
     CT_CHECK_EQ(bare.paths.size(), size_t(1));
     EditorLaunch none;
-    CT_CHECK(!ParseEditorLaunch(L"Camtesia.exe --tray", &none));
+    CT_CHECK(!ParseEditorLaunch(L"super4vid.exe --tray", &none));
     EditorLaunch demo;
-    CT_CHECK(!ParseEditorLaunch(L"Camtesia.exe --editor-demo --project p.ctproj", &demo));
+    CT_CHECK(!ParseEditorLaunch(L"super4vid.exe --editor-demo --project p.ctproj", &demo));
     EditorLaunch shot;
-    CT_CHECK(ParseEditorLaunch(L"Camtesia.exe --editor --screenshot o.png --frames 9 --bench-scrub 12", &shot));
+    CT_CHECK(ParseEditorLaunch(L"super4vid.exe --editor --screenshot o.png --frames 9 --bench-scrub 12", &shot));
     CT_CHECK_EQ(shot.screenshot, std::string("o.png"));
     CT_CHECK_EQ(shot.frames, 9);
     CT_CHECK_EQ(shot.bench, std::string("--bench-scrub"));

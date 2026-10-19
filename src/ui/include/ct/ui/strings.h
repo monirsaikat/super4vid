@@ -6,7 +6,7 @@
 namespace ct::ui::str {
 
 // --- App / menus ---------------------------------------------------------------------------------------------
-constexpr const char* kAppName = "Camtesia";
+constexpr const char* kAppName = "super4vid";
 constexpr const char* kMenuFile = "File";
 constexpr const char* kMenuEdit = "Edit";
 constexpr const char* kMenuView = "View";
@@ -49,7 +49,7 @@ constexpr const char* kAddKey = "Add keyframe at playhead";
 constexpr const char* kClearKeys = "Clear keyframes";
 constexpr const char* kShortcuts = "Keyboard shortcuts";
 constexpr const char* kOpenLogs = "Open logs folder";
-constexpr const char* kAbout = "About Camtesia";
+constexpr const char* kAbout = "About super4vid";
 constexpr const char* kRecord = "Record";
 constexpr const char* kUntitled = "Untitled";
 
@@ -323,11 +323,11 @@ constexpr const char* kErrAccessLost = "Windows blocked screen capture (secure d
 constexpr const char* kErrMediaMissing = "Media file not found: %s. Relink it from the Media panel.";
 // Additions (P11 11.5 wiring): the other recovery situations of the recorder and the export.
 constexpr const char* kErrDiskFullNotStarted = "Not enough disk space on %s. Nothing was recorded. Choose another folder.";
-constexpr const char* kErrOutputFolder = "Camtesia cannot save to %s. Choose another folder.";
+constexpr const char* kErrOutputFolder = "super4vid cannot save to %s. Choose another folder.";
 constexpr const char* kErrMicLost = "The microphone was disconnected. Recording continues with silence until it is back.";
 constexpr const char* kErrDeviceLostNotSaved = "The graphics device was reset. Nothing was recorded; try again.";
 constexpr const char* kErrExportDiskFull = "Not enough disk space on %s. The export was stopped and the partial file deleted.";
-constexpr const char* kErrExportFolder = "Camtesia cannot write the export to %s. Choose another folder.";
+constexpr const char* kErrExportFolder = "super4vid cannot write the export to %s. Choose another folder.";
 constexpr const char* kErrExportDeviceLost = "The graphics device was reset during the export. Nothing was saved; export again.";
 constexpr const char* kErrDeviceRecreated = "The graphics device was recreated; the next recording uses the new one.";
 constexpr const char* kErrNotFinalized = "The video file could not be finalized; the editor may not open it.";
@@ -348,7 +348,7 @@ constexpr const char* kErrUnknownDrive = "the output drive";
 constexpr const char* kErrUnknownPath = "(unknown file)";
 
 // --- First run (P11 11.6) ----------------------------------------------------------------------------------------
-constexpr const char* kFirstRunToast = "Press F9 to start recording. Recordings are saved to Videos\\Camtesia";
+constexpr const char* kFirstRunToast = "Press F9 to start recording. Recordings are saved to Videos\\super4vid";
 
 // --- Settings window (P11 11.6) ----------------------------------------------------------------------------------
 constexpr const char* kSettingsTitle = "Settings";
@@ -366,7 +366,7 @@ constexpr const char* kSetDescCamera = "Webcam recorded as its own track.";
 constexpr const char* kSetDescHotkeys = "Global shortcuts that work in any app. Click a shortcut, then press the new keys.";
 constexpr const char* kSetDescEditor = "Autosave, caching and timeline defaults.";
 constexpr const char* kSetDescExport = "Defaults for the export dialog.";
-constexpr const char* kSetDescPrivacy = "What Camtesia records about your input and what stays on this PC.";
+constexpr const char* kSetDescPrivacy = "What super4vid records about your input and what stays on this PC.";
 constexpr const char* kSetDescAbout = "Version, hardware and diagnostics.";
 constexpr const char* kSetSavedHint = "Changes apply immediately";
 constexpr const char* kSetDone = "Done";
@@ -381,7 +381,7 @@ constexpr const char* kSetHideBar = "Hide bar while recording";
 constexpr const char* kSetOutputFolder = "Save recordings to";
 constexpr const char* kSetBrowse = "Browse...";
 constexpr const char* kSetOpen = "Open";
-constexpr const char* kSetDefaultFolder = "Videos\\Camtesia (default)";
+constexpr const char* kSetDefaultFolder = "Videos\\super4vid (default)";
 constexpr const char* kSetMic = "Record microphone";
 constexpr const char* kSetMicDevice = "Microphone";
 constexpr const char* kSetDefaultDevice = "System default";
@@ -430,10 +430,10 @@ constexpr const char* kSetKsNoteOff = "No keys are recorded. Auto-Zoom on typing
 constexpr const char* kSetKsNoteShortcuts = "Only key combinations with Ctrl, Alt or Win (and F-keys) are recorded. Plain typing, such as passwords, is never stored.";
 constexpr const char* kSetKsNoteAll = "Every key you press while recording is stored in the recording, including anything typed into password fields. Use it only when you control what is typed.";
 constexpr const char* kSetCrashDumps = "Save crash reports";
-constexpr const char* kSetCrashDumpsHint = "Crash reports stay on this PC in the data folder. Camtesia never uploads anything.";
+constexpr const char* kSetCrashDumpsHint = "Crash reports stay on this PC in the data folder. super4vid never uploads anything.";
 constexpr const char* kSetDataFolder = "Data folder";
 constexpr const char* kSetOpenDataFolder = "Open data folder";
-constexpr const char* kSetLocalOnly = "Camtesia works offline. Recordings, projects, logs and settings never leave this PC.";
+constexpr const char* kSetLocalOnly = "super4vid works offline. Recordings, projects, logs and settings never leave this PC.";
 constexpr const char* kSetVersion = "Version";
 constexpr const char* kSetCommit = "Commit";
 constexpr const char* kSetBuilt = "Built";
@@ -495,8 +495,8 @@ constexpr const char* kBarPaused = "Paused";
 constexpr const char* kBarPreparing = "Preparing...";
 constexpr const char* kBarFinalizing = "Finalizing...";
 constexpr const char* kBarMarkerLabel = "Marker";
-constexpr const char* kTrayTip = "Camtesia";
-constexpr const char* kTrayTipRecording = "Camtesia - recording %s";
+constexpr const char* kTrayTip = "super4vid";
+constexpr const char* kTrayTipRecording = "super4vid - recording %s";
 constexpr const wchar_t* kTrayRecord = L"Record";
 constexpr const wchar_t* kTrayPause = L"Pause";
 constexpr const wchar_t* kTrayResume = L"Resume";

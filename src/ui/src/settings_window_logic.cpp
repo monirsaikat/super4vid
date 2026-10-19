@@ -210,7 +210,7 @@ std::string OsVersion() {
 
 std::string BuildDiagnostics(const std::string& gpu_name, const std::string& encoder_report) {
     std::string d;
-    AppendFormat(d, "Camtesia %s (%s, built %s)\n", CT_VERSION_STRING, CT_GIT_HASH, CT_BUILD_DATE);
+    AppendFormat(d, "super4vid %s (%s, built %s)\n", CT_VERSION_STRING, CT_GIT_HASH, CT_BUILD_DATE);
     AppendFormat(d, "OS: %s\n", OsVersion().c_str());
     AppendFormat(d, "GPU: %s\n", gpu_name.empty() ? "unknown" : gpu_name.c_str());
     AppendFormat(d, "Portable: %s\n", platform::Paths::Portable() ? "yes" : "no");

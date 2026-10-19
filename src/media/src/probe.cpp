@@ -42,7 +42,7 @@ HRESULT OpenReader(std::string_view path, ComPtr<IMFSourceReader>& reader) {
 }
 
 // Source-reader stream indices in file (track) order. The MF MPEG-4 source presents the tracks of a file in reverse
-// order: for Camtesia's moov (track 1 video, 2 mic, 3 system) the reader's streams are 0 = system, 1 = mic, 2 = video
+// order: for super4vid's moov (track 1 video, 2 mic, 3 system) the reader's streams are 0 = system, 1 = mic, 2 = video
 // (observed on 10.0.26100; verified by the mp4_writer tests with tracks of different bitrates), and its stream
 // identifiers are its own 1..n, not the track_IDs. P06's MediaInfo replaces this.
 std::vector<DWORD> FileOrder(IMFSourceReader* r) {

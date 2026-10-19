@@ -1,5 +1,5 @@
 // ct_ui tests for the editor window pieces of P09 9.1/9.2/9.6/9.7: the docs/05 section 5 shortcut list against the
-// shortcut table and the shell's dispatcher, shortcuts held back while a modal is open, the "<name>* - Camtesia"
+// shortcut table and the shell's dispatcher, shortcuts held back while a modal is open, the "<name>* - super4vid"
 // title, the status-bar warning count (Log::WarningCount), banner de-duplication, and finding/showing the recorder
 // bar from the editor (Ctrl+R).
 #define CT_LOG_CATEGORY "test"
@@ -186,23 +186,23 @@ CT_TEST(window_title_shows_the_dirty_marker) {
         shell.SetHostWindow(hwnd);
         EditorState& s = shell.State();
         h.Frame([&] { shell.Frame(); }, false);
-        CT_CHECK(WindowText(hwnd) == L"Untitled - Camtesia");
+        CT_CHECK(WindowText(hwnd) == L"Untitled - super4vid");
         project::Marker mk;
         mk.t_us = 1000000;
         mk.label = "m";
         CT_CHECK(s.Edit("Add marker", [&](project::Project& p) { return project::ops::AddMarker(p, mk); }));
         h.Frame([&] { shell.Frame(); }, false);
-        CT_CHECK(WindowText(hwnd) == L"Untitled* - Camtesia");
+        CT_CHECK(WindowText(hwnd) == L"Untitled* - super4vid");
         CT_CHECK(s.Undo());
         h.Frame([&] { shell.Frame(); }, false);
-        CT_CHECK(WindowText(hwnd) == L"Untitled - Camtesia");
+        CT_CHECK(WindowText(hwnd) == L"Untitled - super4vid");
         CT_CHECK(s.Redo());   // restores the snapshot (named "Untitled"), so rename afterwards
         s.project.name = "Demo take";
         h.Frame([&] { shell.Frame(); }, false);
-        CT_CHECK(WindowText(hwnd) == L"Demo take* - Camtesia");
+        CT_CHECK(WindowText(hwnd) == L"Demo take* - super4vid");
         s.undo.MarkSaved();
         h.Frame([&] { shell.Frame(); }, false);
-        CT_CHECK(WindowText(hwnd) == L"Demo take - Camtesia");
+        CT_CHECK(WindowText(hwnd) == L"Demo take - super4vid");
     }
     DestroyWindow(hwnd);
 }
@@ -238,18 +238,18 @@ CT_TEST(recorder_bar_is_found_and_shown_from_the_editor) {
     EnvGuard guard(L"CT_INSTANCE_SUFFIX");
     SetEnvironmentVariableW(L"CT_INSTANCE_SUFFIX", L"ct-ui-tests-bar");
     const std::wstring cls = SingleInstance::MainWindowClass();
-    CT_CHECK(cls == L"CamtesiaMain.ct-ui-tests-bar");
+    CT_CHECK(cls == L"super4vidMain.ct-ui-tests-bar");
     WNDCLASSEXW wc = {sizeof(wc)};
     wc.lpfnWndProc = &FakeBarProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = cls.c_str();
     CT_REQUIRE(RegisterClassExW(&wc) != 0);
     // An editor window (no WS_EX_TOOLWINDOW) only: no bar.
-    HWND editor = CreateWindowExW(0, cls.c_str(), L"Untitled - Camtesia", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND editor = CreateWindowExW(0, cls.c_str(), L"Untitled - super4vid", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
     CT_REQUIRE(editor != nullptr);
     CT_CHECK(FindRecorderBarWindow(editor) == nullptr);
     // The bar: a hidden tool window of the same class.
-    HWND bar = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.c_str(), L"Camtesia", WS_POPUP, 0, 0, 100, 40, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND bar = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, cls.c_str(), L"super4vid", WS_POPUP, 0, 0, 100, 40, nullptr, nullptr, wc.hInstance, nullptr);
     CT_REQUIRE(bar != nullptr);
     CT_CHECK(FindRecorderBarWindow(editor) == bar);
     CT_CHECK(FindRecorderBarWindow(bar) == nullptr);   // the caller's own window is skipped

@@ -61,9 +61,9 @@ void Paths::Init() {
         local = roaming = exe_dir + L"\\data";
         recordings = exe_dir + L"\\data\\recordings";
     } else {
-        local = KnownFolder(FOLDERID_LocalAppData) + L"\\Camtesia";
-        roaming = KnownFolder(FOLDERID_RoamingAppData) + L"\\Camtesia";
-        recordings = KnownFolder(FOLDERID_Videos) + L"\\Camtesia";
+        local = KnownFolder(FOLDERID_LocalAppData) + L"\\super4vid";
+        roaming = KnownFolder(FOLDERID_RoamingAppData) + L"\\super4vid";
+        recordings = KnownFolder(FOLDERID_Videos) + L"\\super4vid";
     }
     d.logs = Ensure(local + L"\\logs");
     d.crashes = Ensure(local + L"\\crashes");

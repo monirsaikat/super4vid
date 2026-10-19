@@ -144,7 +144,7 @@ Conventions:
 - Paths: stored relative to the project file when inside the same drive, else absolute. On load, try relative, then absolute, then prompt (missing media is a red clip, project still opens).
 - Version migration: `project::Migrate(json, from_version)`; never refuse to open an older file.
 
-## 4. Settings `%APPDATA%\Camtesia\settings.json`
+## 4. Settings `%APPDATA%\super4vid\settings.json`
 
 ```json
 {
@@ -166,10 +166,10 @@ Conventions:
 { "id": "mp4-1080p", "name": "MP4 1080p (H.264)", "container": "mp4", "video": { "codec": "h264", "width": 1920, "height": 1080, "fps": "source", "rate_control": "vbr", "bitrate_kbps": 10000, "max_bitrate_kbps": 16000, "quality": 75, "gop_s": 2, "bframes": true, "profile": "high" }, "audio": { "codec": "aac", "bitrate_kbps": 192, "sample_rate": 48000, "channels": 2 }, "fast_start": true }
 ```
 
-Built-in ids: `mp4-720p`, `mp4-1080p`, `mp4-1440p`, `mp4-4k`, `mp4-hevc-1080p`, `mp4-hevc-4k`, `gif-720p`, `gif-480p`, `png-frame`, `m4a-audio`. User presets save to `%APPDATA%\Camtesia\presets\`.
+Built-in ids: `mp4-720p`, `mp4-1080p`, `mp4-1440p`, `mp4-4k`, `mp4-hevc-1080p`, `mp4-hevc-4k`, `gif-720p`, `gif-480p`, `png-frame`, `m4a-audio`. User presets save to `%APPDATA%\super4vid\presets\`.
 
 ## 6. Crash recovery file
 
-`%LOCALAPPDATA%\Camtesia\autosave\<project-id>.ctproj` is written every `autosave_s` and on every 20th undo-able
+`%LOCALAPPDATA%\super4vid\autosave\<project-id>.ctproj` is written every `autosave_s` and on every 20th undo-able
 edit. A sidecar `<project-id>.lock` holds the owning PID; a lock whose PID is dead on startup triggers the
 "Recover unsaved project?" prompt.

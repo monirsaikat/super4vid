@@ -28,7 +28,7 @@ public:
     Autosave& operator=(const Autosave&) = delete;
 
     // Process-wide autosave folder. The app sets it from ct::platform::Paths at startup; the default is
-    // %LOCALAPPDATA%\Camtesia\autosave. Created on first use.
+    // %LOCALAPPDATA%\super4vid\autosave. Created on first use.
     static void SetDirectory(std::string_view dir);
     static std::string Directory();
 

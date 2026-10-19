@@ -2,7 +2,7 @@
 // ct/media/peaks.h
 // Waveform overview of one audio stream: min/max of the mono mix ((L + R) / 2 at 48 kHz) per 1/per_second window
 // (10 ms). Built by a full AudioDecoder pass (slow: run it on the IO pool) and cached on disk as
-// %LOCALAPPDATA%\Camtesia\cache\<fnv64(path|size|mtime|stream)>.peaks (portable mode: <exe>\data\cache).
+// %LOCALAPPDATA%\super4vid\cache\<fnv64(path|size|mtime|stream)>.peaks (portable mode: <exe>\data\cache).
 // Thread model: plain value type; Build/LoadCache/SaveCache are blocking and thread-safe (no shared state).
 
 #include <ct/core/types.h>

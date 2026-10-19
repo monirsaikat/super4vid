@@ -30,7 +30,7 @@ struct Entry {
 bool List(std::string_view dir, std::vector<Entry>& out);   // without "." and ".."; order as the file system returns it
 uint64_t FileSize(std::string_view path);                   // 0 when missing
 uint64_t FreeSpaceBytes(std::string_view path_on_volume);   // bytes available to the caller; path may not exist yet
-std::string TempPath(std::string_view ext);                  // %TEMP%\camtesia-<uuid><ext>; not created
+std::string TempPath(std::string_view ext);                  // %TEMP%\super4vid-<uuid><ext>; not created
 std::wstring ToWinPath(std::string_view utf8);              // adds \\?\ when > 240 chars, normalizes '/' to '\\'
 std::string Absolute(std::string_view path);                // GetFullPathNameW: resolves ".", "..", the current directory
 // Path of `path` relative to `base_dir` ("..\\x\\y.txt", "." when equal), case-insensitive. Paths on different

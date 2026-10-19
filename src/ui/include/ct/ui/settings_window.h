@@ -182,7 +182,7 @@ public:
     // Thread-safe; called from an IO pool thread when async results arrive (wake the UI loop).
     std::function<void()> request_redraw;
 
-    // `Camtesia.exe --settings-demo [--section recording|audio|camera|hotkeys|editor|export|privacy|about]`: loads
+    // `super4vid.exe --settings-demo [--section recording|audio|camera|hotkeys|editor|export|privacy|about]`: loads
     // SettingsFilePath() (small file, at startup), fills the viewport, opens at `section`.
     static std::unique_ptr<SettingsWindow> CreateDemo(std::string_view section, std::string gpu_name,
                                                       std::function<void()> request_redraw);

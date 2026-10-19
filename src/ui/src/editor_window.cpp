@@ -154,15 +154,15 @@ bool ShowRecorderBar(void* owner) {
     }
     // No bar: start one. While a process holds the single-instance mutex (this editor when it was launched directly,
     // or another editor) a plain launch would only forward to it, so the bar then runs as a separate instance. An
-    // editor started by the bar inherited CAMTESIA_SEPARATE_INSTANCE=1: set or clear it explicitly, then restore it.
+    // editor started by the bar inherited SUPER4VID_SEPARATE_INSTANCE=1: set or clear it explicitly, then restore it.
     HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, platform::SingleInstance::MutexName().c_str());
     const bool held = m != nullptr;
     if (m) CloseHandle(m);
     wchar_t saved[16] = {};
-    const DWORD had = GetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", saved, 16);
-    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", held ? L"1" : nullptr);
+    const DWORD had = GetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", saved, 16);
+    SetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", held ? L"1" : nullptr);
     const HINSTANCE r = ShellExecuteW(nullptr, L"open", exe, nullptr, nullptr, SW_SHOWNORMAL);
-    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", had > 0 && had < 16 ? saved : nullptr);
+    SetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", had > 0 && had < 16 ? saved : nullptr);
     if (reinterpret_cast<INT_PTR>(r) <= 32) {
         CT_LOG_WARN("could not start the recorder bar (%lld)", static_cast<long long>(reinterpret_cast<INT_PTR>(r)));
         return false;
@@ -822,7 +822,7 @@ struct EditorWindow::Impl {
         tm lt{};
         if (localtime_s(&lt, &tt) == 0) std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &lt);
         ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(col::text_dim));
-        ImGui::TextWrapped("Camtesia closed unexpectedly while \"%s\" had unsaved changes (autosaved %s).",
+        ImGui::TextWrapped("super4vid closed unexpectedly while \"%s\" had unsaved changes (autosaved %s).",
                            r.name.empty() ? str::kUntitled : r.name.c_str(), when);
         if (!r.original_path.empty()) ImGui::TextWrapped("%s", r.original_path.c_str());
         ImGui::PopStyleColor();
@@ -977,7 +977,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     m_shell->on_close_project = [this] { m_impl->NewDoc(); };
     m_shell->on_open_logs = [] { dialogs::OpenWithShell(platform::Paths::LogsDir()); };
     m_shell->on_about = [this] {
-        m_impl->Toast(Format("Camtesia %s (%s)", CT_VERSION_STRING, CT_GIT_HASH));
+        m_impl->Toast(Format("super4vid %s (%s)", CT_VERSION_STRING, CT_GIT_HASH));
     };
     m_shell->Media().on_import = [this] { m_impl->OnAction(Action::Import); };
     m_shell->Media().on_reveal = [this](const Id& id) {
@@ -1050,7 +1050,7 @@ void EditorWindow::OpenPath(std::string_view path_in) {
         break;
     case dialogs::PathKind::Media: m_impl->ImportMedia({path}); break;
     default:
-        m_impl->Banner(BannerPanel::Media, "Camtesia cannot open " + dialogs::FileStem(path) + ": not a project, recording or media file.", path);
+        m_impl->Banner(BannerPanel::Media, "super4vid cannot open " + dialogs::FileStem(path) + ": not a project, recording or media file.", path);
         break;
     }
 }

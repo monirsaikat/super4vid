@@ -17,7 +17,7 @@ bool g_process_ref = false;   // EnsureForProcess() holds its one reference
 HRESULT EnsureLocked() {
     HRESULT hr = S_OK;
     if (g_refs == 0) {
-        // Camtesia.exe delay-loads mfplat.dll (P11 11.2, faster start). Windows N without the Media Feature Pack
+        // super4vid.exe delay-loads mfplat.dll (P11 11.2, faster start). Windows N without the Media Feature Pack
         // has no mfplat: fail here with an HRESULT instead of the delay-load exception on the first MF call.
         if (!GetModuleHandleW(L"mfplat.dll") && !LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
             hr = HRESULT_FROM_WIN32(GetLastError());

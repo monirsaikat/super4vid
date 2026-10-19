@@ -41,6 +41,7 @@ public:
         int timer_hz = 120;            // 0 = no timer
         // Test hook: input injected with SendInput whose dwExtraInfo equals this (non-zero) value is reported to the
         // handler and then swallowed (the hook returns 1), so tests can click and type without touching other apps.
+        // While it is set, other mouse/keyboard input (a person at the machine) is passed on but not reported.
         ULONG_PTR swallow_tag = 0;
     };
 

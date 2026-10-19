@@ -1,9 +1,9 @@
 #pragma once
 // ct/ui/editor_app.h
-// The editor mode of Camtesia.exe: `Camtesia.exe --editor [file.ctproj | folder.ctrec | media...]` and a bare file
-// argument (the .ctproj association passes `--editor "%1"`). Owns the main window (class "CamtesiaMain", so a second
+// The editor mode of super4vid.exe: `super4vid.exe --editor [file.ctproj | folder.ctrec | media...]` and a bare file
+// argument (the .ctproj association passes `--editor "%1"`). Owns the main window (class "super4vidMain", so a second
 // instance forwards its command line here with WM_COPYDATA), the D3D11 device + flip swapchain, Dear ImGui with the
-// layout ini in %APPDATA%\Camtesia\editor_layout.ini, the event loop (renders only after input, posted results or
+// layout ini in %APPDATA%\super4vid\editor_layout.ini, the event loop (renders only after input, posted results or
 // while EditorWindow wants continuous redraws: 0 redraws when idle), WM_DROPFILES and the unsaved-changes close path.
 // Measurement modes for P09 9.7: --stats (redraws/s each second), --bench-drag, --bench-scrub, --bench-play.
 // Thread model: the main (UI) thread, COM STA initialized by the caller.

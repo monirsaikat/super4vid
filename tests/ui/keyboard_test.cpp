@@ -1,7 +1,7 @@
 // P11 11.6 keyboard-only pass over the editor: with keyboard navigation on (EditorShell::SetupImGui), Tab moves the
 // focus through the controls of the Preview panel (transport) and of the Timeline panel (toolbar), Ctrl+Tab reaches
 // every panel, and no Tab press lands on an ID conflict. (The recorder bar's order is checked in the real app with
-// `Camtesia.exe --bar-keys`, see PROGRESS 11.6.)
+// `super4vid.exe --bar-keys`, see PROGRESS 11.6.)
 #include "headless.h"
 
 #include <ct/test/ct_test.h>

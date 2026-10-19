@@ -3,7 +3,7 @@
 // The editor window contents (P09 9.1 shell): menu bar, docking layout (Media 260 | Preview | Properties 320 over
 // Timeline 300 at 1600x900, docs/05 section 4), status bar, toasts, shortcut dispatch, cheat sheet, stats overlay.
 // The preview area is drawn by a callback (the compositor output in the second half of P09); without one it shows
-// a styled placeholder of the canvas. Used by `Camtesia.exe --editor-demo`; the P09 EditorWindow wraps it with
+// a styled placeholder of the canvas. Used by `super4vid.exe --editor-demo`; the P09 EditorWindow wraps it with
 // file dialogs, TimelinePlayer, Compositor and autosave.
 // Thread model: UI thread. Lifetime: create after ImGui::CreateContext, destroy before DestroyContext.
 
@@ -53,7 +53,7 @@ public:
     ToastStack& Toasts() { return m_toasts; }
     BannerStack& Banners() { return m_banners; }
     void SetMediaProvider(TimelineMediaProvider* p);
-    void SetHostWindow(void* hwnd) { m_hwnd = hwnd; }   // window title "<name>* - Camtesia"
+    void SetHostWindow(void* hwnd) { m_hwnd = hwnd; }   // window title "<name>* - super4vid"
     void Run(Action a);                                  // shortcut / menu / transport dispatcher
     void ResetLayout() { m_reset_layout = true; }
 

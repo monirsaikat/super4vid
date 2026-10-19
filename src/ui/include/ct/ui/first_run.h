@@ -1,7 +1,7 @@
 #pragma once
 // ct/ui/first_run.h
 // First run (P11 11.6): when settings.json does not exist yet, create the app folders and show the one-time toast
-// "Press F9 to start recording. Recordings are saved to Videos\Camtesia" (no other dialogs). Writing the settings
+// "Press F9 to start recording. Recordings are saved to Videos\super4vid" (no other dialogs). Writing the settings
 // file ends the first run, so the toast appears exactly once.
 // Thread model: IsFirstRun* do one GetFileAttributes (cheap; call once at startup, before the first frame).
 // Run() is UI thread (it pushes the toast); the folder creation and the settings write go to the IO pool.
@@ -16,7 +16,7 @@ namespace ct::ui {
 
 class ToastStack;
 
-// %APPDATA%\Camtesia\settings.json (platform::Paths::SettingsDir() + "\\settings.json"; portable mode included).
+// %APPDATA%\super4vid\settings.json (platform::Paths::SettingsDir() + "\\settings.json"; portable mode included).
 std::string SettingsFilePath();
 
 // True when SettingsFilePath() does not exist.

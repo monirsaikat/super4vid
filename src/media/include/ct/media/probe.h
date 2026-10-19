@@ -39,7 +39,7 @@ struct StreamScan {
     TimeUs max_gap_us = 0;               // largest step between consecutive sample times
     std::vector<TimeUs> times;           // every sample time, when requested
 };
-// stream_index: the file's track order (video = 0, mic = 1, system = 2 for Camtesia recordings).
+// stream_index: the file's track order (video = 0, mic = 1, system = 2 for super4vid recordings).
 HRESULT ScanStream(std::string_view path, uint32_t stream_index, StreamScan&, bool keep_times = false);
 
 } // namespace ct::media

@@ -44,8 +44,8 @@ recorder::SessionFailure Failure(recorder::FailureCause c, bool saved, HRESULT h
     f.cause = c;
     f.hr = hr;
     f.message = "log text";
-    f.output_dir = "D:\\Videos\\Camtesia";
-    f.bundle_path = "D:\\Videos\\Camtesia\\2026-10-18 10-00-00.ctrec";
+    f.output_dir = "D:\\Videos\\super4vid";
+    f.bundle_path = "D:\\Videos\\super4vid\\2026-10-18 10-00-00.ctrec";
     f.saved = saved;
     f.during_prepare = !saved;
     return f;
@@ -82,9 +82,9 @@ CT_TEST(error_kind_for_hr_classifies_recording_errors) {
 
 CT_TEST(error_messages_for_the_new_kinds) {
     CT_CHECK_EQ(ErrorMessage(ErrorKind::OutputFolder, "\\\\?\\Q:\\no such drive\\x"),
-                std::string("Camtesia cannot save to Q:\\no such drive\\x. Choose another folder."));
+                std::string("super4vid cannot save to Q:\\no such drive\\x. Choose another folder."));
     CT_CHECK_EQ(ErrorMessage(ErrorKind::OutputFolder, "\\\\?\\UNC\\nas\\videos"),
-                std::string("Camtesia cannot save to \\\\nas\\videos. Choose another folder."));
+                std::string("super4vid cannot save to \\\\nas\\videos. Choose another folder."));
     CT_CHECK_EQ(ErrorMessage(ErrorKind::DiskFullNotStarted, "e:\\rec"),
                 std::string("Not enough disk space on E:. Nothing was recorded. Choose another folder."));
     CT_CHECK_EQ(ErrorMessage(ErrorKind::ExportDiskFull, "F:\\out\\a.mp4"),
@@ -108,7 +108,7 @@ CT_TEST(recorder_failure_views_name_the_recovery) {
     CT_CHECK(v.actions[0] == kActionChooseFolder && v.actions[1] == kActionNone);
     // Output folder unusable.
     v = DescribeFailure(Failure(FailureCause::OutputFolder, false));
-    CT_CHECK_EQ(v.message, ErrorMessage(ErrorKind::OutputFolder, "D:\\Videos\\Camtesia"));
+    CT_CHECK_EQ(v.message, ErrorMessage(ErrorKind::OutputFolder, "D:\\Videos\\super4vid"));
     CT_CHECK(v.actions[0] == kActionChooseFolder);
     // Device lost: recreate the device; the kept recording can be opened.
     v = DescribeFailure(Failure(FailureCause::DeviceLost, true, DXGI_ERROR_DEVICE_REMOVED));

@@ -11,7 +11,7 @@
 #include <cstdint>
 
 // Generated once for this project; never change it (saved WPR profiles and scripts refer to it).
-TRACELOGGING_DEFINE_PROVIDER(g_ct_provider, "Camtesia",
+TRACELOGGING_DEFINE_PROVIDER(g_ct_provider, "super4vid",
                              (0x9b3e281e, 0xaa6b, 0x4781, 0xa0, 0xb4, 0x81, 0x79, 0x98, 0xfa, 0x4f, 0x27));
 
 namespace ct {

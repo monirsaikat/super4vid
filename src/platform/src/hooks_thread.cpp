@@ -178,9 +178,10 @@ LRESULT CALLBACK HooksThread::MouseProc(int code, WPARAM wparam, LPARAM lparam) 
     if (code == HC_ACTION && self) {
         const auto& info = *reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
         self->m_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        self->m_handler->OnMouseHook(static_cast<UINT>(wparam), info);
-        if (self->m_config.swallow_tag && (info.flags & LLMHF_INJECTED) && info.dwExtraInfo == self->m_config.swallow_tag)
-            return 1;
+        const bool tagged = (info.flags & LLMHF_INJECTED) && info.dwExtraInfo == self->m_config.swallow_tag;
+        // With a test tag set, only the test's own input is reported: a person using the machine is not recorded.
+        if (!self->m_config.swallow_tag || tagged) self->m_handler->OnMouseHook(static_cast<UINT>(wparam), info);
+        if (self->m_config.swallow_tag && tagged) return 1;
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);
 }
@@ -190,9 +191,9 @@ LRESULT CALLBACK HooksThread::KeyboardProc(int code, WPARAM wparam, LPARAM lpara
     if (code == HC_ACTION && self) {
         const auto& info = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
         self->m_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        self->m_handler->OnKeyboardHook(static_cast<UINT>(wparam), info);
-        if (self->m_config.swallow_tag && (info.flags & LLKHF_INJECTED) && info.dwExtraInfo == self->m_config.swallow_tag)
-            return 1;
+        const bool tagged = (info.flags & LLKHF_INJECTED) && info.dwExtraInfo == self->m_config.swallow_tag;
+        if (!self->m_config.swallow_tag || tagged) self->m_handler->OnKeyboardHook(static_cast<UINT>(wparam), info);
+        if (self->m_config.swallow_tag && tagged) return 1;
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);
 }

@@ -1,4 +1,4 @@
-Camtesia Screen Recorder and Editor
+super4vid Screen Recorder and Editor
 Copyright (C) 2026. All rights reserved.
 
 PLACEHOLDER LICENSE - the product license text has not been chosen by the owner yet.
@@ -8,4 +8,4 @@ expressly permitted in writing by the copyright holder. The software is provided
 without warranty of any kind, express or implied.
 
 Third-party components and their licenses are listed in the "licenses" folder next to
-Camtesia.exe (Dear ImGui, MIT License).
+super4vid.exe (Dear ImGui, MIT License).

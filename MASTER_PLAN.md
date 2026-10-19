@@ -1,4 +1,4 @@
-# Camtesia — Master Build Plan
+# super4vid — Master Build Plan
 
 > **Entry point for every agent or model working in this repository.**
 > Read this file first, every session. Then read `PROGRESS.md`, then the one phase file you were assigned
@@ -8,15 +8,15 @@
 
 ## 1. What we are building
 
-Camtesia is a **native Windows screen recorder and video editor** in the spirit of Camtasia, finished with the
+super4vid is a **native Windows screen recorder and video editor** in the spirit of Camtasia, finished with the
 modern "Screen Studio" look: recordings get smooth re-rendered cursors, automatic zoom-ins on clicks, padded
 backgrounds with rounded corners and shadows, keystroke badges, and a clean dark editor.
 
 It is a **single executable (~15 MB)** that starts in under half a second, records the screen, microphone, system
 audio and webcam through a **GPU pipeline with zero CPU pixel copies**, and edits/exports on a timeline.
 
-Working title only: "Camtesia" is one letter from TechSmith's trademark "Camtasia". The code uses the neutral
-namespace `ct` and prefix `CT_`, so renaming before a public release touches only strings and resources.
+Product name: "super4vid" (renamed from the working title before the first public release). The code uses the neutral
+namespace `ct` and prefix `CT_`, so the rename touched only strings, resources and file names.
 
 ## 2. Non-negotiables
 
@@ -64,14 +64,14 @@ namespace `ct` and prefix `CT_`, so renaming before a public release touches onl
 - Background export with progress and cancel.
 
 **Distribution**
-- Inno Setup installer (`CamtesiaSetup-x.y.z.exe`), portable ZIP, file association for `.ctproj`, Start menu shortcut, clean uninstall, version info, icon, PDB symbols archived per release.
+- Inno Setup installer (`super4vidSetup-x.y.z.exe`), portable ZIP, file association for `.ctproj`, Start menu shortcut, clean uninstall, version info, icon, PDB symbols archived per release.
 
 **Explicitly out of scope for v1.0:** macOS/Linux, plugins, cloud, stock media, motion tracking, multicam, speech-to-text captions, timeline nesting, 10-bit/HDR output, audio effects beyond gain/fade/normalize/noise gate.
 
 ## 4. Architecture at a glance
 
 ```
-                       +----------------------- camtesia.exe (one process) ----------------------------+
+                       +----------------------- super4vid.exe (one process) ----------------------------+
                        |                                                                              |
   Desktop --DXGI dup-->| capture --BGRA tex--> convert(HLSL)--NV12 tex--> media::Encoder --> MP4 sink |
   Cursor/keys -hooks-->| events --------------------------------------------------------> events.ctev |
@@ -100,7 +100,7 @@ Key design decisions (details in `docs/03-architecture.md`):
 ## 5. Repository layout
 
 ```
-camtesia/
+super4vid/
 |- MASTER_PLAN.md            <- you are here
 |- PROGRESS.md               <- task checklist; the only place task status lives
 |- DECISIONS.md              <- every deviation from the spec, with reason
@@ -123,13 +123,13 @@ camtesia/
 |  |- playback/   ct_playback   playback clock, decoder cache, audio engine (WASAPI render)
 |  |- export/     ct_export     export jobs (mp4/gif/png/m4a), presets
 |  |- ui/         ct_ui         imgui shell, theme, widgets, timeline widget, panels, recorder bar, overlay
-|  '- app/        camtesia.exe  main, modes, single instance, resources, manifest
+|  '- app/        super4vid.exe  main, modes, single instance, resources, manifest
 |  (shaders live in src/<module>/shaders/*.hlsl, compiled by fxc into headers at build time)
 |- third_party/imgui/
 |- assets/         icon.ico, presets/*.json, test media
 |- tests/          one test exe per module + tests/data
 |- tools/          scripts (icon generation, bench runners, release)
-'- installer/      camtesia.iss, installer assets
+'- installer/      super4vid.iss, installer assets
 ```
 
 Each `src/<module>` is a static library `ct_<module>` with a `CMakeLists.txt`, `include/ct/<module>/*.h` public
@@ -201,7 +201,7 @@ Measured on the reference machine (Ryzen 7 5700G, integrated Radeon, 1080p and 4
 | Canvas | Matches the first imported recording's size; fps matches too |
 | Fonts | UI: "Segoe UI Variable" falling back to "Segoe UI"; mono: "Cascadia Mono" falling back to "Consolas". Annotations default "Segoe UI" 48 px. No bundled fonts. |
 | Icons | Segoe Fluent Icons (Win11) falling back to Segoe MDL2 Assets (Win10). No icon files. |
-| Paths | Recordings: `%USERPROFILE%\Videos\Camtesia\`; settings: `%APPDATA%\Camtesia\settings.json`; logs+crash dumps+autosave: `%LOCALAPPDATA%\Camtesia\` |
+| Paths | Recordings: `%USERPROFILE%\Videos\super4vid\`; settings: `%APPDATA%\super4vid\settings.json`; logs+crash dumps+autosave: `%LOCALAPPDATA%\super4vid\` |
 | Hotkeys | F9 start/stop, F10 pause/resume, F8 add marker, Ctrl+Shift+F9 cancel. Configurable. |
 | Timestamps | `int64_t` microseconds everywhere; 100 ns only inside `ct_media` at MF calls |
 | Threads | One owner per resource, SPSC queues between, `SRWLOCK` for rarely-shared state |

@@ -11,7 +11,7 @@
 namespace ct::platform {
 
 namespace {
-constexpr wchar_t kClassName[] = L"CamtesiaLayered";
+constexpr wchar_t kClassName[] = L"super4vidLayered";
 
 bool RegisterClassOnce(WNDPROC proc) {
     static bool registered = false;

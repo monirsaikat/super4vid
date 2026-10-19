@@ -177,7 +177,7 @@ std::wstring Stamp() {
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t name[40];
-    swprintf(name, 40, L"camtesia-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+    swprintf(name, 40, L"super4vid-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
              st.wSecond);
     return name;
 }
@@ -191,7 +191,7 @@ void PruneLogs(const std::wstring& dir) {
     };
     std::vector<Item> items;
     WIN32_FIND_DATAW fd;
-    HANDLE find = FindFirstFileW((dir + L"\\camtesia-*.log").c_str(), &fd);
+    HANDLE find = FindFirstFileW((dir + L"\\super4vid-*.log").c_str(), &fd);
     if (find == INVALID_HANDLE_VALUE) return;
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))

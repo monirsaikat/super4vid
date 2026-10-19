@@ -1,6 +1,6 @@
 #pragma once
 // ct/ui/recorder_app.h
-// The default mode of Camtesia.exe (docs/03 section 2): the recorder bar in its own frameless topmost window with a
+// The default mode of super4vid.exe (docs/03 section 2): the recorder bar in its own frameless topmost window with a
 // D3D11 flip swapchain and Dear ImGui (multi-viewport, so popovers and toasts get their own capture-excluded windows),
 // an event-driven loop (0 redraws when idle), the tray icon and the hotkeys. --tray starts with the bar hidden.
 // Diagnostics (all optional): --stats (redraws/s), --time-to-window, --screenshot out.png [--frames N]
@@ -26,7 +26,7 @@ struct RecorderAppOptions {
     std::string screenshot;   // PNG of the bar (and its open popovers) after `frames` frames, then exit
     int frames = 5;
     HICON icon = nullptr;     // app icon (window + tray)
-    RecorderBar::Hooks hooks; // open_editor / open_settings; empty open_editor launches "Camtesia.exe --editor <path>"
+    RecorderBar::Hooks hooks; // open_editor / open_settings; empty open_editor launches "super4vid.exe --editor <path>"
 };
 
 // Returns the process exit code.
@@ -35,7 +35,7 @@ int RunRecorderApp(const RecorderAppOptions& options);
 // Launches that must not forward to a running instance: diagnostics (--screenshot, --time-to-window, --bench-hotkey,
 // --fault-test, --bar-keys,
 // the editor's --bench-drag/--bench-scrub/--bench-play) and an editor started from the bar (environment
-// CAMTESIA_SEPARATE_INSTANCE=1).
+// SUPER4VID_SEPARATE_INSTANCE=1).
 bool RunsAsSeparateInstance(const wchar_t* cmdline);
 
 // True when the command line starts the recorder bar (the default mode): no --editor / --editor-demo /

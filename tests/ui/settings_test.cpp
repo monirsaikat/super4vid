@@ -217,7 +217,7 @@ CT_TEST(settings_window_assign_hotkey_applies_and_notifies) {
 // --- Error messages ----------------------------------------------------------------------------------------------------
 
 CT_TEST(error_message_formatting) {
-    CT_CHECK_EQ(ErrorMessage(ErrorKind::DiskFull, "D:\\Videos\\Camtesia\\a.ctrec"),
+    CT_CHECK_EQ(ErrorMessage(ErrorKind::DiskFull, "D:\\Videos\\super4vid\\a.ctrec"),
                 std::string("Not enough disk space on D:. Recording stopped and saved."));
     CT_CHECK_EQ(ErrorMessage(ErrorKind::DiskFull, "e:"), std::string("Not enough disk space on E:. Recording stopped and saved."));
     CT_CHECK_EQ(ErrorMessage(ErrorKind::DiskFull, ""),
@@ -330,12 +330,12 @@ CT_TEST(settings_icons_present_in_icon_font) {
 
 CT_TEST(first_run_detection_with_temp_settings_dir) {
     TempDir dir;
-    const std::string settings_dir = dir.File("Camtesia");
+    const std::string settings_dir = dir.File("super4vid");
     const std::string path = PathJoin(settings_dir, "settings.json");
     CT_CHECK(FirstRun::IsFirstRunAt(path));
 
     Settings s;
-    s.recording.output_dir = dir.File("Videos\\Camtesia");
+    s.recording.output_dir = dir.File("Videos\\super4vid");
     Headless h;
     ToastStack toasts;
     CT_CHECK(FirstRun::Run(&toasts, s, path));

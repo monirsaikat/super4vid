@@ -160,7 +160,7 @@ bool OpenWithShell(std::string_view path);       // ShellExecuteW "open"
 
 ### 1.8 trace.h, stats.h, log.h upgrade
 ```cpp
-// trace.h — TraceLogging provider "Camtesia", GUID generated once and pasted as a constant
+// trace.h — TraceLogging provider "super4vid", GUID generated once and pasted as a constant
 namespace ct { struct Trace { static void Register(); static void Unregister(); static void Event(const char* name, int64_t value = 0); }; }
 #define CT_TRACE_SCOPE(name) ::ct::TraceScope CT_CONCAT(_ts_, __LINE__)(name)   // TraceLoggingWrite start/stop + optional Stats timing
 // stats.h — named counters/gauges, lock-free, dumped once per second by --stats and by the F11 overlay

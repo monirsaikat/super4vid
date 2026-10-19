@@ -25,7 +25,7 @@ struct Preset {
     struct { int max_colors = 256; bool dither = true; bool per_frame_palette = false; int fps = 20; } gif;
     bool fast_start = true;
     static std::vector<Preset> Builtin();                                  // ids listed in docs/04 section 5
-    static std::vector<Preset> LoadUser();  bool SaveUser(Err*) const;       // %APPDATA%\Camtesia\presets\<id>.json
+    static std::vector<Preset> LoadUser();  bool SaveUser(Err*) const;       // %APPDATA%\super4vid\presets\<id>.json
     Json ToJson() const;  static bool FromJson(const Json&, Preset&, Err*);
     uint64_t EstimateBytes(TimeUs duration) const;
 };
@@ -90,7 +90,7 @@ Audio: `RenderAudio` mixes every audio-bearing clip exactly like playback (same 
 - M4A: `Mp4Writer{ has_video = false, audio = {preset.audio} }`, audio loop only, `fast_start`.
 
 ## 10.1 Export dialog (`ui::ExportDialog`)
-Left: preset list (built-in + user, "Save as preset…"); right: container, codec (HEVC availability), size (canvas/1440p/1080p/720p/custom even), fps (canvas/60/30/24), rate control + bitrate/quality, audio bitrate, GIF options (fps, colors, dither), range (whole / loop region), destination (`IFileSaveDialog` with the right extension, default `%USERPROFILE%\Videos\Camtesia\<project> .mp4`), estimated size, **Export**. Progress modal: bar, `frames_done/total`, `x realtime`, ETA, **Cancel**; completion toast with **Open** / **Show in folder**. The editor stays usable during export (job thread is below normal priority; the dialog can be minimized to a status bar indicator).
+Left: preset list (built-in + user, "Save as preset…"); right: container, codec (HEVC availability), size (canvas/1440p/1080p/720p/custom even), fps (canvas/60/30/24), rate control + bitrate/quality, audio bitrate, GIF options (fps, colors, dither), range (whole / loop region), destination (`IFileSaveDialog` with the right extension, default `%USERPROFILE%\Videos\super4vid\<project> .mp4`), estimated size, **Export**. Progress modal: bar, `frames_done/total`, `x realtime`, ETA, **Cancel**; completion toast with **Open** / **Show in folder**. The editor stays usable during export (job thread is below normal priority; the dialog can be minimized to a status bar indicator).
 
 ## Tests
 - Unit: `Preset` JSON round trip and `EstimateBytes`; `LzwEncode` -> `tests/common/gif_reader.h` (own LZW decoder) round trip for random index streams incl. code-size growth and clear codes; `BuildPalette` on a 4-color image returns exactly those colors; `Quantize` with and without dither; full `GifEncoder` on 10 synthetic frames decodes to identical indices with frame diff; `Downscale` (device) PSNR vs a CPU box filter >= 45 dB.

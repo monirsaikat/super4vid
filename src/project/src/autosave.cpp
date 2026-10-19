@@ -30,10 +30,10 @@ std::string DefaultDirectory() {
     size_t len = 0;
     std::string dir;
     if (_wdupenv_s(&local, &len, L"LOCALAPPDATA") == 0 && local) {
-        dir = PathJoin(WideToUtf8(local), "Camtesia\\autosave");
+        dir = PathJoin(WideToUtf8(local), "super4vid\\autosave");
         std::free(local);
     } else {
-        dir = PathJoin(PathParent(fs::TempPath("")), "Camtesia\\autosave");
+        dir = PathJoin(PathParent(fs::TempPath("")), "super4vid\\autosave");
     }
     return dir;
 }

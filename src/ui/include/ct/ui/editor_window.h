@@ -31,7 +31,7 @@ namespace ct::ui {
 // same class have none); `exclude` (the caller's own window) is skipped. Null when no bar runs.
 void* FindRecorderBarWindow(void* exclude);
 // Shows the running bar (WM_COPYDATA with a plain command line, which the bar answers by showing itself) or starts
-// Camtesia.exe as a bar (as a separate instance when another process holds the single-instance mutex, else it would
+// super4vid.exe as a bar (as a separate instance when another process holds the single-instance mutex, else it would
 // forward to the editor). False when neither worked.
 bool ShowRecorderBar(void* owner);
 

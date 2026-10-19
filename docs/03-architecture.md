@@ -37,15 +37,15 @@ Rules: a module links only to modules to its right; `ui` never includes Media Fo
 One process, one executable. Command line:
 
 ```
-Camtesia.exe                         -> recorder bar (default)
-Camtesia.exe --editor [file.ctproj|folder.ctrec]
-Camtesia.exe --record --monitor 1 --fps 60 --out "D:\x.ctrec" [--seconds N]   (headless, for tests/benchmarks)
-Camtesia.exe --stats                 -> print counters to console (attach with AllocConsole)
-Camtesia.exe --selftest              -> runs the built-in smoke test (capture 3 s -> verify file) and exits 0/1
+super4vid.exe                         -> recorder bar (default)
+super4vid.exe --editor [file.ctproj|folder.ctrec]
+super4vid.exe --record --monitor 1 --fps 60 --out "D:\x.ctrec" [--seconds N]   (headless, for tests/benchmarks)
+super4vid.exe --stats                 -> print counters to console (attach with AllocConsole)
+super4vid.exe --selftest              -> runs the built-in smoke test (capture 3 s -> verify file) and exits 0/1
 ```
 
-Single instance: `CreateMutexW(nullptr, FALSE, L"Local\\Camtesia.Instance")`. If it already exists, find the
-window class `CamtesiaMain` and send the command line via `WM_COPYDATA`, then exit. Recorder bar and editor are
+Single instance: `CreateMutexW(nullptr, FALSE, L"Local\\super4vid.Instance")`. If it already exists, find the
+window class `super4vidMain` and send the command line via `WM_COPYDATA`, then exit. Recorder bar and editor are
 two top-level windows of the same process; both share the `D3DDevice`.
 
 ## 3. Threads
@@ -170,7 +170,7 @@ ct-export: for n in frames: t = n*1e6/fps
 
 ## 11. Settings and paths
 
-- Settings file: `%APPDATA%\Camtesia\settings.json` (schema in `docs/04`). Loaded at start, saved on change (debounced 500 ms; the settings window calls Save on every change and the debounce coalesces them), atomic write (temp + `ReplaceFileW`).
-- Recordings: `%USERPROFILE%\Videos\Camtesia\<yyyy-MM-dd HH-mm-ss>.ctrec\`. Project autosave: `%LOCALAPPDATA%\Camtesia\autosave\<project-id>.ctproj`.
-- Logs: `%LOCALAPPDATA%\Camtesia\logs\`. Crash dumps: `%LOCALAPPDATA%\Camtesia\crashes\`.
+- Settings file: `%APPDATA%\super4vid\settings.json` (schema in `docs/04`). Loaded at start, saved on change (debounced 500 ms; the settings window calls Save on every change and the debounce coalesces them), atomic write (temp + `ReplaceFileW`).
+- Recordings: `%USERPROFILE%\Videos\super4vid\<yyyy-MM-dd HH-mm-ss>.ctrec\`. Project autosave: `%LOCALAPPDATA%\super4vid\autosave\<project-id>.ctproj`.
+- Logs: `%LOCALAPPDATA%\super4vid\logs\`. Crash dumps: `%LOCALAPPDATA%\super4vid\crashes\`.
 - Portable mode: if `portable.txt` exists next to the exe, all of the above move under `<exe dir>\data\` (including user presets and `editor_layout.ini`).

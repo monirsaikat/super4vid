@@ -932,7 +932,7 @@ bool FromJsonValue(Json j, Project& p, Err* err) {
         return false;
     }
     if (j.Has("format") && j["format"].AsString() != "ctproj") {
-        if (err) err->Set("Not a Camtesia project (format is '" + j["format"].AsString() + "')");
+        if (err) err->Set("Not a super4vid project (format is '" + j["format"].AsString() + "')");
         return false;
     }
     const int version = j.Has("version") ? j.Get("version", 0) : 0;

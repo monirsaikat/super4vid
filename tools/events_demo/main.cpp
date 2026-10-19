@@ -241,7 +241,7 @@ struct AutoDrive {
     static AutoDrive* self;
     static HWND Overlay() {
         HWND h = nullptr;
-        while ((h = FindWindowExW(nullptr, h, L"CamtesiaLayered", nullptr)) != nullptr) {
+        while ((h = FindWindowExW(nullptr, h, L"super4vidLayered", nullptr)) != nullptr) {
             DWORD pid = 0;
             GetWindowThreadProcessId(h, &pid);
             if (pid == GetCurrentProcessId() && IsWindowVisible(h)) return h;

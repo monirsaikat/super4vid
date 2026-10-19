@@ -1,4 +1,4 @@
-// Camtesia.exe resources: icon and version info. Strings come from the generated ct/version.h.
+// super4vid.exe resources: icon and version info. Strings come from the generated ct/version.h.
 #include <winresrc.h>
 #include <ct/version.h>
 #include "resource.h"
@@ -22,13 +22,13 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "Camtesia"
-            VALUE "FileDescription", "Camtesia Screen Recorder and Editor"
+            VALUE "CompanyName", "super4vid"
+            VALUE "FileDescription", "super4vid Screen Recorder and Editor"
             VALUE "FileVersion", CT_VERSION_STRING
-            VALUE "InternalName", "Camtesia"
+            VALUE "InternalName", "super4vid"
             VALUE "LegalCopyright", "Copyright (C) 2026"
-            VALUE "OriginalFilename", "Camtesia.exe"
-            VALUE "ProductName", "Camtesia"
+            VALUE "OriginalFilename", "super4vid.exe"
+            VALUE "ProductName", "super4vid"
             VALUE "ProductVersion", CT_VERSION_STRING
             VALUE "Comments", "Build " CT_GIT_HASH " " CT_BUILD_DATE
         END

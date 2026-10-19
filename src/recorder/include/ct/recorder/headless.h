@@ -1,6 +1,6 @@
 #pragma once
 // ct/recorder/headless.h
-// Console modes of Camtesia.exe that record without UI (docs/03 section 2), built on RecordingSession:
+// Console modes of super4vid.exe that record without UI (docs/03 section 2), built on RecordingSession:
 //   --record [--monitor N] [--fps F] [--out DIR] [--seconds S] [--no-mic] [--no-system] [--region x,y,w,h]
 //            [--codec h264|hevc] [--quality Q] [--keys off|shortcuts|all] [--camera] [--synthetic-camera]
 //            [--pause-at S --pause-for S]

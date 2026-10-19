@@ -1,4 +1,4 @@
-# Camtesia
+# super4vid
 
 A native Windows screen recorder and video editor. It records your screen, microphone, system audio and webcam,
 then lets you edit on a timeline with the modern "Screen Studio" look: a re-rendered smooth cursor, automatic
@@ -56,7 +56,7 @@ needed for packaging.
 
 ```
 build.cmd doctor     check the toolchain
-build.cmd release    build Release -> out/build/ninja-release/bin/Camtesia.exe
+build.cmd release    build Release -> out/build/ninja-release/bin/super4vid.exe
 build.cmd debug      build Debug   -> out/build/ninja-debug/bin/
 build.cmd test       build both configs and run all tests
 build.cmd package    installer, portable zip and symbols -> out/dist/
@@ -68,7 +68,7 @@ On a machine with little RAM, run `set CMAKE_BUILD_PARALLEL_LEVEL=2` first.
 
 | Read | For |
 |---|---|
-| [docs/user-guide.md](docs/user-guide.md) | Using Camtesia: install, record, edit, export, troubleshooting |
+| [docs/user-guide.md](docs/user-guide.md) | Using super4vid: install, record, edit, export, troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Working on the code: build, layout, conventions, tests, commits |
 | [MASTER_PLAN.md](MASTER_PLAN.md) | Scope, architecture, phases and performance budgets |
 | [docs/](docs/) | Detailed specs: toolchain, conventions, architecture, file formats, UI, testing |

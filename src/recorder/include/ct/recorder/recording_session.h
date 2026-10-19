@@ -43,7 +43,7 @@ enum class State { Idle, Countdown, Starting, Recording, Paused, Finalizing, Err
 const char* StateName(State s);
 
 // Fault injection (P11 11.5): forces the error paths of a real recording without the real condition (a full disk,
-// a TDR, a missing encoder, a busy microphone). Tests and `Camtesia.exe --fault` only; all off by default.
+// a TDR, a missing encoder, a busy microphone). Tests and `super4vid.exe --fault` only; all off by default.
 struct SessionFaults {
     HRESULT writer_error_hr = S_OK;          // screen.mp4: the n-th WriteSample fails with this (ERROR_DISK_FULL,
     uint64_t writer_error_after_samples = 0; //   DXGI_ERROR_DEVICE_REMOVED) through Mp4Writer::InjectWriteErrorForTest

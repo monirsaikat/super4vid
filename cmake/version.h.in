@@ -1,5 +1,5 @@
 #pragma once
-// Generated from cmake/version.h.in. Single source: project(Camtesia VERSION x.y.z) in the root CMakeLists.txt.
+// Generated from cmake/version.h.in. Single source: project(super4vid VERSION x.y.z) in the root CMakeLists.txt.
 #ifndef CT_VERSION_MAJOR
 #define CT_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
 #define CT_VERSION_MINOR @PROJECT_VERSION_MINOR@

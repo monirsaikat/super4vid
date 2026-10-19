@@ -1,6 +1,6 @@
 #pragma once
 // ct/core/config.h
-// Typed application settings mirroring %APPDATA%\Camtesia\settings.json (docs/04 section 4), with defaults, validation,
+// Typed application settings mirroring %APPDATA%\super4vid\settings.json (docs/04 section 4), with defaults, validation,
 // versioned migration, and preservation of unknown keys (written back untouched, so a newer build's settings survive
 // a round trip through an older one). Also hotkey strings ("Ctrl+Shift+F9") <-> RegisterHotKey values.
 // Thread model: a Settings object is a plain value; Load/Save do blocking file IO (call them off the UI thread).
@@ -46,7 +46,7 @@ struct Settings {
         int countdown_s = 3;               // 0..10
         std::string keystrokes = "shortcuts";
         int cursor_hz = 120;               // 30..1000
-        std::string output_dir;            // empty = %USERPROFILE%\Videos\Camtesia
+        std::string output_dir;            // empty = %USERPROFILE%\Videos\super4vid
         bool hide_bar_while_recording = false;
     } recording;
     struct Hotkeys {

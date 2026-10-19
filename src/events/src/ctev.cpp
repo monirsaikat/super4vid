@@ -283,7 +283,7 @@ bool EventReader::Parse(std::string bytes, Err* err) {
     m_pos = m_header_size = 0;
     // The fixed fields up to `flags` are required; header_size may grow in later versions.
     if (m_bytes.size() < 8 || std::memcmp(m_bytes.data(), "CTEV", 4) != 0) {
-        if (err) err->Set("Not a Camtesia events file (bad magic)");
+        if (err) err->Set("Not a super4vid events file (bad magic)");
         return false;
     }
     uint16_t header_size = 0;

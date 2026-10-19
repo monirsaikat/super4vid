@@ -1,15 +1,15 @@
-; Camtesia installer (Inno Setup 6.3+). Built by tools/package.ps1, which passes /DMyAppVersion from the root
-; CMakeLists.txt project(Camtesia VERSION x.y.z). Per-user by default (no UAC); "Install for all users" is offered
-; in the privileges dialog. User data (%APPDATA%\Camtesia, %LOCALAPPDATA%\Camtesia, Videos\Camtesia) is never deleted.
+; super4vid installer (Inno Setup 6.3+). Built by tools/package.ps1, which passes /DMyAppVersion from the root
+; CMakeLists.txt project(super4vid VERSION x.y.z). Per-user by default (no UAC); "Install for all users" is offered
+; in the privileges dialog. User data (%APPDATA%\super4vid, %LOCALAPPDATA%\super4vid, Videos\super4vid) is never deleted.
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
 #ifndef BinDir
   #define BinDir "..\out\build\ninja-release\bin"
 #endif
-#define MyAppName      "Camtesia"
-#define MyAppExeName   "Camtesia.exe"
-#define MyAppPublisher "Camtesia"
+#define MyAppName      "super4vid"
+#define MyAppExeName   "super4vid.exe"
+#define MyAppPublisher "super4vid"
 
 [Setup]
 AppId={{B7E0C9F2-5C1C-4D5B-9B7A-2F3C4D5E6F70}
@@ -21,7 +21,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\out\dist
-OutputBaseFilename=CamtesiaSetup-{#MyAppVersion}
+OutputBaseFilename=super4vidSetup-{#MyAppVersion}
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -61,22 +61,22 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKA; Subkey: "Software\Classes\.ctproj"; ValueType: string; ValueName: ""; ValueData: "Camtesia.Project"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKA; Subkey: "Software\Classes\Camtesia.Project"; ValueType: string; ValueName: ""; ValueData: "Camtesia Project"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Camtesia.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKA; Subkey: "Software\Classes\Camtesia.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --editor ""%1"""
-Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Camtesia"; ValueData: """{app}\{#MyAppExeName}"" --tray"; Tasks: startup; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.ctproj"; ValueType: string; ValueName: ""; ValueData: "super4vid.Project"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKA; Subkey: "Software\Classes\super4vid.Project"; ValueType: string; ValueName: ""; ValueData: "super4vid Project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\super4vid.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKA; Subkey: "Software\Classes\super4vid.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --editor ""%1"""
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "super4vid"; ValueData: """{app}\{#MyAppExeName}"" --tray"; Tasks: startup; Flags: uninsdeletevalue
 ; Reinstall/upgrade with "startup" unchecked: remove the Run value an earlier install wrote.
-Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Camtesia"; Flags: deletevalue; Check: not WizardIsTaskSelected('startup')
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "super4vid"; Flags: deletevalue; Check: not WizardIsTaskSelected('startup')
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-; No [UninstallRun] "taskkill /im Camtesia.exe": that ends every Camtesia.exe on the machine (portable copies, other
+; No [UninstallRun] "taskkill /im super4vid.exe": that ends every super4vid.exe on the machine (portable copies, other
 ; builds, another user's per-user install). The [Code] below closes only processes started from this {app}.
 
 [Code]
-// Ends the Camtesia.exe processes whose image is {app}\Camtesia.exe (a tray-only instance does not react to
+// Ends the super4vid.exe processes whose image is {app}\super4vid.exe (a tray-only instance does not react to
 // CloseApplications). WMI Win32_Process; a failure is logged and the uninstall goes on (a file still in use is then
 // left for deletion at the next reboot, as Inno does for any locked file).
 procedure KillInstalledInstances();

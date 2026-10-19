@@ -12,8 +12,8 @@ namespace ct::platform {
 class Window {
 public:
     struct Desc {
-        const wchar_t* class_name = L"CamtesiaWindow";
-        const wchar_t* title = L"Camtesia";
+        const wchar_t* class_name = L"super4vidWindow";
+        const wchar_t* title = L"super4vid";
         int w_dip = 1280, h_dip = 800;       // client size in DIPs
         bool frameless = false;
         bool topmost = false;

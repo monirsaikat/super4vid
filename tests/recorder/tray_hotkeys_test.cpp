@@ -84,7 +84,7 @@ CT_TEST_DEVICE(tray_icon_add_modify_remove) {
     CT_REQUIRE(w);
     TrayIcon tray;
     HICON base = LoadIconW(nullptr, IDI_APPLICATION);
-    if (!tray.Add(w, base, L"Camtesia test", WM_APP + 1)) {
+    if (!tray.Add(w, base, L"super4vid test", WM_APP + 1)) {
         DestroyWindow(w);
         CT_SKIP("no notification area (Explorer not running?)");
     }

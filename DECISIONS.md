@@ -106,11 +106,11 @@ Done instead:
 - `CrashHandler` also has `LastDumpPath()`. `Install()` also hooks `SIGABRT` (so `abort()` writes a dump), calls `ct::SetFatalHandler`
   (see the 0.3 entry), and preloads dbghelp.dll. Until `SetDumpDir()` the dump goes to `%TEMP%`. For stack overflows a helper thread writes the dump.
   `WriteDumpAndExit` raises a custom SEH exception (0xE0C70001) inside `__try/__except(filter)`, so the dump has a real context record.
-- `SingleInstance::kCopyDataCommandLine = 1` names the `dwData` value. A second instance looks for the `CamtesiaMain` window for up to
+- `SingleInstance::kCopyDataCommandLine = 1` names the `dwData` value. A second instance looks for the `super4vidMain` window for up to
   2 s (the first instance may still be starting), calls `AllowSetForegroundWindow` for the owner, and forwards. The first instance logs
   `forwarded command line: ...`, restores itself and comes to the foreground.
 - Portable mode layout (not specified): `<exe dir>\data\{logs,crashes,autosave,settings,recordings}`.
-- `Paths::Init()` creates every directory, `Videos\Camtesia` included, with `SHCreateDirectoryExW`.
+- `Paths::Init()` creates every directory, `Videos\super4vid` included, with `SHCreateDirectoryExW`.
 - `src/platform/src/utf_internal.h` has private UTF-8/UTF-16 helpers until P01's `ct::Utf8ToWide`/`WideToUtf8` exist. P01 should switch platform over to them and delete this file.
 - `--stats` also prints `messages/s` and the last message ID. That shows what woke the loop when redraws/s is not 0.
 Why: the spec leaves these choices open; these are the conservative options.
@@ -531,7 +531,7 @@ Done instead:
   `BeginCoalesce` with the same key while active is a no-op; another key starts a new group; Undo/Redo end a group.
   The entry cap counts undo + redo entries; the oldest undo entries are dropped first.
 - Autosave additions: `SetDirectory`/`Directory` (ct_project cannot use ct::platform::Paths; the app sets it at startup,
-  default `%LOCALAPPDATA%\Camtesia\autosave`), `Tick(p, now_us)`, `SaveNow`, `SetSynchronous` (tests), `Saves`, `Dirty`,
+  default `%LOCALAPPDATA%\super4vid\autosave`), `Tick(p, now_us)`, `SaveNow`, `SetSynchronous` (tests), `Saves`, `Dirty`,
   `AutosavePath`/`LockPath`, `Discard`, `kEditsPerSave = 20`. `interval_s <= 0` disables time-based saves.
 - Liveness is decided by the lock file's share mode, not by PID lookup: the owner keeps `<id>.lock` open with `_SH_DENYWR`
   for its lifetime; a lock that can be opened for writing has no live owner (the OS closes handles when a process dies,
@@ -594,7 +594,7 @@ Impact: none for callers.
 
 ## 2026-10-17 · P12 task 12.1 · Manifest version generated; `--tray` only hides the window
 Spec said: docs/01 section 7 embeds a literal `src/app/app.manifest` with `version="0.1.0.0"`; "everything else derives
-from" `project(Camtesia VERSION x.y.z)`; add `--tray` (start hidden to the tray).
+from" `project(super4vid VERSION x.y.z)`; add `--tray` (start hidden to the tray).
 Done instead: the manifest is now `src/app/app.manifest.in`, configured into the build dir with
 `@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.0`. `version.h` also defines
 `CT_VERSION_MAJOR/MINOR/PATCH` (guarded by `#ifndef`, since `ct_options` passes them as `-D` too), as docs/01 section 8
@@ -946,7 +946,7 @@ Done instead (P06/P08 are built in parallel):
   stats) with hooks `draw_preview(min, max)`, `on_action(Action) -> handled`, `status` (StatusInfo), `SetMediaProvider`. Without
   `draw_preview` the preview shows a styled placeholder of the canvas (background gradient, padding, radius, shadow).
 - `--editor-demo` runs with `io.IniFilename = nullptr` (deterministic layout for screenshots); layout persistence in
-  `%APPDATA%\Camtesia\editor_layout.ini` belongs to the EditorWindow. `--screenshot out.png --frames N` uses
+  `%APPDATA%\super4vid\editor_layout.ini` belongs to the EditorWindow. `--screenshot out.png --frames N` uses
   `ui::SaveWindowScreenshot` (PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT, BitBlt fallback -> ImageIo::WritePngRgba).
 Why: build the editor UI before playback/compositor exist without blocking on them.
 Impact: P09 second half: implement PlaybackControl in TimelinePlayer (or an adapter), a MediaCache-backed TimelineMediaProvider,
@@ -1046,7 +1046,7 @@ Done instead (additions only, specified members unchanged):
 - Thumbnails: the software decoder is created on the IO pool right after `Open` (its creation takes ~0.5 s under load);
   newest request first; consecutive buckets decode forward without a seek. 650 ms for the first, 150-230 ms after.
 - Peaks key also includes the stream index; cache dir = `<Paths logs dir>\..\cache` when `Paths::Init` ran, else
-  `%LOCALAPPDATA%\Camtesia\cache`. The 1080p pattern gives 502 windows (AAC padding, see 6.1); the test accepts 500-502.
+  `%LOCALAPPDATA%\super4vid\cache`. The 1080p pattern gives 502 windows (AAC padding, see 6.1); the test accepts 500-502.
 - Draw FrameRefs/thumbnails with `D3DDevice::Lock` held: worker threads (thumbnails, decoder copies) use the immediate
   context under that lock, so the UI thread must too (P08/P09).
 Why: budget/latency measurements above; testability.
@@ -1361,7 +1361,7 @@ call `platform::MfRuntime::EnsureForProcess()`; scoped users keep `Ensure`/`Shut
 ## 2026-10-17 · P09 tasks 9.1-9.7 (second half) · Editor window, preview, file ops, app mode
 Spec said: a MediaCache-backed TimelineMediaProvider, a preview panel with gizmos/overlays/transport, IFileDialog file
 ops, recent files, autosave recovery, unsaved prompt, layout ini, media probing/relink, Regenerate, error banners and
-`Camtesia.exe --editor [file]`.
+`super4vid.exe --editor [file]`.
 Done / interpreted:
 - Player: the editor uses `render::TimelinePlayer` directly (`detail::PlayerTransport` adapts it to `PlaybackControl`;
   Tick() once per frame gives the playhead; loop wraps in the adapter). `PlaybackControl` gained `Volume/SetVolume/
@@ -1379,11 +1379,11 @@ Done / interpreted:
   has audio also adds a Source::Default clip with the same start/in/out/speed on the first unlocked audio track with
   room, else a new "Audio" track (`cmd::AddLinkedAudioClip`, same as RecImporter). Opening a media file into an empty,
   clean project sets the canvas from the video and creates the video + audio tracks.
-- Recent files: `%APPDATA%\Camtesia\recent.json` (max 10; an entry whose file fails to open is removed). Layout:
-  `%APPDATA%\Camtesia\editor_layout.ini`; screenshot/bench runs use the built-in layout and write nothing.
+- Recent files: `%APPDATA%\super4vid\recent.json` (max 10; an entry whose file fails to open is removed). Layout:
+  `%APPDATA%\super4vid\editor_layout.ini`; screenshot/bench runs use the built-in layout and write nothing.
 - Banners: `BannerStack` is one P11a `ErrorBanner` per panel (Media/Preview/Properties/Timeline); a new error on a
   panel replaces the old one.
-- App: `RunEditorApp` (src/ui) owns its own window (class "CamtesiaMain", so SingleInstance forwarding reaches it),
+- App: `RunEditorApp` (src/ui) owns its own window (class "super4vidMain", so SingleInstance forwarding reaches it),
   D3D device, AudioDevices and Async UI poster; main.cpp only dispatches. A forwarded command line opens its paths
   (through the unsaved prompt). The loop renders only after input or while something animates; a 1 Hz waitable timer
   drives autosave.
@@ -1443,7 +1443,7 @@ Decision:
   can extend past the 560x64 / 260x44 dip bar. `Platform_CreateWindow` is wrapped to apply WDA_EXCLUDEFROMCAPTURE,
   topmost, DWM round corners, border colour and dark mode to every viewport. The settings window is the exception: an
   `ImGuiWindowClass` (ParentViewportId 0, clear NoDecoration/NoTaskBarIcon) gives it a normal decorated, non-topmost
-  top-level window "Camtesia Settings". Secondary viewports fill with bg2 to hide the black clear.
+  top-level window "super4vid Settings". Secondary viewports fill with bg2 to hide the black clear.
 - `ui::SettingsWindow` got one additive method, `SetHostRect(pos, size)` (+ `WindowName()`), so its fill-viewport mode
   fills that window instead of the main viewport.
 - Hotkeys (`RegisterHotKey`) and the tray icon belong to the bar window itself; no separate message window. While
@@ -1456,7 +1456,7 @@ Decision:
   `--synthetic-camera` substitutes the synthetic reader (no camera on the reference machine).
 - Toasts are drawn by the bar in their own viewport ("Saved" with Open in editor / Show in folder / Delete), not by
   `ToastStack`, which draws into the main viewport (the bar is too small).
-- Default "Open in editor" launches `Camtesia.exe --editor <bundle>` with CAMTESIA_SEPARATE_INSTANCE=1.
+- Default "Open in editor" launches `super4vid.exe --editor <bundle>` with SUPER4VID_SEPARATE_INSTANCE=1.
 - Redraw policy: `RedrawIntervalMs` 16 while animating, 33 while recording/meters/preview, 250 while toasts show,
   0 (wait for messages) otherwise.
 - Hotkey latency = start trigger (WM_HOTKEY, or the end of the countdown) -> first captured frame QPC. With countdown 0
@@ -1575,8 +1575,8 @@ Spec said: (P05 5.6 decisions) a double-clicked `.ctproj`/`.ctrec` while the bar
 SingleInstance and ignored; integration should open the editor for it or exempt editor launches from the check.
 Done instead: the bar's window handler looks at a forwarded command line first: when `IsRecorderBarCommandLine` says it
 is not a bar launch (`--editor`, a `.ctproj`/`.ctrec` argument), `ForwardedEditorArguments` re-quotes its arguments
-(argv[0] dropped, CommandLineToArgvW rules incl. trailing backslashes) and the bar starts `Camtesia.exe <args>` with
-`CAMTESIA_SEPARATE_INSTANCE=1`, the same path as "Open in editor". The bar stays hidden/as it was; a plain second
+(argv[0] dropped, CommandLineToArgvW rules incl. trailing backslashes) and the bar starts `super4vid.exe <args>` with
+`SUPER4VID_SEPARATE_INSTANCE=1`, the same path as "Open in editor". The bar stays hidden/as it was; a plain second
 launch still shows the bar. Bar diagnostics (temp output folder) only print the forwarded line. Also: a recording
 argument with a trailing slash (`take.ctrec\`) now counts as an editor launch, and `--bench-drag/scrub/play` skip the
 single-instance check like `--bench-hotkey` (`RunsAsSeparateInstance` matches `--bench-`).
@@ -1585,7 +1585,7 @@ including the unsaved-prompt-free fresh editor and the editor's own forwarding t
 Impact: when bar and editor share one process (later), replace `launch_editor` with in-process opening.
 
 ## 2026-10-17 · Dev/test · CT_INSTANCE_SUFFIX single-instance override
-Spec said: one instance per session (mutex `Local\Camtesia.Instance`, forward to class `CamtesiaMain`).
+Spec said: one instance per session (mutex `Local\super4vid.Instance`, forward to class `super4vidMain`).
 Done instead: `SingleInstance::Suffix()` reads the environment variable `CT_INSTANCE_SUFFIX` (sanitized to
 `[A-Za-z0-9._-]`, at most 32 characters); when non-empty, `MutexName()` and `MainWindowClass()` append `.<suffix>`.
 main.cpp, the recorder bar window and the editor window use these names. Unset = the release names, byte for byte.
@@ -1624,7 +1624,7 @@ Done instead / interpreted:
 - Ctrl+R / Record button: the bar is another process (DECISIONS "P09b/P05 integration"). `FindRecorderBarWindow` finds
   a top-level window of class `SingleInstance::MainWindowClass()` with `WS_EX_TOOLWINDOW` (the editor's own window of
   that class has none); `ShowRecorderBar` sends it `WM_COPYDATA` with a plain command line (the bar shows itself), else
-  starts `Camtesia.exe` with no arguments, with `CAMTESIA_SEPARATE_INSTANCE=1` only while some process holds the
+  starts `super4vid.exe` with no arguments, with `SUPER4VID_SEPARATE_INSTANCE=1` only while some process holds the
   single-instance mutex (otherwise the launch would just forward back to the editor); the inherited value is restored.
 - Shortcuts are not dispatched while a modal popup is open (unsaved changes, recovery, remove media, settings): Space or
   Delete must not act on the document behind the prompt.
@@ -1640,15 +1640,15 @@ Impact: while a burst is open, up to ~1 s of records are held in memory (a kill 
 budget); Flush() no longer guarantees records after the last key are on disk during an open burst.
 
 ## 2026-10-18 · P12 tasks 12.4/12.5 · Uninstall ends only {app}'s processes; scripted release smoke test
-Spec said: (P12 12.2) `[UninstallRun] taskkill /im Camtesia.exe /f` covers a tray-only instance at uninstall; 12.5 is a
+Spec said: (P12 12.2) `[UninstallRun] taskkill /im super4vid.exe /f` covers a tray-only instance at uninstall; 12.5 is a
 manual checklist (`tools/release_checklist.md`) run on clean machines.
 Done instead:
-- The `[UninstallRun]` taskkill is gone: it ended every Camtesia.exe on the machine (portable copies, dev builds,
+- The `[UninstallRun]` taskkill is gone: it ended every super4vid.exe on the machine (portable copies, dev builds,
   other agents' instances). A `[Code]` `CurUninstallStepChanged(usUninstall)` queries WMI `Win32_Process` for
-  `Camtesia.exe` and terminates only processes whose `ExecutablePath` equals `{app}\Camtesia.exe` (case-insensitive),
+  `super4vid.exe` and terminates only processes whose `ExecutablePath` equals `{app}\super4vid.exe` (case-insensitive),
   then waits 1 s; a WMI failure is logged and the uninstall continues.
-- `tools/release_smoke.ps1` automates the installable part of the checklist: refuses to run when Camtesia is already
-  installed/registered; per-user silent install into `%TEMP%\camtesia-smoke-*\app` with both tasks; checks files,
+- `tools/release_smoke.ps1` automates the installable part of the checklist: refuses to run when super4vid is already
+  installed/registered; per-user silent install into `%TEMP%\super4vid-smoke-*\app` with both tasks; checks files,
   HKCU uninstall entry (and no HKLM one), `.ctproj` association, open command, Run value, shortcuts, exe version;
   installed exe `--record --seconds 5 --verify --synthetic-camera --out <temp>`; `export_demo --recording <bundle>
   --save-project` (new flag: imports the bundle like the editor's Import recording, saves + reloads the .ctproj, exports);
@@ -1659,7 +1659,7 @@ Done instead:
   product leftover: Inno 6.3+ cannot delete its running copy and cleans these on the next Inno uninstall. The script
   removes the one its own run created.
 - The installed app has no headless export mode, so export uses the build tree's `export_demo` (same ExportJob code).
-Why: a developer/CI machine runs many Camtesia.exe; the uninstaller must not kill unrelated ones. Clean VMs are not
+Why: a developer/CI machine runs many super4vid.exe; the uninstaller must not kill unrelated ones. Clean VMs are not
 available to the agents, so as much of 12.5 as possible is scripted and repeatable.
 Impact: interactive editing and the clean Windows 10 / Windows 11 runs stay human checks (checklist section 6). CI
 could run `release_smoke.ps1 -TrayCheck $false` after `build.cmd package` (not wired up).
@@ -1846,7 +1846,7 @@ enumeration and D2D/DWrite on the IO pool after the first frame; prewarm (MfRunt
 on hovering REC.
 Done instead: the bar creates the D3D11 device on a "ct-device-init" thread while the UI thread loads settings,
 creates the window and sets up ImGui, the fonts and the Win32 backend (no message is pumped before the join, so the
-window cannot see input without a device); the DX11 backend and swapchain follow the join. Camtesia.exe delay-loads
+window cannot see input without a device); the DX11 backend and swapchain follow the join. super4vid.exe delay-loads
 mfplat, mf, mfreadwrite, d2d1, dwrite and propsys (`/DELAYLOAD` + delayimp): the loader no longer maps and initializes
 them before wWinMain. `MfRuntime::Ensure` loads mfplat.dll explicitly first and returns its error, so an N edition
 without the Media Feature Pack gets an HRESULT instead of a delay-load exception (every MF call is behind Ensure).
@@ -1866,15 +1866,15 @@ Spec said: Debug exit prints nothing from the CRT and `ReportLiveDeviceObjects` 
 the crash test's dump opens in WinDbg/VS and shows the faulting line.
 Done instead: `D3DDevice::ReportLiveObjects` drains the run's own info-queue messages first and returns a
 `DebugReport` (corruption/errors/warnings/live objects besides the device, discarded); it logs the summary and prints
-`d3d11 debug: ...` to stderr when not clean. ctest `camtesia_exit_leak_check` (tests/app) starts 8 self-ending app
+`d3d11 debug: ...` to stderr when not clean. ctest `super4vid_exit_leak_check` (tests/app) starts 8 self-ending app
 modes and fails on the CRT's "Detected memory leaks" or that stderr line (Debug; Release checks exit 0 only; skipped
-under CT_CI because it opens windows and records). ctest `camtesia_crash_dump` runs `--crash-test` and checks the new
+under CT_CI because it opens windows and records). ctest `super4vid_crash_dump` runs `--crash-test` and checks the new
 dump with `tools/dump_check`, which walks the faulting thread with StackWalk64 over the dump's memory, serving code
 and .pdata/unwind data from the module files mapped as images (no cdb/WinDbg on this machine), and requires main.cpp
 on the stack.
 Why: both checks were manual; an automated run found a real leak (editor `--seek` retry std::function holding its
 own shared_ptr) that the earlier manual bar-only check could not see.
-Impact: `build.cmd test` launches Camtesia.exe windows for ~20 s per config; the crash test leaves no dump behind.
+Impact: `build.cmd test` launches super4vid.exe windows for ~20 s per config; the crash test leaves no dump behind.
 
 ## 2026-10-18 · P11 task 11.4 · Capture robustness: mode change, removed display, access lost, sleep
 Spec said: mode change keeps the output size (letterbox/scale), never crashes; a removed display ends the recording

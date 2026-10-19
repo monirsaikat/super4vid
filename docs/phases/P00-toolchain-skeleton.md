@@ -80,7 +80,7 @@ void LogHr(long hr, const char* expr, const char* file, int line);
 namespace ct {
 enum class LogLevel : uint8_t { Trace, Debug, Info, Warn, Error, Off };
 struct Log {
-    static void Init(const char* log_dir_utf8);        // opens %LOCALAPPDATA%\Camtesia\logs\camtesia-<stamp>.log, rotates (keep 5)
+    static void Init(const char* log_dir_utf8);        // opens %LOCALAPPDATA%\super4vid\logs\super4vid-<stamp>.log, rotates (keep 5)
     static void SetLevel(LogLevel);                    // default Info; CT_LOG env var: trace|debug|info|warn|error
     static void Write(LogLevel, const char* category, const char* file, int line, const char* fmt, ...);
     static void Tick();                                // flush if > 500 ms since last flush; UI loop calls it
@@ -167,8 +167,8 @@ After `D3D11CreateDevice` succeeds: `QueryInterface(ID3D10Multithread)` -> `SetM
 ```
 wWinMain:
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX); CrashHandler::Install();
-  Paths::Init(); Log::Init(Paths::LogsDir()); CT_LOG_INFO("Camtesia %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
-  if (!SingleInstance::Acquire(L"Local\\Camtesia.Instance", cmdline)) return 0;   // forwarded to the running instance via WM_COPYDATA
+  Paths::Init(); Log::Init(Paths::LogsDir()); CT_LOG_INFO("super4vid %s (%s) starting", CT_VERSION_STRING, CT_GIT_HASH);
+  if (!SingleInstance::Acquire(L"Local\\super4vid.Instance", cmdline)) return 0;   // forwarded to the running instance via WM_COPYDATA
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   parse args: --crash-test, --time-to-window, --stats (AllocConsole + freopen), default = ui
   D3DDevice dev; dev.Init(CT_DEBUG);  Window win; win.Create(...);  SwapChain sc; sc.Init(dev, win.Hwnd());
@@ -213,15 +213,15 @@ struct Paths { static void Init(); static const std::string& LogsDir(); static c
 ```
 Dump: `MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpWithDataSegs), &ex_info, nullptr, nullptr)` to `crash-YYYYMMDD-HHMMSS-<pid>.dmp`. Then run emergency callbacks, `Log::Flush()`, `TerminateProcess(GetCurrentProcess(), 0xC0000409)`. The filter must not use the CRT heap more than necessary (preformat the path at `Install`). `--crash-test` dereferences null after a log line.
 
-Single instance: `CreateMutexW`; `GetLastError() == ERROR_ALREADY_EXISTS` -> `FindWindowW(L"CamtesiaMain", nullptr)` -> `COPYDATASTRUCT{ dwData = 1, cbData = bytes, lpData = cmdline }` -> `SendMessageTimeoutW(..., 2000)` -> return false.
+Single instance: `CreateMutexW`; `GetLastError() == ERROR_ALREADY_EXISTS` -> `FindWindowW(L"super4vidMain", nullptr)` -> `COPYDATASTRUCT{ dwData = 1, cbData = bytes, lpData = cmdline }` -> `SendMessageTimeoutW(..., 2000)` -> return false.
 
-Paths: `SHGetKnownFolderPath(FOLDERID_LocalAppData / RoamingAppData / Videos)` + `\Camtesia\...`, `CreateDirectoryW` recursively; portable mode if `portable.txt` exists next to the exe.
+Paths: `SHGetKnownFolderPath(FOLDERID_LocalAppData / RoamingAppData / Videos)` + `\super4vid\...`, `CreateDirectoryW` recursively; portable mode if `portable.txt` exists next to the exe.
 
 ### 0.7 Acceptance
 - `build.cmd debug` and `build.cmd release`: 0 warnings, 0 errors. `build.cmd test`: `ct_core_tests` passes in both.
 - Run the Release exe: window appears with the dark title bar, text crisp at 150 % DPI, resizing works, moving between monitors with different DPI rescales fonts.
 - With the mouse still for 10 s, `--stats` prints `redraws/s: 0`; Task Manager shows 0 % CPU and 0 % GPU for the process.
-- `Camtesia.exe --crash-test` produces a `.dmp` in `%LOCALAPPDATA%\Camtesia\crashes\` that opens in WinDbg/VS and shows the faulting line.
+- `super4vid.exe --crash-test` produces a `.dmp` in `%LOCALAPPDATA%\super4vid\crashes\` that opens in WinDbg/VS and shows the faulting line.
 - Starting a second instance while one runs exits immediately and the first instance logs `forwarded command line`.
 - Debug build exit prints no live D3D objects besides the device/context and no CRT leaks.
 

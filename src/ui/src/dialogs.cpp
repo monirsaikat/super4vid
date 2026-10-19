@@ -28,7 +28,7 @@ const COMDLG_FILTERSPEC kMedia[] = {
     {L"Images", L"*.png;*.jpg;*.jpeg;*.bmp;*.webp"},
     {L"All files", L"*.*"},
 };
-const COMDLG_FILTERSPEC kProject[] = {{L"Camtesia projects", L"*.ctproj"}, {L"All files", L"*.*"}};
+const COMDLG_FILTERSPEC kProject[] = {{L"super4vid projects", L"*.ctproj"}, {L"All files", L"*.*"}};
 const COMDLG_FILTERSPEC kProjectOrRec[] = {{L"Projects and recordings", L"*.ctproj;meta.json"}, {L"All files", L"*.*"}};
 const COMDLG_FILTERSPEC kImages[] = {{L"Images", L"*.png;*.jpg;*.jpeg;*.bmp;*.webp"}, {L"All files", L"*.*"}};
 const COMDLG_FILTERSPEC kAll[] = {{L"All files", L"*.*"}};

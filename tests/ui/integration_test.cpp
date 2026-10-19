@@ -55,29 +55,29 @@ private:
 
 CT_TEST(forwarded_editor_arguments_round_trip) {
     // A double-clicked project / recording (the .ctproj association passes --editor "%1").
-    const std::wstring proj = L"\"C:\\Program Files\\Camtesia\\Camtesia.exe\" --editor \"D:\\My Videos\\demo take.ctproj\"";
+    const std::wstring proj = L"\"C:\\Program Files\\super4vid\\super4vid.exe\" --editor \"D:\\My Videos\\demo take.ctproj\"";
     const std::wstring args = ForwardedEditorArguments(proj.c_str());
     CT_CHECK(!args.empty());
-    std::vector<std::wstring> v = Argv(L"Camtesia.exe " + args);
+    std::vector<std::wstring> v = Argv(L"super4vid.exe " + args);
     CT_REQUIRE(v.size() == 3);
     CT_CHECK(v[1] == L"--editor");
     CT_CHECK(v[2] == L"D:\\My Videos\\demo take.ctproj");
 
     // A bare .ctrec folder with a trailing backslash: the closing quote must survive re-quoting.
-    const std::wstring rec = L"Camtesia.exe \"D:\\rec\\2026-10-17 12-03-44.ctrec\\\\\"";
+    const std::wstring rec = L"super4vid.exe \"D:\\rec\\2026-10-17 12-03-44.ctrec\\\\\"";
     CT_CHECK_EQ(Argv(rec).size(), size_t(2));
     CT_CHECK(!IsRecorderBarCommandLine(rec.c_str()));
-    v = Argv(L"Camtesia.exe " + ForwardedEditorArguments(rec.c_str()));
+    v = Argv(L"super4vid.exe " + ForwardedEditorArguments(rec.c_str()));
     CT_REQUIRE(v.size() == 2);
     CT_CHECK(v[1] == L"D:\\rec\\2026-10-17 12-03-44.ctrec\\");
 
     // Recorder-bar command lines (plain second launch, --tray, bar diagnostics) are not editor launches.
-    CT_CHECK(ForwardedEditorArguments(L"Camtesia.exe").empty());
-    CT_CHECK(ForwardedEditorArguments(L"Camtesia.exe --tray").empty());
-    CT_CHECK(ForwardedEditorArguments(L"Camtesia.exe --countdown 1").empty());
+    CT_CHECK(ForwardedEditorArguments(L"super4vid.exe").empty());
+    CT_CHECK(ForwardedEditorArguments(L"super4vid.exe --tray").empty());
+    CT_CHECK(ForwardedEditorArguments(L"super4vid.exe --countdown 1").empty());
     CT_CHECK(ForwardedEditorArguments(nullptr).empty());
     // `--editor` alone opens an empty editor.
-    CT_CHECK(ForwardedEditorArguments(L"Camtesia.exe --editor") == L"--editor");
+    CT_CHECK(ForwardedEditorArguments(L"super4vid.exe --editor") == L"--editor");
 
     // Quoting rules.
     CT_CHECK(QuoteCommandLineArg(L"plain") == L"plain");
@@ -90,29 +90,29 @@ CT_TEST(forwarded_editor_arguments_round_trip) {
 }
 
 CT_TEST(bench_flags_skip_the_single_instance_check) {
-    CT_CHECK(RunsAsSeparateInstance(L"Camtesia.exe --editor p.ctproj --bench-drag 600"));
-    CT_CHECK(RunsAsSeparateInstance(L"Camtesia.exe --bench-hotkey 5"));
-    EnvGuard g(L"CAMTESIA_SEPARATE_INSTANCE");
-    SetEnvironmentVariableW(L"CAMTESIA_SEPARATE_INSTANCE", nullptr);
-    CT_CHECK(!RunsAsSeparateInstance(L"Camtesia.exe --editor p.ctproj"));
+    CT_CHECK(RunsAsSeparateInstance(L"super4vid.exe --editor p.ctproj --bench-drag 600"));
+    CT_CHECK(RunsAsSeparateInstance(L"super4vid.exe --bench-hotkey 5"));
+    EnvGuard g(L"SUPER4VID_SEPARATE_INSTANCE");
+    SetEnvironmentVariableW(L"SUPER4VID_SEPARATE_INSTANCE", nullptr);
+    CT_CHECK(!RunsAsSeparateInstance(L"super4vid.exe --editor p.ctproj"));
 }
 
 CT_TEST(instance_suffix_override) {
     EnvGuard g(L"CT_INSTANCE_SUFFIX");
     SetEnvironmentVariableW(L"CT_INSTANCE_SUFFIX", nullptr);
     CT_CHECK(SingleInstance::Suffix().empty());
-    CT_CHECK(SingleInstance::MutexName() == L"Local\\Camtesia.Instance");
-    CT_CHECK(SingleInstance::MainWindowClass() == L"CamtesiaMain");
+    CT_CHECK(SingleInstance::MutexName() == L"Local\\super4vid.Instance");
+    CT_CHECK(SingleInstance::MainWindowClass() == L"super4vidMain");
 
     SetEnvironmentVariableW(L"CT_INSTANCE_SUFFIX", L"wt-a256");
-    CT_CHECK(SingleInstance::MutexName() == L"Local\\Camtesia.Instance.wt-a256");
-    CT_CHECK(SingleInstance::MainWindowClass() == L"CamtesiaMain.wt-a256");
+    CT_CHECK(SingleInstance::MutexName() == L"Local\\super4vid.Instance.wt-a256");
+    CT_CHECK(SingleInstance::MainWindowClass() == L"super4vidMain.wt-a256");
 
     // Only [A-Za-z0-9._-], at most 32 characters; nothing valid left = no suffix.
     CT_CHECK(SingleInstance::SanitizeSuffix(L"a\\b/c d:e") == L"abcde");
     CT_CHECK(SingleInstance::SanitizeSuffix(std::wstring(40, L'x')).size() == size_t(32));
     SetEnvironmentVariableW(L"CT_INSTANCE_SUFFIX", L"\\/ :");
-    CT_CHECK(SingleInstance::MutexName() == L"Local\\Camtesia.Instance");
+    CT_CHECK(SingleInstance::MutexName() == L"Local\\super4vid.Instance");
 
     // Two instances with different suffixes both acquire; the same suffix forwards (no window: Acquire gives up).
     SetEnvironmentVariableW(L"CT_INSTANCE_SUFFIX", L"ct-ui-tests");

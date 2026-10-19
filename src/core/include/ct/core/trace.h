@@ -1,6 +1,6 @@
 #pragma once
 // ct/core/trace.h
-// ETW TraceLogging provider "Camtesia" {9b3e281e-aa6b-4781-a0b4-817998fa4f27} for WPR/WPA, plus scoped spans.
+// ETW TraceLogging provider "super4vid" {9b3e281e-aa6b-4781-a0b4-817998fa4f27} for WPR/WPA, plus scoped spans.
 // CT_TRACE_SCOPE("FrameConvert") writes start/stop events (only while a session listens) and, when
 // Stats::SetScopeTimings(true), adds the duration to Stats::T("FrameConvert"). Costs two QPC reads otherwise.
 // Thread model: everything is thread-safe. Register() once at startup, Unregister() at exit; events written while
