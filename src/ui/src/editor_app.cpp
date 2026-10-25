@@ -571,8 +571,9 @@ bool ParseEditorLaunch(const wchar_t* cmdline, EditorLaunch* out) {
         const wchar_t* a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? WideToUtf8(argv[++i]) : std::string(); };
         if (wcscmp(a, L"--editor") == 0) editor = true;
-        else if (wcscmp(a, L"--editor-demo") == 0) demo = true;
+        else if (wcscmp(a, L"--editor-demo") == 0 || wcscmp(a, L"--settings-demo") == 0) demo = true;
         else if (wcscmp(a, L"--project") == 0) ++i;   // --editor-demo's value
+        else if (wcscmp(a, L"--section") == 0) ++i;   // --settings-demo's value (else "audio" looks like a file)
         else if (wcscmp(a, L"--screenshot") == 0) out->screenshot = next();
         else if (wcscmp(a, L"--frames") == 0) out->frames = std::atoi(next().c_str());
         else if (wcscmp(a, L"--stats") == 0) out->stats = true;

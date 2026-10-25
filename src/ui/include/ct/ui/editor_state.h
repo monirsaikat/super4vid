@@ -58,6 +58,10 @@ public:
     virtual void SetVolume(float) {}
     virtual bool Muted() const { return false; }
     virtual void SetMuted(bool) {}
+    // Live output peak (linear, last buffer) and the endpoint the stream plays to, for the transport's volume
+    // popover. Players without audio output report silence and an empty name.
+    virtual float OutputPeak() const { return 0.0f; }
+    virtual std::string OutputDeviceName() const { return std::string(); }
 };
 
 struct EditorState;

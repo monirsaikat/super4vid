@@ -36,6 +36,11 @@ void MeterBar(const char* id, float level_db, ImVec2 size);
 // Meter segment color for a level (exposed for tests).
 ImU32 MeterColor(float level_db);
 
+// A preferred dialog size (already in pixels) cut down to the main viewport's work area, minus `margin` on each
+// side, so a window that would not fit a laptop screen opens scrolled instead of with its buttons off-screen.
+// A zero component is passed through (ImGui's "fit the content" value).
+ImVec2 FitViewport(ImVec2 size, float margin = 16);
+
 // Popover: a styled popup that fades/slides in over 160 ms. Open with ImGui::OpenPopup(id).
 bool BeginPopover(const char* id);
 void EndPopover();

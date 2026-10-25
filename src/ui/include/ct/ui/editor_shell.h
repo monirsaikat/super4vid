@@ -62,7 +62,9 @@ public:
     std::function<void()> on_import_recording;                   // File > Import recording... (folder picker)
     std::function<void(const std::string&)> on_open_recent;      // File > Open recent > path
     std::function<void()> on_close_project;                      // File > Close project
-    std::function<void()> on_preferences;                        // Edit > Preferences (P11)
+    // Edit > Preferences (P11), and the panels' own links into Settings. The argument is the section to open; the
+    // Preferences menu item passes SettingsSection::Editor.
+    std::function<void(int section)> on_preferences;
     std::function<void()> on_open_logs;                          // Help > Open logs folder / status bar warnings
     std::function<void()> on_about;                              // Help > About
     // Export menu / the Export button's chevron: open the export dialog with this built-in preset preselected.

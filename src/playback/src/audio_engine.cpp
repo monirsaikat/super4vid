@@ -22,12 +22,25 @@ constexpr int64_t kMaxExtrapolateUs = 50'000;  // QPC interpolation beyond the l
 AudioEngine::AudioEngine() { m_callback.engine = this; }
 AudioEngine::~AudioEngine() { Stop(); }
 
-HRESULT AudioEngine::Init(audio::AudioDevices& devices) {
+HRESULT AudioEngine::Init(audio::AudioDevices& devices) { return Init(devices, std::wstring()); }
+
+HRESULT AudioEngine::Init(audio::AudioDevices& devices, const std::wstring& preferred_device) {
     audio::dsp::Init();
     m_vs.assign(static_cast<size_t>(kMaxChunk * kMaxRate + 8) * kChannels, 0.0f);
-    const std::wstring id = devices.DefaultId(false);
-    if (id.empty()) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
-    CT_RETURN_IF_FAILED(m_render.Init(id, 20, "ct-audio-out"));
+    const std::wstring fallback = devices.DefaultId(false);
+    // The chosen endpoint may have been unplugged since it was saved: try it, then the default one.
+    HRESULT hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    if (!preferred_device.empty() && preferred_device != fallback) {
+        hr = m_render.Init(preferred_device, 20, "ct-audio-out");
+        if (SUCCEEDED(hr)) m_device_id = preferred_device;
+        else CT_LOG_WARN("AudioEngine: the chosen output device is unavailable (%s); using the default one",
+                         HrToString(hr).c_str());
+    }
+    if (FAILED(hr)) {
+        if (fallback.empty()) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        CT_RETURN_IF_FAILED(m_render.Init(fallback, 20, "ct-audio-out"));
+        m_device_id = fallback;
+    }
     CT_LOG_INFO("AudioEngine: %s, latency %.1f ms", m_render.DeviceName().c_str(), m_render.LatencyMs());
     return S_OK;
 }

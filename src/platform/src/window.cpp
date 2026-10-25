@@ -22,6 +22,27 @@ int DipToPx(int dip, UINT dpi) {
 
 } // namespace
 
+// The requested size is a wish, not a promise: a laptop screen (or a scaled one, where the editor's 1600x900 DIP is
+// 2400x1350 px at 150 %) is often smaller than the window, and an unclamped window hangs off the screen with its
+// title bar and controls out of reach.
+WindowPlacement PlaceWindow(SizeI frame, SizeI work, SizeI min_frame, PointI work_origin) {
+    WindowPlacement p;
+    p.w = frame.w;
+    p.h = frame.h;
+    if (work.w > 0 && work.h > 0) {
+        // Cut down to the work area, but never below the smallest usable frame: a window that cannot fit at all is
+        // better clipped than squeezed into something nothing can be done in.
+        if (p.w > work.w) p.w = work.w > min_frame.w ? work.w : min_frame.w;
+        if (p.h > work.h) p.h = work.h > min_frame.h ? work.h : min_frame.h;
+    }
+    // Centre, then push back inside: half of a centred oversized window would sit above/left of the work area.
+    p.x = work_origin.x + (work.w - p.w) / 2;
+    p.y = work_origin.y + (work.h - p.h) / 2;
+    if (p.x < work_origin.x) p.x = work_origin.x;
+    if (p.y < work_origin.y) p.y = work_origin.y;
+    return p;
+}
+
 Window::~Window() {
     Destroy();
 }
@@ -69,15 +90,18 @@ bool Window::Create(const Desc& desc, MessageHandler handler, void* user) {
 
     RECT rc{0, 0, DipToPx(desc.w_dip, m_dpi), DipToPx(desc.h_dip, m_dpi)};
     AdjustWindowRectExForDpi(&rc, m_style, FALSE, m_ex_style, m_dpi);
-    const int win_w = rc.right - rc.left;
-    const int win_h = rc.bottom - rc.top;
+    int win_w = rc.right - rc.left;
+    int win_h = rc.bottom - rc.top;
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);
     const RECT& work = mi.rcWork;
-    const int x = work.left + ((work.right - work.left) - win_w) / 2;
-    const int y = work.top + ((work.bottom - work.top) - win_h) / 2;
-    SetWindowPos(hwnd, nullptr, x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    RECT min_rc{0, 0, DipToPx(m_min_client_dip.w, m_dpi), DipToPx(m_min_client_dip.h, m_dpi)};
+    AdjustWindowRectExForDpi(&min_rc, m_style, FALSE, m_ex_style, m_dpi);
+    const WindowPlacement place =
+        PlaceWindow(SizeI{win_w, win_h}, SizeI{work.right - work.left, work.bottom - work.top},
+                    SizeI{min_rc.right - min_rc.left, min_rc.bottom - min_rc.top}, PointI{work.left, work.top});
+    SetWindowPos(hwnd, nullptr, place.x, place.y, place.w, place.h, SWP_NOZORDER | SWP_NOACTIVATE);
     m_client_px = ClientSizePx();
     m_resize_pending = false;
     CT_LOG_INFO("window created: %dx%d px at dpi %u", m_client_px.w, m_client_px.h, m_dpi);

@@ -671,7 +671,7 @@ void SettingsWindow::DrawRecording() {
 void SettingsWindow::DrawAudio() {
     Settings::Recording r = m_settings.recording;
     bool changed = false;
-    CardBegin();
+    CardBegin(str::kSetRecordingHeading);
     changed |= ToggleRow(str::kSetMic, nullptr, "##mic", r.mic);
     if (!m_devices_ready) {
         RowBegin(str::kSetMicDevice, nullptr, LoadingWidth(str::kSetLoadingDevices));
@@ -730,11 +730,54 @@ void SettingsWindow::DrawAudio() {
     }
     changed |= ToggleRow(str::kSetSystemAudio, str::kSetSystemAudioHint, "##sysaudio", r.system_audio);
     CardEnd();
+    if (changed) Apply([&r](Settings& s) { s.recording = r; });
+
+    // Playback (the editor's preview output). Independent of what is recorded, and never applied to an export.
+    Settings::Playback pb = m_settings.playback;
+    bool pb_changed = false;
+    CardBegin(str::kSetPlaybackHeading);
+    if (!m_devices_ready) {
+        RowBegin(str::kSetOutputDevice, str::kSetOutputDeviceHint, LoadingWidth(str::kSetLoadingDevices));
+        LoadingText(str::kSetLoadingDevices);
+        RowEnd();
+    } else {
+        RowBegin(str::kSetOutputDevice, m_outs.empty() ? str::kSetNoOutputs : str::kSetOutputDeviceHint, Dp(kCtrlW + 40));
+        ImGui::BeginDisabled(m_outs.empty());
+        std::string preview = str::kSetDefaultDevice;
+        for (const Out& o : m_outs)
+            if (o.id == pb.output_device) preview = o.name;
+        if (BeginCombo("##outdev", preview.c_str(), Dp(kCtrlW + 40))) {
+            if (ImGui::Selectable(str::kSetDefaultDevice, pb.output_device.empty())) {
+                pb.output_device.clear();
+                pb_changed = true;
+            }
+            for (const Out& o : m_outs) {
+                ImGui::PushID(o.id.c_str());
+                if (ImGui::Selectable(o.name.c_str(), o.id == pb.output_device)) {
+                    pb.output_device = o.id;
+                    pb_changed = true;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+        RowEnd();
+    }
+    RowBegin(str::kSetPlaybackVolume, str::kSetPlaybackVolumeHint, Dp(kCtrlW));
+    ImGui::SetNextItemWidth(Dp(kCtrlW));
+    ImGui::BeginDisabled(pb.muted);
+    if (ImGui::SliderInt("##pbvolume", &pb.volume, 0, 200, "%d %%", ImGuiSliderFlags_AlwaysClamp)) pb_changed = true;
+    ImGui::EndDisabled();
+    RowEnd();
+    pb_changed |= ToggleRow(str::kSetPlaybackMute, nullptr, "##pbmute", pb.muted);
+    CardEnd();
+    if (pb_changed) Apply([&pb](Settings& s) { s.playback = pb; });
+    // One refresh for both cards: the same enumeration job lists microphones and playback endpoints.
     if (IconButton("##refresh_audio", ICON_REFRESH, nullptr, false, str::kSetRefresh) && !AsyncBusy()) {
         m_devices_ready = false;
         StartEnumeration(true);
     }
-    if (changed) Apply([&r](Settings& s) { s.recording = r; });
 }
 
 void SettingsWindow::DrawCamera() {

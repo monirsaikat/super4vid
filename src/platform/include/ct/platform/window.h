@@ -9,6 +9,15 @@
 
 namespace ct::platform {
 
+// Where a new window goes on a monitor, given the frame size it asked for, the monitor's work area and the smallest
+// frame size that is still usable. A window larger than the work area is cut down to it (so a laptop screen never
+// gets a window whose title bar and buttons are off-screen) but never below `min`; the result is centred in the
+// work area and then pushed back inside it. Pure; unit tested.
+struct WindowPlacement {
+    int x = 0, y = 0, w = 0, h = 0;
+};
+WindowPlacement PlaceWindow(SizeI frame, SizeI work, SizeI min_frame, PointI work_origin);
+
 class Window {
 public:
     struct Desc {

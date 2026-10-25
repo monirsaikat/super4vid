@@ -63,6 +63,11 @@ struct Settings {
         bool ripple = false;
         std::string preview_quality = "full";   // "full" | "half"
     } editor;
+    struct Playback {                      // editor/preview audio output
+        std::string output_device;         // render endpoint id; empty = default device
+        int volume = 100;                  // 0..200 % (linear gain 0..2)
+        bool muted = false;
+    } playback;
     struct Export {                         // JSON key "export" ("export" is a C++ keyword)
         std::string last_preset = "mp4-1080p";
         std::string last_dir;

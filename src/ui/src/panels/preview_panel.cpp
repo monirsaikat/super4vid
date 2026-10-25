@@ -891,7 +891,7 @@ void PreviewPanel::DrawImage(EditorState& state, ImVec2 origin, ImVec2 area) {
 
 // --- transport -------------------------------------------------------------------------------------------------------
 
-void PreviewPanel::DrawTimecode(EditorState& state, float h) {
+float PreviewPanel::TimecodeWidth(const EditorState& state, bool compact) const {
     const auto& cv = state.project.canvas;
     ImFont* mono = Fonts::Get(FontRole::Mono);
     const float fs = Dp(13);
@@ -900,6 +900,23 @@ void PreviewPanel::DrawTimecode(EditorState& state, float h) {
     std::snprintf(b, sizeof(b), "  /  ");
     const size_t bl = std::strlen(b);
     FormatTimecode(b + bl, sizeof(b) - bl, state.project.Duration(), cv.fps_num, cv.fps_den);
+    const float wa = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, a).x : ImGui::CalcTextSize(a).x;
+    const float wb = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, b).x : ImGui::CalcTextSize(b).x;
+    return compact ? wa : wa + wb;
+}
+
+void PreviewPanel::DrawTimecode(EditorState& state, float h, bool compact) {
+    const auto& cv = state.project.canvas;
+    ImFont* mono = Fonts::Get(FontRole::Mono);
+    const float fs = Dp(13);
+    char a[32], b[40];
+    FormatTimecode(a, sizeof(a), state.Playhead(), cv.fps_num, cv.fps_den);
+    if (compact) b[0] = 0;
+    else {
+        std::snprintf(b, sizeof(b), "  /  ");
+        const size_t bl = std::strlen(b);
+        FormatTimecode(b + bl, sizeof(b) - bl, state.project.Duration(), cv.fps_num, cv.fps_den);
+    }
     const ImVec2 sa = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, a) : ImGui::CalcTextSize(a);
     const ImVec2 sb = mono ? mono->CalcTextSizeA(fs, FLT_MAX, 0, b) : ImGui::CalcTextSize(b);
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -950,10 +967,31 @@ void PreviewPanel::DrawTransport(EditorState& state) {
     PlaybackControl& pb = *state.playback;
     const float h = Dp(kControlDefault);
     const float total_w = ImGui::GetContentRegionAvail().x;
+    // On a narrow panel (a laptop screen, or the preview squeezed between wide side panels) the row does not fit.
+    // Rather than letting the two groups overlap, the row sheds detail in order of usefulness: the zoom button loses
+    // its label, the timecode loses "  /  <duration>", then the timecode goes (the timeline's corner shows it too),
+    // and last the go-to-start/end buttons go (Home/End still work).
+    const float left_full = Dp(40) + h * 5;    // 12 pad + 5 buttons (play is 4 px wider) + 4 gaps + 16 before the time
+    const float right_full = Dp(84) + h * 3 + Dp(24);
+    const float right_icon = h * 4 + Dp(24);
+    const float tc_full = TimecodeWidth(state, false), tc_short = TimecodeWidth(state, true);
+    bool compact = false, tight = false, show_time = true, short_time = false;
+    if (total_w < left_full + tc_full + right_full + Dp(24)) {
+        compact = true;
+        if (total_w < left_full + tc_full + right_icon + Dp(16)) short_time = true;
+        if (short_time && total_w < left_full + tc_short + right_icon + Dp(16)) {
+            show_time = false;
+            short_time = false;
+            tight = total_w < left_full + right_icon + Dp(8);
+        }
+    }
+    const float fit_w = compact ? h : Dp(84);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Dp(12));
-    if (IconButton("start", ICON_PREVIOUS, "Go to start", false, nullptr, ImVec2(h, h))) Run(Action::GoStart);
-    ItemTooltip("Go to start", "Home");
-    ImGui::SameLine(0, Dp(2));
+    if (!tight) {
+        if (IconButton("start", ICON_PREVIOUS, "Go to start", false, nullptr, ImVec2(h, h))) Run(Action::GoStart);
+        ItemTooltip("Go to start", "Home");
+        ImGui::SameLine(0, Dp(2));
+    }
     if (IconButton("prev", ICON_CHEVRON_LEFT, nullptr, false, nullptr, ImVec2(h, h))) Run(Action::PrevFrame);
     ItemTooltip("Previous frame", "Left");
     ImGui::SameLine(0, Dp(2));
@@ -974,11 +1012,15 @@ void PreviewPanel::DrawTransport(EditorState& state) {
     ImGui::SameLine(0, Dp(2));
     if (IconButton("next", ICON_CHEVRON_RIGHT, nullptr, false, nullptr, ImVec2(h, h))) Run(Action::NextFrame);
     ItemTooltip("Next frame", "Right");
-    ImGui::SameLine(0, Dp(2));
-    if (IconButton("end", ICON_NEXT, nullptr, false, nullptr, ImVec2(h, h))) Run(Action::GoEnd);
-    ItemTooltip("Go to end", "End");
-    ImGui::SameLine(0, Dp(16));
-    DrawTimecode(state, h);
+    if (!tight) {
+        ImGui::SameLine(0, Dp(2));
+        if (IconButton("end", ICON_NEXT, nullptr, false, nullptr, ImVec2(h, h))) Run(Action::GoEnd);
+        ItemTooltip("Go to end", "End");
+    }
+    if (show_time) {
+        ImGui::SameLine(0, Dp(16));
+        DrawTimecode(state, h, short_time);
+    }
     if (pb.Rate() != 0 && pb.Rate() != 1) {
         ImGui::SameLine(0, Dp(10));
         char r[16];
@@ -993,12 +1035,15 @@ void PreviewPanel::DrawTransport(EditorState& state) {
         ImGui::Dummy(ImVec2(ts.x + Dp(12), h));
     }
     // Right side: fit, loop, overlays, mute + volume.
-    const float right_w = Dp(84) + h * 3 + Dp(4) + Dp(4) + Dp(2) * 2 + Dp(12);
+    const float right_w = fit_w + h * 3 + Dp(4) + Dp(4) + Dp(2) * 2 + Dp(12);
     ImGui::SameLine(std::max(ImGui::GetCursorPosX() + Dp(8), total_w - right_w));
     static const char* const kFit[] = {"Fit", "50 %", "100 %", "200 %"};
     char fit[32];
-    std::snprintf(fit, sizeof(fit), "%s  %s", kFit[fit_mode], ICON_CHEVRON_DOWN);
-    if (Button(fit, ButtonKind::Normal, ImVec2(Dp(84), h))) ImGui::OpenPopup("##fitmenu");
+    if (compact) std::snprintf(fit, sizeof(fit), "%s", ICON_ZOOM_IN);
+    else std::snprintf(fit, sizeof(fit), "%s  %s", kFit[fit_mode], ICON_CHEVRON_DOWN);
+    const bool fit_clicked = compact ? IconButton("fitzoom", ICON_ZOOM_IN, nullptr, false, nullptr, ImVec2(h, h))
+                                     : Button(fit, ButtonKind::Normal, ImVec2(fit_w, h));
+    if (fit_clicked) ImGui::OpenPopup("##fitmenu");
     ItemTooltip("Preview zoom (Space+drag pans)", nullptr);
     if (BeginPopover("##fitmenu")) {
         for (int i = 0; i < 4; ++i)
@@ -1042,6 +1087,26 @@ void PreviewPanel::DrawTransport(EditorState& state) {
         float v = pb.Volume() * 100.0f;
         ImGui::SetNextItemWidth(Dp(160));
         if (ImGui::SliderFloat("##volume_slider", &v, 0.0f, 200.0f, "%.0f %%")) pb.SetVolume(v / 100.0f);
+        // Live output meter + the endpoint the stream plays to (Settings > Audio > Playback chooses it).
+        const float peak = pb.OutputPeak();
+        const float db = peak > 1e-5f ? 20.0f * std::log10(peak) : -120.0f;
+        m_meter_db = db > m_meter_db ? db : m_meter_db + (db - m_meter_db) * 0.25f;   // instant attack, soft release
+        MeterBar("##out_meter", m_meter_db, ImVec2(Dp(160), Dp(8)));
+        const std::string device = pb.OutputDeviceName();
+        ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(col::text_dim));
+        {
+            FontScope f(FontRole::Label);
+            ImGui::TextUnformatted(device.empty() ? str::kNoAudioOutput : device.c_str());
+        }
+        ImGui::PopStyleColor();
+        if (on_audio_settings) {
+            ImGui::Dummy(ImVec2(0, Dp(2)));
+            if (ImGui::Selectable(str::kAudioSettingsLink)) {
+                on_audio_settings();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        m_wants_redraw = true;   // the meter animates
         EndPopover();
     }
 }

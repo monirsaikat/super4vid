@@ -45,6 +45,8 @@ public:
     std::function<void(Action)> run_action;                                // transport buttons (shell's dispatcher)
     // Displayed size of a clip's video (the decoded frame); null or empty -> the media's width/height.
     std::function<SizeI(const project::Clip&)> video_size;
+    // "Audio settings" in the volume popover: opens Settings > Audio. Null hides the link.
+    std::function<void()> on_audio_settings;
 
     void Draw(EditorState& state);
     bool WantsRedraw() const { return m_wants_redraw; }
@@ -76,7 +78,9 @@ private:
     void DrawCameraGizmo(EditorState& state, ImDrawList* dl);
     void DrawInlineText(EditorState& state);
     void DrawTransport(EditorState& state);
-    void DrawTimecode(EditorState& state, float h);
+    // compact (a narrow panel on a laptop screen): only the playhead time, without "  /  <duration>".
+    void DrawTimecode(EditorState& state, float h, bool compact = false);
+    float TimecodeWidth(const EditorState& state, bool compact) const;
     void DrawDragReadout(ImDrawList* dl, const char* text);
     void Run(Action a) {
         if (run_action) run_action(a);
@@ -112,6 +116,7 @@ private:
     ImVec2 m_pan{};
     ImVec2 m_area_min{}, m_area_max{};
     bool m_wants_redraw = false;
+    float m_meter_db = -120.0f;   // smoothed output peak shown in the volume popover
     render::Compositor m_geom;   // geometry only (LayerRectOnCanvas / VideoToCanvas are pure); never Init
 
     // Time entry.

@@ -290,7 +290,7 @@ void ExportDialog::Draw() {
 }
 
 void ExportDialog::DrawSettings() {
-    ImGui::SetNextWindowSize(ImVec2(Dp(760), Dp(560)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(FitViewport(ImVec2(Dp(760), Dp(560))), ImGuiCond_Appearing);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing,
                             ImVec2(0.5f, 0.5f));
@@ -479,7 +479,7 @@ void ExportDialog::DrawSettings() {
 
 void ExportDialog::DrawProgress() {
     const exportng::ExportJob::Progress& p = m_job->GetProgress();
-    ImGui::SetNextWindowSize(ImVec2(Dp(440), 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(FitViewport(ImVec2(Dp(440), 0)), ImGuiCond_Always);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing,
                             ImVec2(0.5f, 0.5f));

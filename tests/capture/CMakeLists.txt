@@ -9,4 +9,5 @@ ct_add_test(ct_capture_tests DEPS ct_capture SOURCES
   capturer_test.cpp
   robustness_test.cpp
   gpu_bench_test.cpp
-  webcam_test.cpp)
+  webcam_test.cpp
+  window_place_test.cpp)

@@ -57,6 +57,7 @@ public:
     struct Options {
         bool audio_output = true;    // false: no WASAPI stream (export, tests); the clock runs on QPC
         bool async_open = true;      // false: Resolve opens media synchronously on the control thread (tools/tests)
+        std::wstring audio_device;   // preferred render endpoint (settings.playback.output_device); empty = default
     };
 
     TimelinePlayer();

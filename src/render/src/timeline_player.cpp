@@ -89,7 +89,7 @@ HRESULT TimelinePlayer::Init(RenderContext& rc, audio::AudioDevices* devices, co
     if (opt.audio_output && devices) {
         m_feed.ring.Init(kRingFrames, kAudioChannels);
         m_feed.discard.assign(static_cast<size_t>(4800) * kAudioChannels, 0.0f);
-        if (SUCCEEDED(m_engine.Init(*devices))) {
+        if (SUCCEEDED(m_engine.Init(*devices, opt.audio_device))) {
             m_feed_stop = false;
             Thread::Options to;
             to.name = "ct-audio-mix";

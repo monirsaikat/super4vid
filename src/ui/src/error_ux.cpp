@@ -1,4 +1,5 @@
 // Error messages and the red error banner (P11 11.5, docs/05 section 4).
+#include <algorithm>
 #include <ct/ui/error_ux.h>
 
 #include <ct/core/async.h>
@@ -190,6 +191,8 @@ std::string ErrorBanner::DetailsText() const {
 
 namespace {
 constexpr float kPad = 12, kIconGap = 10, kStripe = 3;
+// Below this much room for the message text the banner stacks its buttons instead of keeping them on the message row.
+constexpr float kMinWrap = 170;
 }
 
 bool ErrorBanner::Draw(const char* id) {
@@ -211,8 +214,14 @@ bool ErrorBanner::Draw(const char* id) {
     const float buttons_w = toggle_w + Dp(4) + frame_h;
     const float icon_w = Dp(16);
     const float text_x = origin.x + pad + icon_w + Dp(kIconGap);
-    const float wrap_w = (origin.x + width - pad - buttons_w - Dp(12)) - text_x;
-    const ImVec2 msg_size = ImGui::CalcTextSize(m_message.c_str(), nullptr, false, wrap_w > 50 ? wrap_w : 50);
+    // In a narrow panel (the 260 DIP media bin) the message and both buttons on one row leave a column so thin that
+    // the text wraps one word per line. Below kMinWrap only the dismiss button stays on the message row and the
+    // Details toggle moves under the message.
+    const float wide_wrap = (origin.x + width - pad - buttons_w - Dp(12)) - text_x;
+    const bool narrow = wide_wrap < Dp(kMinWrap);
+    const float wrap_w = narrow ? std::max(Dp(50), (origin.x + width - pad - frame_h - Dp(8)) - text_x)
+                                : std::max(Dp(50), wide_wrap);
+    const ImVec2 msg_size = ImGui::CalcTextSize(m_message.c_str(), nullptr, false, wrap_w);
     const float row_h = msg_size.y > frame_h ? msg_size.y : frame_h;
     const float top = origin.y + Dp(8);
     {
@@ -221,25 +230,36 @@ bool ErrorBanner::Draw(const char* id) {
         dl->AddText(ImVec2(origin.x + pad, std::floor(top + (frame_h - fs) * 0.5f)), col::danger, ICON_ERROR);
     }
     ImGui::SetCursorScreenPos(ImVec2(text_x, top + (msg_size.y < frame_h ? (frame_h - msg_size.y) * 0.5f : 0)));
-    ImGui::PushTextWrapPos(text_x + (wrap_w > 50 ? wrap_w : 50) - window->Pos.x + window->Scroll.x);
+    ImGui::PushTextWrapPos(text_x + wrap_w - window->Pos.x + window->Scroll.x);
     ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(col::text));
     ImGui::TextUnformatted(m_message.c_str());
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
 
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + width - pad - buttons_w + Dp(8), top));
-    ImGui::PushStyleColor(ImGuiCol_Button, ToVec4(WithAlpha(col::danger, 0.0f)));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ToVec4(WithAlpha(col::danger, 0.18f)));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ToVec4(WithAlpha(col::danger, 0.28f)));
-    ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(Rgb(0xFF9A9B)));
-    char toggle_id[64];
-    std::snprintf(toggle_id, sizeof(toggle_id), "%s###details", toggle_label);
-    if (ImGui::Button(toggle_id, ImVec2(toggle_w - Dp(8), frame_h))) m_details_open = !m_details_open;
-    ImGui::PopStyleColor(4);
-    ImGui::SameLine(0, Dp(4));
-    bool dismissed = IconButton("##dismiss", ICON_CANCEL, str::kErrDismiss, false, nullptr, ImVec2(frame_h, frame_h));
-
     float bottom = top + row_h;
+    auto details_toggle = [&] {
+        ImGui::PushStyleColor(ImGuiCol_Button, ToVec4(WithAlpha(col::danger, 0.0f)));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ToVec4(WithAlpha(col::danger, 0.18f)));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ToVec4(WithAlpha(col::danger, 0.28f)));
+        ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(Rgb(0xFF9A9B)));
+        char toggle_id[64];
+        std::snprintf(toggle_id, sizeof(toggle_id), "%s###details", toggle_label);
+        if (ImGui::Button(toggle_id, ImVec2(toggle_w - Dp(8), frame_h))) m_details_open = !m_details_open;
+        ImGui::PopStyleColor(4);
+    };
+    bool dismissed = false;
+    if (narrow) {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + width - pad - frame_h, top));
+        dismissed = IconButton("##dismiss", ICON_CANCEL, str::kErrDismiss, false, nullptr, ImVec2(frame_h, frame_h));
+        ImGui::SetCursorScreenPos(ImVec2(text_x, bottom + Dp(6)));
+        details_toggle();
+        bottom = ImGui::GetItemRectMax().y;
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + width - pad - buttons_w + Dp(8), top));
+        details_toggle();
+        ImGui::SameLine(0, Dp(4));
+        dismissed = IconButton("##dismiss", ICON_CANCEL, str::kErrDismiss, false, nullptr, ImVec2(frame_h, frame_h));
+    }
     if (!m_actions.empty()) {
         ImGui::SetCursorScreenPos(ImVec2(text_x, bottom + Dp(8)));
         for (size_t i = 0; i < m_actions.size(); ++i) {

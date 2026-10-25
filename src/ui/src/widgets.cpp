@@ -192,6 +192,15 @@ void MeterBar(const char* id, float level_db, ImVec2 size) {
     }
 }
 
+ImVec2 FitViewport(ImVec2 size, float margin) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    if (!vp) return size;
+    const float max_x = vp->WorkSize.x - Dp(margin) * 2, max_y = vp->WorkSize.y - Dp(margin) * 2;
+    if (size.x > 0 && max_x > 0 && size.x > max_x) size.x = max_x;
+    if (size.y > 0 && max_y > 0 && size.y > max_y) size.y = max_y;
+    return size;
+}
+
 bool BeginPopover(const char* id) {
     ImGuiStorage* st = ImGui::GetStateStorage();
     const ImGuiID key = ImGui::GetID(id) + 0x5EED;

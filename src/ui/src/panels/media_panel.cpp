@@ -214,10 +214,26 @@ void MediaPanel::DrawMediaTab(EditorState& state) {
                 bool ok = false;
                 for (const Track& t : p.tracks)
                     if (mm && !ok && MakeClipForTrack(p, *mm, t, state.Playhead(), &clip)) ok = true;
+                // No compatible track (an empty project, or every track busy at the playhead): make one, exactly as
+                // dropping the media on the timeline's empty area does.
+                bool new_track = false;
+                if (!ok && mm) {
+                    Track tmp;
+                    tmp.kind = mm->kind == Media::Kind::Audio ? Track::Kind::Audio : Track::Kind::Video;
+                    ok = new_track = MakeClipForTrack(p, *mm, tmp, state.Playhead(), &clip);
+                }
                 Err err;
                 Id added;
                 if (ok && state.EditCopy(str::kUndoAddClip, [&](Project& pp) {
-                        if (!ops::AddClip(pp, clip, &added, &err)) return false;
+                        Clip c = clip;
+                        if (new_track) {
+                            Id tid;
+                            const bool audio = mm->kind == Media::Kind::Audio;
+                            if (!ops::AddTrack(pp, audio ? Track::Kind::Audio : Track::Kind::Video, audio ? "Audio" : "Video", &tid, -1))
+                                return false;
+                            c.track = tid;
+                        }
+                        if (!ops::AddClip(pp, std::move(c), &added, &err)) return false;
                         if (const Clip* v = pp.FindClip(added)) cmd::AddLinkedAudioClip(pp, *v);   // sound on an audio track
                         return true;
                     }))

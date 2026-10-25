@@ -154,6 +154,7 @@ Conventions:
                  "cursor_hz": 120, "output_dir": null, "hide_bar_while_recording": false },
   "hotkeys": { "toggle": "F9", "pause": "F10", "marker": "F8", "cancel": "Ctrl+Shift+F9" },
   "editor": { "theme": "dark", "autosave_s": 60, "frame_cache_mb": 256, "snap": true, "ripple": false, "preview_quality": "full|half" },
+  "playback": { "output_device": null, "volume": 100, "muted": false },
   "export": { "last_preset": "mp4-1080p", "last_dir": null },
   "privacy": { "crash_dumps": true },
   "window": { "editor": { "x": 100, "y": 100, "w": 1600, "h": 900, "maximized": false }, "bar": { "x": 0, "y": 0 } }

@@ -985,7 +985,9 @@ void TimelineWidget::DrawRuler(EditorState& state, ImDrawList* dl) {
         const float x = std::floor(m_view.X(t)) + 0.5f;
         dl->AddLine(ImVec2(x, y1 - Dp(9)), ImVec2(x, y1), col::text_faint);
         FormatTick(buf, sizeof(buf), t, u, p.canvas.fps_num, p.canvas.fps_den);
-        dl->AddText(font, fsize, ImVec2(x + Dp(4), y0 + Dp(3)), col::text_dim, buf);
+        // Half a clipped number ("0:") reads as a glitch: draw the label only where it fits whole.
+        const float label_w = font ? font->CalcTextSizeA(fsize, FLT_MAX, 0, buf).x : 0;
+        if (x + Dp(4) + label_w <= x1) dl->AddText(font, fsize, ImVec2(x + Dp(4), y0 + Dp(3)), col::text_dim, buf);
     }
 
     // Markers: diamonds on the ruler.
@@ -1252,6 +1254,7 @@ void TimelineWidget::DrawLanes(EditorState& state, ImDrawList* dl) {
             for (float hx = x0 - lane.h; hx < x1; hx += Dp(14))
                 dl->AddLine(ImVec2(hx, lane.y + lane.h), ImVec2(hx + lane.h, lane.y), WithAlpha(col::bg0, 0.35f), Dp(1));
         }
+        if (static_cast<size_t>(lane.track) >= m_sorted.size()) continue;
         const auto& v = m_sorted[static_cast<size_t>(lane.track)];
         // Clips do not overlap on a track, so End() is sorted too: binary search the first one ending after vs.
         auto it = std::lower_bound(v.begin(), v.end(), vs, [&](int i, TimeUs tt) { return clips[static_cast<size_t>(i)].End() < tt; });
@@ -1527,6 +1530,10 @@ void TimelineWidget::Draw(EditorState& state, ImVec2 size) {
     HandleDrop(state);
     const bool hover_input = hovered && !ImGui::GetDragDropPayload();
     HandleInput(state, hover_input, active);
+
+    // A drop or an edit above may have added or removed a track (dropping media with no compatible track creates
+    // one): the clip index must follow before the lanes are laid out and drawn, or m_sorted[lane.track] is stale.
+    RebuildCache(state);
 
     // Clamp the vertical scroll and re-layout with the post-input view.
     const float visible = (origin.y + size.y - m_hbar_h) - m_lanes_top;

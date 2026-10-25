@@ -195,6 +195,10 @@ Json KnownJson(const Settings& s, int version) {
     e["snap"] = s.editor.snap;
     e["ripple"] = s.editor.ripple;
     e["preview_quality"] = s.editor.preview_quality;
+    Json& pb = j["playback"];
+    pb["output_device"] = NullableString(s.playback.output_device);
+    pb["volume"] = s.playback.volume;
+    pb["muted"] = s.playback.muted;
     Json& x = j["export"];
     x["last_preset"] = s.export_.last_preset;
     x["last_dir"] = NullableString(s.export_.last_dir);
@@ -255,6 +259,11 @@ Settings Settings::FromJson(const Json& j) {
     s.editor.ripple = e.Get<bool>("ripple", d.editor.ripple);
     s.editor.preview_quality = e.Get<std::string>("preview_quality", d.editor.preview_quality);
 
+    const Json& pb = j["playback"];
+    s.playback.output_device = ReadNullableString(pb, "output_device", d.playback.output_device);
+    s.playback.volume = pb.Get<int>("volume", d.playback.volume);
+    s.playback.muted = pb.Get<bool>("muted", d.playback.muted);
+
     const Json& x = j["export"];
     s.export_.last_preset = x.Get<std::string>("last_preset", d.export_.last_preset);
     s.export_.last_dir = ReadNullableString(x, "last_dir", d.export_.last_dir);
@@ -288,6 +297,7 @@ void Settings::Sanitize() {
     editor.autosave_s = std::clamp(editor.autosave_s, 0, 3600);
     editor.frame_cache_mb = std::clamp(editor.frame_cache_mb, 32, 16384);
     editor.preview_quality = OneOf(editor.preview_quality, {"full", "half"}, "full");
+    playback.volume = std::clamp(playback.volume, 0, 200);
     if (window.editor.w < 640 || window.editor.h < 400) {
         window.editor.w = d.window.editor.w;
         window.editor.h = d.window.editor.h;

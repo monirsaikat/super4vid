@@ -187,6 +187,10 @@ public:
     static std::unique_ptr<SettingsWindow> CreateDemo(std::string_view section, std::string gpu_name,
                                                       std::function<void()> request_redraw);
 
+    // Applies a change made elsewhere in the app (the editor's preview volume popover) exactly as a widget in this
+    // window would: on_changed fires and the debounced save is re-armed.
+    void ApplyExternalChange(const std::function<void(Settings&)>& edit) { Apply(edit); }
+
     // Test hooks (no ImGui needed): apply a change as the widgets do, feed a recorded chord.
     void ApplyForTest(const std::function<void(Settings&)>& edit) { Apply(edit); }
     bool AssignHotkeyForTest(HotkeyAction a, Hotkey hk, std::string* error) { return AssignHotkey(a, hk, error); }
@@ -235,9 +239,11 @@ private:
 
     // Snapshot of the async results (copied on the UI thread).
     struct Mic { std::string id, name; bool is_default = false; };
+    struct Out { std::string id, name; bool is_default = false; };   // render endpoints (playback output)
     struct Cam { std::string link, name; std::vector<std::string> sizes; };   // sizes "WxH", largest first
     struct PresetItem { std::string id, name; bool user = false; };
     std::vector<Mic> m_mics;
+    std::vector<Out> m_outs;
     std::vector<Cam> m_cams;
     std::vector<PresetItem> m_presets;
     std::string m_encoder_report;

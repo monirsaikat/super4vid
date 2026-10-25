@@ -40,6 +40,10 @@ public:
     AudioEngine& operator=(const AudioEngine&) = delete;
 
     HRESULT Init(audio::AudioDevices&);   // default render endpoint (eConsole)
+    // Preferred endpoint id (from settings); empty, unknown or unopenable falls back to the default device, which is
+    // not an error. DeviceId() is the endpoint actually opened.
+    HRESULT Init(audio::AudioDevices&, const std::wstring& preferred_device);
+    const std::wstring& DeviceId() const { return m_device_id; }
     bool Start(Source&);
     void Stop();
 
@@ -71,6 +75,7 @@ private:
     void RenderChunk(float* out, uint32_t frames);
 
     audio::WasapiRender m_render;
+    std::wstring m_device_id;   // the endpoint Init opened
     Callback m_callback;
     Source* m_source = nullptr;
     bool m_started = false;

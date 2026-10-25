@@ -136,7 +136,7 @@ void DrawShortcutSheet(bool* open) {
     if (!*open) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(Dp(760, 560), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(FitViewport(Dp(760, 560)), ImGuiCond_Appearing);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Dp(20, 16));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ToVec4(col::bg1));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;

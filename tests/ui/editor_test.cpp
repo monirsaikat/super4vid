@@ -18,6 +18,7 @@
 #include <ct/ui/editor_app.h>
 #include <ct/ui/editor_commands.h>
 #include <ct/ui/editor_state.h>
+#include <ct/ui/panels/media_panel.h>
 #include <ct/ui/panels/preview_panel.h>
 #include <ct/ui/panels/properties_panel.h>
 #include <ct/ui/panels/timeline_widget.h>
@@ -512,4 +513,45 @@ CT_TEST(editor_fixtures_synthetic_bundle_and_preview_project) {
     GetFullPathNameA((out + "\\preview_bench.ctproj").c_str(), MAX_PATH, proj, nullptr);
     CT_REQUIRE(project::Save(p, proj, &err));
     std::printf("  fixtures: %s, %s\n", bundle.c_str(), proj);
+}
+
+// --- drop onto a timeline with no tracks ----------------------------------------------------------------------------
+
+// Dropping media where no compatible track exists creates one mid-frame. The per-track clip index must be rebuilt
+// before the lanes are drawn, or m_sorted[lane.track] indexes past the end (release: a read of free memory, which
+// closed the app; debug: "vector subscript out of range").
+CT_TEST(drop_media_with_no_tracks_creates_a_track) {
+    Headless h(1600, 700);
+    EditorState s;
+    Project p = TwoClipProject();
+    p.tracks.clear();
+    p.clips.clear();
+    Set(s, std::move(p));
+    CT_CHECK(s.project.tracks.empty());
+    MediaPanel mp;
+    TimelineWidget w;
+    auto frame = [&] {
+        h.Frame([&] {
+            ImGui::BeginChild("##media", ImVec2(260, 680));
+            mp.Draw(s);
+            ImGui::EndChild();
+            ImGui::SameLine();
+            w.Draw(s, ImVec2(1300, 680));
+        });
+    };
+    const float sx = 120, sy = 120;
+    h.Mouse(sx, sy);
+    frame();
+    h.Button(0, true);
+    frame();
+    for (int i = 1; i <= 6; ++i) {
+        h.Mouse(sx + i * 120.0f, w.LanesTop() + 30.0f);
+        frame();
+    }
+    h.Button(0, false);
+    frame();
+    frame();
+    // A video track for the clip and an audio track for its sound (AddLinkedAudioClip).
+    CT_CHECK_EQ(s.project.tracks.size(), size_t(2));
+    CT_CHECK_EQ(s.project.clips.size(), size_t(2));
 }

@@ -58,6 +58,8 @@ public:
     void SetVolume(float v) override { m_p.Audio().SetVolume(v); }
     bool Muted() const override { return m_p.Audio().Muted(); }
     void SetMuted(bool m) override { m_p.Audio().SetMuted(m); }
+    float OutputPeak() const override { return m_p.HasAudioOutput() ? m_p.Audio().PeakLevel() : 0.0f; }
+    std::string OutputDeviceName() const override { return m_p.HasAudioOutput() ? m_p.Audio().DeviceName() : std::string(); }
 
 private:
     EditorState& m_s;

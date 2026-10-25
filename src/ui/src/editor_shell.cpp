@@ -11,6 +11,7 @@
 #include <ct/ui/editor_commands.h>
 #include <ct/ui/fonts.h>
 #include <ct/ui/icons.h>
+#include <ct/ui/settings_window.h>
 #include <ct/ui/strings.h>
 #include <ct/ui/theme.h>
 
@@ -84,6 +85,9 @@ ImU32 ToU32(const ColorF& c) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r,
 
 EditorShell::EditorShell() {
     m_preview.run_action = [this](Action a) { Run(a); };
+    m_preview.on_audio_settings = [this] {
+        if (on_preferences) on_preferences(static_cast<int>(SettingsSection::Audio));
+    };
     for (const exportng::Preset& p : exportng::Preset::Builtin()) m_export_presets.emplace_back(p.id, p.name);
 }
 EditorShell::~EditorShell() = default;
@@ -278,7 +282,8 @@ void EditorShell::DrawMenuBar() {
             item(str::kDelete, Action::Delete, !s.selection.Empty());
             item(str::kSelectAll, Action::SelectAll);
             ImGui::Separator();
-            if (ImGui::MenuItem(str::kPreferences, nullptr, false, static_cast<bool>(on_preferences))) on_preferences();
+            if (ImGui::MenuItem(str::kPreferences, nullptr, false, static_cast<bool>(on_preferences)))
+                on_preferences(static_cast<int>(SettingsSection::Editor));
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(str::kMenuView)) {

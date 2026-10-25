@@ -220,6 +220,7 @@ struct EditorWindow::Impl {
     int busy = 0;   // IO jobs whose result the UI waits for (spinner in the status bar)
     std::shared_ptr<int> alive = std::make_shared<int>(1);
     Settings settings;
+    std::string audio_device;   // the endpoint the player's stream was opened for (settings.playback.output_device)
     std::unique_ptr<SettingsWindow> settings_window;
     // File > Export (P10). Destroyed before the RenderContext it shares (its destructor cancels and joins the job).
     std::unique_ptr<ExportDialog> export_dialog;
@@ -249,6 +250,59 @@ struct EditorWindow::Impl {
         autosave_interval = s.editor.autosave_s;
         playback::CacheBudget::SetBytes(static_cast<size_t>(s.editor.frame_cache_mb) << 20);
         if (w.m_shell && !st().project.id.empty()) st().autosave.Init(st().project.id, autosave_interval);
+        ApplyPlayback(s.playback);
+    }
+
+    // Volume and mute take effect on the running stream; the output device only on a fresh WASAPI stream, so a
+    // changed device re-opens the player's audio (the project, caches and playhead stay).
+    void ApplyPlayback(const Settings::Playback& p) {
+        st().playback->SetVolume(static_cast<float>(p.volume) / 100.0f);
+        st().playback->SetMuted(p.muted);
+        if (gpu_ok && devices && p.output_device != audio_device) {
+            audio_device = p.output_device;
+            RestartAudioOutput();
+        }
+    }
+
+    // The preview transport's own volume popover writes to the engine; mirror it into the settings file (debounced
+    // by SettingsSaver) so the level survives a restart and the Settings window shows the same number.
+    void PersistPlaybackVolume() {
+        const int vol = std::clamp(static_cast<int>(std::lround(st().playback->Volume() * 100.0f)), 0, 200);
+        const bool muted = st().playback->Muted();
+        if (vol == settings.playback.volume && muted == settings.playback.muted) return;
+        settings.playback.volume = vol;
+        settings.playback.muted = muted;
+        if (settings_window) {
+            settings_window->ApplyExternalChange([&](Settings& s) { s.playback = settings.playback; });
+            return;
+        }
+        Err err;
+        settings.Save(SettingsFilePath(), &err);
+    }
+
+    void RestartAudioOutput() {
+        const bool was_playing = st().playback->Playing();
+        const TimeUs t = st().Playhead();
+        st().playback->Pause();
+        if (provider) provider->Clear();   // the media caches go with the player (same order as Destroy)
+        player.Shutdown();
+        render::TimelinePlayer::Options po;
+        po.audio_output = true;
+        po.audio_device = Utf8ToWide(audio_device);
+        const HRESULT hr = player.Init(rc, devices, po);
+        if (FAILED(hr)) {
+            CT_LOG_WARN("editor: audio output restart failed: %s", HrToString(hr).c_str());
+            Banner(BannerPanel::Preview, str::kErrNoAudioOutput, "Error code: " + HrToString(hr));
+            return;
+        }
+        shell().Banners().Clear(BannerPanel::Preview);
+        player.SetProject(&st().project);
+        ApplyPlayback(settings.playback);
+        st().playback->Seek(t);
+        last_rev = ~0ull;   // the preview's cached frame came from the caches that just went
+        st().needs_render = true;
+        if (was_playing) st().playback->Play(1.0);
+        Toast("Audio output: " + player.Audio().DeviceName(), ToastKind::Success);
     }
 
     EditorShell& shell() { return *w.m_shell; }
@@ -765,7 +819,7 @@ struct EditorWindow::Impl {
             unsaved_open = true;
         }
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(Dp(440, 0));
+        ImGui::SetNextWindowSize(FitViewport(Dp(440, 0)));
         if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar)) return;
         const std::string name = st().project.name.empty() ? std::string(str::kUntitled) : st().project.name;
         {
@@ -806,7 +860,7 @@ struct EditorWindow::Impl {
             recover_open = true;
         }
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(Dp(480, 0));
+        ImGui::SetNextWindowSize(FitViewport(Dp(480, 0)));
         if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar)) {
             if (recover_open && !ImGui::IsPopupOpen(id)) recover_open = false;
             return;
@@ -914,7 +968,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     // the first frame (like --settings-demo); Edit > Preferences opens P11a's SettingsWindow on the same file.
     I.settings = Settings::Defaults();
     I.settings.Load(SettingsFilePath(), nullptr);
-    I.ApplySettings(I.settings);
+    I.audio_device = I.settings.playback.output_device;
     s.snap = I.settings.editor.snap;
     s.ripple = I.settings.editor.ripple;
     Autosave::SetDirectory(platform::Paths::AutosaveDir());
@@ -925,7 +979,9 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
         m_impl->settings = st;
         m_impl->ApplySettings(st);
     };
-    m_shell->on_preferences = [this] { m_impl->settings_window->Open(m_impl->settings, SettingsSection::Editor); };
+    m_shell->on_preferences = [this](int section) {
+        m_impl->settings_window->Open(m_impl->settings, static_cast<SettingsSection>(section));
+    };
     I.export_dialog = std::make_unique<ExportDialog>();
     m_shell->on_export_preset = [this](const std::string& id) { m_impl->OpenExport(id); };
     m_shell->on_export_restore = [this] {
@@ -939,6 +995,7 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     if (I.gpu_ok) {
         render::TimelinePlayer::Options po;
         po.audio_output = I.devices != nullptr;
+        po.audio_device = Utf8ToWide(I.settings.playback.output_device);
         const HRESULT phr = I.player.Init(I.rc, I.devices, po);
         if (FAILED(phr)) CT_LOG_WARN("editor: TimelinePlayer::Init %s", HrToString(phr).c_str());
         if (po.audio_output && (FAILED(phr) || !I.player.HasAudioOutput()))
@@ -946,6 +1003,8 @@ bool EditorWindow::Create(void* hwnd, platform::D3DDevice& dev, audio::AudioDevi
     }
     I.transport = std::make_unique<detail::PlayerTransport>(s, I.player);
     s.playback = I.transport.get();
+    // ApplySettings talks to the transport (playback volume / mute), so it runs once it exists.
+    I.ApplySettings(I.settings);
     I.provider = std::make_unique<detail::CacheMediaProvider>(
         &s.project,
         [this](const Id& id, bool* failed) {
@@ -1104,6 +1163,7 @@ void EditorWindow::Frame() {
     }
 
     m_shell->Frame();
+    I.PersistPlaybackVolume();
     I.DrawUnsavedPrompt();
     I.DrawRecoverPrompt();
     if (I.settings_window) I.settings_window->Draw();

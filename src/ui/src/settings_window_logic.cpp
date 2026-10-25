@@ -230,6 +230,7 @@ struct SettingsWindow::AsyncState {
     std::atomic<uint32_t> generation{0};
     std::atomic<int> running{0};
     std::vector<Mic> mics;
+    std::vector<Out> outs;
     std::vector<Cam> cams;
     std::vector<PresetItem> user_presets;
     std::string encoder_report;
@@ -253,14 +254,16 @@ void SettingsWindow::StartEnumeration(bool cameras_with_modes) {
         ExclusiveGuard g(st->lock);
         st->redraw = request_redraw;
     }
-    // Microphones: fast (tens of ms).
+    // Microphones and playback endpoints: fast (tens of ms), one enumerator for both.
     st->running.fetch_add(1);
     Async::Run([st] {
         std::vector<Mic> mics;
+        std::vector<Out> outs;
         audio::AudioDevices devices;
         const HRESULT hr = devices.Init();
         if (SUCCEEDED(hr)) {
             for (const audio::DeviceInfo& d : devices.List(true)) mics.push_back({WideToUtf8(d.id), d.name, d.is_default});
+            for (const audio::DeviceInfo& d : devices.List(false)) outs.push_back({WideToUtf8(d.id), d.name, d.is_default});
             devices.Shutdown();
         } else {
             CT_LOG_WARN("settings: audio device enumeration failed: %s", HrToString(hr).c_str());
@@ -268,6 +271,7 @@ void SettingsWindow::StartEnumeration(bool cameras_with_modes) {
         {
             ExclusiveGuard g(st->lock);
             st->mics = std::move(mics);
+            st->outs = std::move(outs);
             st->mics_ready = true;
         }
         st->Finish();
@@ -340,6 +344,7 @@ void SettingsWindow::PollAsync() {
     ExclusiveGuard g(m_async->lock);
     if (m_async->mics_ready) {
         m_mics = m_async->mics;
+        m_outs = m_async->outs;
         m_devices_ready = true;
     }
     if (m_async->cams_ready) m_cams = m_async->cams;

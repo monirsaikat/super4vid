@@ -448,7 +448,7 @@ void PropertiesPanel::DrawClipSections(EditorState& state) {
             PropValue(str::kSource, kSourceNames[static_cast<int>(c.source)]);
         }
         ColorF color = c.color.a > 0 ? c.color : ColorF{0.17f, 0.42f, 0.69f, 1};
-        if (PropColor(str::kColor, color, false)) {
+        if (PropColor(str::kColorProp, color, false)) {
             ApplyToClips(state, str::kUndoProperty, [&](Project& p, const Clip& k) {
                 Clip* pc = p.FindClip(k.id);
                 if (!pc) return false;
